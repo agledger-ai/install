@@ -1,0 +1,135 @@
+# =============================================================================
+# AGLedger — Self-Hosted Docker Compose
+# =============================================================================
+# API server, background worker, and database migrations.
+#
+# Bundled PostgreSQL (default — eval/dev):
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --wait
+#
+# External database (Aurora, RDS, Cloud SQL, Azure):
+#   # Set DATABASE_URL in .env, then:
+#   docker compose up -d --wait
+#
+# Single-container (runs migrations on startup):
+#   docker run -e DATABASE_URL=... -e RUN_MIGRATIONS=true agledger/agledger
+#
+# Production (bundled PG):
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml -f docker-compose.prod.yml up -d --wait
+#
+# Production (external DB):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --wait
+#
+# With monitoring (Jaeger, Prometheus, Grafana):
+#   docker compose --profile monitoring -f docker-compose.yml -f docker-compose.postgres.yml up -d --wait
+# =============================================================================
+
+services:
+  # --- Database migrations ---
+
+  agledger-migrate:
+    image: agledger/agledger:${AGLEDGER_VERSION:-latest}
+    init: true
+    command: ['dist/src/db/migrate.js']
+    restart: 'no'
+    environment:
+      - DATABASE_URL=${DATABASE_URL_MIGRATE:-${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-agledger}@postgres:5432/${POSTGRES_DB:-agledger}}}
+      - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-}
+
+  # --- API server ---
+
+  agledger-api:
+    image: agledger/agledger:${AGLEDGER_VERSION:-latest}
+    init: true
+    ports:
+      - '127.0.0.1:3001:3000'
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-agledger}@postgres:5432/${POSTGRES_DB:-agledger}}
+      - ALLOW_DB_WITHOUT_SSL=${ALLOW_DB_WITHOUT_SSL:-false}
+    depends_on:
+      agledger-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD', '/nodejs/bin/node', '-e', "fetch('http://localhost:3000/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # --- Background worker ---
+
+  agledger-worker:
+    image: agledger/agledger:${AGLEDGER_VERSION:-latest}
+    init: true
+    command: ['dist/src/worker.js']
+    ports:
+      - '127.0.0.1:3002:3001'
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-agledger}@postgres:5432/${POSTGRES_DB:-agledger}}
+      - ALLOW_DB_WITHOUT_SSL=${ALLOW_DB_WITHOUT_SSL:-false}
+      - WORKER_HEALTH_PORT=3001
+    depends_on:
+      agledger-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD', '/nodejs/bin/node', '-e', "fetch('http://localhost:3001/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # --- Monitoring (optional, enable with --profile monitoring) ---
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.149.0
+    profiles: [monitoring]
+    command: ['--config', '/etc/otel/config.yaml']
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - '4317:4317'   # OTLP gRPC
+      - '4318:4318'   # OTLP HTTP
+      - '8889:8889'   # Prometheus metrics exporter
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/jaeger:2.17.0
+    profiles: [monitoring]
+    ports:
+      - '16686:16686'  # Jaeger UI
+      - '4317'         # OTLP gRPC (internal, OTel collector → Jaeger)
+      - '4318'         # OTLP HTTP (internal)
+
+  prometheus:
+    image: prom/prometheus:v3.11.0
+    profiles: [monitoring]
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - '9090:9090'
+
+  grafana:
+    image: grafana/grafana:12.4.2
+    profiles: [monitoring]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    ports:
+      - '3003:3000'
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  grafana-data:

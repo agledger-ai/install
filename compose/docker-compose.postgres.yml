@@ -1,0 +1,69 @@
+# =============================================================================
+# AGLedger — Bundled PostgreSQL Overlay
+# =============================================================================
+# Include this file for local/dev deployments using the bundled database.
+# For external databases (Aurora, RDS, Cloud SQL, Azure), omit this file
+# and set DATABASE_URL in .env instead.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --wait
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agledger}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agledger}
+      POSTGRES_DB: ${POSTGRES_DB:-agledger}
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-agledger}']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+        reservations:
+          memory: 512M
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - statement_timeout=30s
+      - -c
+      - idle_in_transaction_session_timeout=300s
+      - -c
+      - log_statement=ddl
+
+  # Add postgres dependency and bundled PG detection to application services
+  agledger-migrate:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  agledger-api:
+    environment:
+      - AGLEDGER_PG_BUNDLED=true
+      - ALLOW_DB_WITHOUT_SSL=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  agledger-worker:
+    environment:
+      - AGLEDGER_PG_BUNDLED=true
+      - ALLOW_DB_WITHOUT_SSL=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

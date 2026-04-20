@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agledger.fullname" . }}-worker
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  {{- with .Values.worker.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "agledger.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "agledger.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: {{ include "agledger.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 35
+      securityContext:
+        {{- toYaml .Values.worker.podSecurityContext | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "agledger.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/nodejs/bin/node", "dist/src/worker.js"]
+          ports:
+            - name: health
+              containerPort: {{ .Values.worker.healthPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "agledger.fullname" . }}
+            - secretRef:
+                name: {{ include "agledger.secretName" . }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: health
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.worker.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- include "agledger.licenseVolumeMount" . | nindent 12 }}
+            {{- include "agledger.provisioningVolumeMounts" . | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- include "agledger.licenseVolume" . | nindent 8 }}
+        {{- include "agledger.provisioningVolumes" . | nindent 8 }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

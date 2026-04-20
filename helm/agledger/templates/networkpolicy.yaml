@@ -1,0 +1,133 @@
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agledger.fullname" . }}-api
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agledger.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from ingress controllers
+    - from:
+        {{- range .Values.networkPolicy.ingressFrom }}
+        - namespaceSelector: {}
+          {{- if .podSelector.matchLabels }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .podSelector.matchLabels | nindent 14 }}
+          {{- else }}
+          podSelector: {}
+          {{- end }}
+        {{- end }}
+      ports:
+        - port: 3000
+          protocol: TCP
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- if .Values.postgres.bundled.enabled }}
+    # Bundled PostgreSQL (in-cluster only)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    {{- else }}
+    # External PostgreSQL (Aurora, RDS, Cloud SQL, Azure, self-managed)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 5432
+          protocol: TCP
+    {{- end }}
+    # Webhook delivery (HTTPS outbound) + telemetry + federation
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agledger.fullname" . }}-worker
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agledger.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Health checks + Prometheus scraping
+    - ports:
+        - port: {{ .Values.worker.healthPort }}
+          protocol: TCP
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- if .Values.postgres.bundled.enabled }}
+    # Bundled PostgreSQL (in-cluster only)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    {{- else }}
+    # External PostgreSQL
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 5432
+          protocol: TCP
+    {{- end }}
+    # Webhook delivery (HTTPS outbound)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP
+{{- end }}

@@ -1,0 +1,61 @@
+# =============================================================================
+# AGLedger — Production Docker Compose Overlay
+# =============================================================================
+# Usage (bundled PG):
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml -f docker-compose.prod.yml up -d --wait
+# Usage (external DB):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --wait
+#
+# Adds: restart policies, resource limits, security hardening, read-only
+# filesystems, and log rotation for application services.
+# =============================================================================
+
+services:
+  agledger-migrate:
+    restart: 'no'
+
+  agledger-api:
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - API_KEY_SECRET=${API_KEY_SECRET}
+      - VAULT_SIGNING_KEY=${VAULT_SIGNING_KEY}
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: '50m'
+        max-file: '5'
+
+  agledger-worker:
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - API_KEY_SECRET=${API_KEY_SECRET}
+      - VAULT_SIGNING_KEY=${VAULT_SIGNING_KEY}
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: '50m'
+        max-file: '5'

@@ -1,0 +1,15 @@
+{{- if .Values.worker.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "agledger.fullname" . }}-worker
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  minAvailable: {{ .Values.worker.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "agledger.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+{{- end }}
