@@ -114,7 +114,7 @@ cosign verify --key cosign.pub oci://registry-1.docker.io/agledger/agledger-char
 # SLSA L2 build provenance — cryptographic proof of the source commit and CodeBuild
 # run that produced the image. The output includes the git commit, build ID, and
 # start/finish timestamps.
-cosign verify-attestation --key cosign.pub --type slsaprovenance agledger/agledger:<version>
+cosign verify-attestation --key cosign.pub --type slsaprovenance1 agledger/agledger:<version>
 ```
 
 SBOM and SLSA provenance attestations are attached to each release on this repo.
