@@ -80,6 +80,23 @@ resolve_version() {
   echo "latest"
 }
 
+# Poll a URL until it returns HTTP 2xx, up to a bounded number of attempts.
+# Returns 0 on first success, 1 if the deadline passes.
+#
+# Usage: wait_for_http <url> [max_attempts=5] [sleep_seconds=2]
+wait_for_http() {
+  local url="$1"
+  local max_attempts="${2:-5}"
+  local sleep_seconds="${3:-2}"
+  for _ in $(seq 1 "$max_attempts"); do
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$sleep_seconds"
+  done
+  return 1
+}
+
 # Resolve the latest stable version from Docker Hub tags API.
 # Prints the semver string (e.g., "0.19.13") to stdout on success.
 # Returns non-zero if the network call fails AND no usable cache exists.
