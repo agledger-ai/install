@@ -1,0 +1,314 @@
+## AGLedger Helm Chart — Default Values
+
+image:
+  repository: agledger/agledger
+  tag: ""  # defaults to appVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []  # For private registries (ECR, GCR): add imagePullSecrets here
+
+# ---
+# API Service
+# ---
+# Sizing guidance:
+#   Single-node clusters (e.g. one t3.medium = 2 vCPU): keep `strategy.type: Recreate`
+#     and the resource defaults below — combined api+worker requests fit in 2 vCPU.
+#   Multi-node / HA: switch `strategy` to `RollingUpdate`, set `replicaCount: 2+`,
+#     enable autoscaling, and bump resources. RollingUpdate creates new pods before
+#     terminating old ones, so the cluster needs ~2x per-pod CPU/memory headroom
+#     during a rollout. On a single 2 vCPU node this fails to schedule and
+#     `helm upgrade` hangs (issue #241 / testbed F-366).
+api:
+  replicaCount: 1
+  # Recreate is the safe default for single-node clusters. Switch to RollingUpdate
+  # once you have multiple nodes (or a node large enough to host both old and new
+  # pods simultaneously).
+  strategy:
+    type: Recreate
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: "1"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+    # Recommended for HA: spread API pods across nodes
+    # podAntiAffinity:
+    #   preferredDuringSchedulingIgnoredDuringExecution:
+    #     - weight: 100
+    #       podAffinityTerm:
+    #         labelSelector:
+    #           matchExpressions:
+    #             - key: app.kubernetes.io/component
+    #               operator: In
+    #               values: [api]
+    #         topologyKey: kubernetes.io/hostname
+  topologySpreadConstraints: []
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    fsGroup: 65532
+  securityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+# ---
+# Worker Service
+# ---
+# See `api` above for sizing guidance — same single-node vs. HA tradeoff applies.
+worker:
+  replicaCount: 1
+  strategy:
+    type: Recreate
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: "1"
+  healthPort: 3001
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+    # Recommended for HA: spread worker pods across nodes
+    # podAntiAffinity:
+    #   preferredDuringSchedulingIgnoredDuringExecution:
+    #     - weight: 100
+    #       podAffinityTerm:
+    #         labelSelector:
+    #           matchExpressions:
+    #             - key: app.kubernetes.io/component
+    #               operator: In
+    #               values: [worker]
+    #         topologyKey: kubernetes.io/hostname
+  topologySpreadConstraints: []
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    fsGroup: 65532
+  securityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  pdb:
+    enabled: false
+    minAvailable: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+
+# ---
+# Database (PostgreSQL)
+# ---
+database:
+  externalUrl: ""  # required if postgres.bundled.enabled is false
+  poolMax: 20
+
+postgres:
+  bundled:
+    enabled: false
+    image: postgres:18-alpine
+    password: agledger  # WARNING: Change for non-dev deployments. Also used in DATABASE_URL.
+    storage: 10Gi
+    resources:
+      requests:
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+
+# ---
+# Secrets
+# ---
+secrets:
+  apiKeySecret: ""          # Auto-generated if empty (64-char random). Preserved across upgrades.
+  vaultSigningKey: ""       # Ed25519 key for audit vault signatures. Generate with:
+                             #   kubectl run keygen --rm -it --restart=Never --image=agledger/agledger \
+                             #     -- /nodejs/bin/node dist/scripts/generate-signing-key.js
+                             # Preserved across upgrades once set.
+  webhookEncryptionKey: ""
+  databaseUrlMigrate: ""    # optional — Owner-role DATABASE_URL for migrations (DDL).
+                             # When set, the migration job uses this instead of the
+                             # standard DATABASE_URL. Enables DB role separation:
+                             # owner for DDL (migrations), agledger_app for DML (API/Worker).
+  licenseKey: ""            # optional — Inline PEM license string (AGLEDGER_LICENSE_KEY)
+  proxyDatabaseUrl: ""      # optional — DATABASE_URL for proxy/read-replica routing
+  apiKeySecretPrevious: ""  # optional — Previous API_KEY_SECRET for key rotation (zero-downtime)
+  existingSecret: ""        # set to use a pre-existing Kubernetes Secret
+                             # The Secret must contain these keys (as env var names):
+                             #   DATABASE_URL          (required) — PostgreSQL connection string
+                             #   API_KEY_SECRET        (required) — HMAC key for API key hashing
+                             #   VAULT_SIGNING_KEY     (required) — Ed25519 key for audit vault signatures
+                             #   WEBHOOK_ENCRYPTION_KEY (optional) — AES key for webhook payloads
+                             #   DATABASE_URL_MIGRATE  (optional) — Owner-role URL for migrations
+                             #   AGLEDGER_LICENSE_KEY  (optional) — PEM license string
+
+# ---
+# License (Enterprise)
+# ---
+# No license = Developer Edition (all features enabled — enforcement is contractual, not software).
+# License problems fail-open — all features remain enabled with ERROR logs.
+license:
+  releaseDate: ""           # YYYY-MM-DD — baked into image at build time; override only if building from source
+  keyFile:
+    enabled: false          # Mount a PEM license file from a K8s Secret
+    secretName: ""          # Name of the K8s Secret containing the license PEM
+    secretKey: license.pem  # Key within the Secret
+    mountPath: /run/secrets/agledger-license.pem  # Path inside the container
+
+# ---
+# AWS Marketplace — alternative license source via License Manager
+# ---
+marketplace:
+  productCode: ""             # AWS Marketplace product code (enables Marketplace licensing)
+  publicKeyVersion: ""        # Key version for CheckoutLicense (default: SDK default)
+  # IAM role for License Manager access (IRSA on EKS)
+  serviceAccountAnnotations: {}
+  # Example:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/agledger-marketplace
+
+# ---
+# Application Config
+# ---
+config:
+  mode: standalone
+  logLevel: info
+  trustProxy: false
+  registrationEnabled: false
+  nodeEnv: production
+  externalUrl: ""  # Public URL where this instance is reachable (e.g., https://agledger.example.com).
+                    # Cascades to A2A agent card URL, email links, federation endpoints.
+                    # Auto-derived from ingress.hosts[0] if not set explicitly.
+  otelProvider: "generic"
+  emailProvider: "console"
+  rateLimitEnabled: true
+  corsEnabled: true
+  helmetEnabled: true
+  nodeExtraCaCerts: ""  # Path to CA bundle inside the container.
+                         # For Aurora/RDS: /etc/ssl/certs/rds-global-bundle.pem (bundled in image)
+                         # For Cloud SQL or private CAs: mount your cert and set the path here
+
+# ---
+# Federation (gateway/hub mode only)
+# ---
+federation:
+  hubUrl: ""                    # Hub endpoint URL (required for gateway mode)
+  registrationToken: ""         # Single-use token for initial gateway registration
+  signingKeySecret: ""          # K8s Secret key containing Ed25519 signing key
+  encryptionKeySecret: ""       # K8s Secret key containing X25519 encryption key
+
+# ---
+# Ingress
+# ---
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # AWS ALB example:
+  #   kubernetes.io/ingress.class: alb
+  #   alb.ingress.kubernetes.io/scheme: internet-facing
+  #   alb.ingress.kubernetes.io/target-type: ip
+  #   alb.ingress.kubernetes.io/healthcheck-path: /health
+  # nginx example:
+  #   kubernetes.io/ingress.class: nginx
+  hosts: []
+  #  - host: api.agledger.example.com
+  #    paths:
+  #      - path: /
+  #        pathType: Prefix
+  tls: []
+  #  - secretName: agledger-tls
+  #    hosts:
+  #      - api.agledger.example.com
+
+# ---
+# Horizontal Pod Autoscaler
+# ---
+hpa:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+# ---
+# Network Policy
+# ---
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik
+
+# ---
+# Pod Disruption Budget
+# ---
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# ---
+# Service Account
+# ---
+serviceAccount:
+  create: true
+  name: ""
+
+# ---
+# Provisioning (YAML config-as-code)
+# ---
+# Mounts YAML files at startup for declarative resource management.
+# See: docs/engineering/DESIGN-PROVISIONING.md
+provisioning:
+  enabled: false
+  configPath: /etc/agledger/provisioning  # Mount path inside container
+  dryRun: false
+  prune: false
+  immutable: false  # Set true to create immutable ConfigMap (reduces apiserver load;
+                     # requires delete + recreate on changes, not in-place edit)
+
+  # Reference existing ConfigMaps (one per subdirectory).
+  # Mutually exclusive with inline content below.
+  # Each ConfigMap is mounted directly as the corresponding subdirectory.
+  existingConfigMaps:
+    enterprises: ""  # ConfigMap name for enterprises/*.yaml
+    agents: ""       # ConfigMap name for agents/*.yaml
+    webhooks: ""     # ConfigMap name for webhooks/*.yaml
+    schemas: ""      # ConfigMap name for schemas/*.yaml
+
+  # Inline YAML content — a ConfigMap is created automatically.
+  # Each key becomes a file in the corresponding subdirectory.
+  enterprises: {}
+  #  my-corp.yaml: |
+  #    enterprises:
+  #      - name: My Corp
+  #        slug: my-corp
+
+  agents: {}
+  #  my-agent.yaml: |
+  #    agents:
+  #      - slug: my-agent
+  #        displayName: My Agent
+
+  webhooks: {}
+  #  notifications.yaml: |
+  #    webhooks:
+  #      - url: https://hooks.example.com/agledger
+
+  schemas: {}
+  #  custom-type.yaml: |
+  #    schemas:
+  #      - type_name: CUSTOM-TYPE-v1
+  #        category: custom

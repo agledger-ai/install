@@ -1,0 +1,96 @@
+AGLedger Installer Software License Agreement
+
+Copyright (c) 2026 AGLedger, Inc. All rights reserved.
+
+NOTICE: This software and associated documentation files (the "Software") are
+the proprietary property of AGLedger, Inc. ("AGLedger"). By installing, copying,
+or otherwise using the Software, you ("Licensee") agree to be bound by the terms
+of this license agreement ("Agreement").
+
+1. GRANT OF LICENSE
+
+Subject to the terms of this Agreement, AGLedger grants Licensee a limited,
+non-exclusive, non-transferable, non-sublicensable license to install and use
+the Software solely for Licensee's internal business operations.
+
+2. RESTRICTIONS
+
+Licensee shall NOT:
+
+  a. Modify, adapt, translate, or create derivative works based on the Software;
+
+  b. Redistribute, sublicense, lease, rent, sell, or otherwise transfer the
+     Software or any rights therein to any third party;
+
+  c. Reverse engineer, decompile, disassemble, or otherwise attempt to derive
+     the source code of the Software, except to the extent expressly permitted
+     by applicable law notwithstanding this restriction;
+
+  d. Remove, alter, or obscure any proprietary notices, labels, or marks on the
+     Software;
+
+  e. Use the Software to provide services to third parties (including but not
+     limited to offering the Software as a managed service, hosting service, or
+     service bureau) without a separate written agreement with AGLedger;
+
+  f. Use the Software in any manner that violates applicable laws or regulations.
+
+3. OWNERSHIP
+
+The Software is licensed, not sold. AGLedger retains all right, title, and
+interest in and to the Software, including all intellectual property rights.
+Nothing in this Agreement transfers any ownership rights to Licensee.
+
+4. CONFIDENTIALITY
+
+Licensee agrees to treat the Software and any related documentation as
+confidential information of AGLedger and shall not disclose the Software or its
+contents to any third party without AGLedger's prior written consent.
+
+5. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. AGLEDGER DOES NOT WARRANT THAT
+THE SOFTWARE WILL BE ERROR-FREE OR UNINTERRUPTED.
+
+6. LIMITATION OF LIABILITY
+
+IN NO EVENT SHALL AGLEDGER BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL,
+CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS, REVENUE, DATA, OR
+DATA USE, ARISING OUT OF OR IN CONNECTION WITH THIS AGREEMENT OR THE USE OF THE
+SOFTWARE, REGARDLESS OF THE THEORY OF LIABILITY, EVEN IF AGLEDGER HAS BEEN
+ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+AGLEDGER'S TOTAL CUMULATIVE LIABILITY UNDER THIS AGREEMENT SHALL NOT EXCEED THE
+AMOUNTS PAID BY LICENSEE TO AGLEDGER FOR THE SOFTWARE DURING THE TWELVE (12)
+MONTHS PRECEDING THE CLAIM.
+
+7. TERMINATION
+
+This Agreement is effective until terminated. AGLedger may terminate this
+Agreement immediately upon written notice if Licensee breaches any term of this
+Agreement. Upon termination:
+
+  a. Licensee must cease all use of the Software;
+
+  b. Licensee must destroy all copies of the Software in its possession or
+     control;
+
+  c. Sections 3, 4, 5, 6, and 8 shall survive termination.
+
+8. GENERAL
+
+  a. This Agreement constitutes the entire agreement between the parties
+     concerning the Software and supersedes all prior agreements.
+
+  b. This Agreement shall be governed by the laws of the State of Delaware,
+     United States, without regard to its conflict of laws provisions.
+
+  c. If any provision of this Agreement is held unenforceable, the remaining
+     provisions shall remain in full force and effect.
+
+  d. AGLedger's failure to enforce any right under this Agreement shall not
+     constitute a waiver of that right.
+
+For licensing inquiries, contact: licensing@agledger.ai

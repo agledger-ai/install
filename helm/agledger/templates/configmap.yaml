@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agledger.fullname" . }}
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+data:
+  NODE_ENV: {{ .Values.config.nodeEnv | quote }}
+  PORT: "3000"
+  HOST: "0.0.0.0"
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  AGLEDGER_MODE: {{ .Values.config.mode | quote }}
+  {{- /* Derive external URL: explicit config → first ingress host → omit (app warns at startup) */}}
+  {{- $extUrl := .Values.config.externalUrl }}
+  {{- if and (not $extUrl) .Values.ingress.enabled (gt (len .Values.ingress.hosts) 0) }}
+    {{- $firstHost := (index .Values.ingress.hosts 0).host }}
+    {{- $hasAlbSsl := hasKey .Values.ingress.annotations "alb.ingress.kubernetes.io/certificate-arn" }}
+    {{- $scheme := ternary "https" "http" (or (gt (len .Values.ingress.tls) 0) $hasAlbSsl) }}
+    {{- $extUrl = printf "%s://%s" $scheme $firstHost }}
+  {{- end }}
+  {{- if $extUrl }}
+  AGLEDGER_EXTERNAL_URL: {{ $extUrl | quote }}
+  {{- end }}
+  TRUST_PROXY: {{ .Values.config.trustProxy | quote }}
+  REGISTRATION_ENABLED: {{ .Values.config.registrationEnabled | quote }}
+  OTEL_PROVIDER: {{ .Values.config.otelProvider | quote }}
+  EMAIL_PROVIDER: {{ .Values.config.emailProvider | quote }}
+  RATE_LIMIT_ENABLED: {{ .Values.config.rateLimitEnabled | quote }}
+  CORS_ENABLED: {{ .Values.config.corsEnabled | quote }}
+  HELMET_ENABLED: {{ .Values.config.helmetEnabled | quote }}
+  DATABASE_POOL_MAX: {{ .Values.database.poolMax | quote }}
+  WORKER_HEALTH_PORT: {{ .Values.worker.healthPort | quote }}
+  {{- if .Values.config.nodeExtraCaCerts }}
+  NODE_EXTRA_CA_CERTS: {{ .Values.config.nodeExtraCaCerts | quote }}
+  {{- end }}
+  {{- if .Values.license.releaseDate }}
+  AGLEDGER_RELEASE_DATE: {{ .Values.license.releaseDate | quote }}
+  {{- end }}
+  {{- if .Values.license.keyFile.enabled }}
+  AGLEDGER_LICENSE_KEY_FILE: {{ .Values.license.keyFile.mountPath | quote }}
+  {{- end }}
+  {{- if .Values.postgres.bundled.enabled }}
+  ALLOW_DB_WITHOUT_SSL: "true"
+  AGLEDGER_PG_BUNDLED: "true"
+  {{- end }}
+  {{- if .Values.federation.hubUrl }}
+  AGLEDGER_HUB_URL: {{ .Values.federation.hubUrl | quote }}
+  {{- end }}
+  {{/* Registration token moved to Secret — it is a credential, not configuration */}}
+  {{- if .Values.provisioning.enabled }}
+  PROVISIONING_CONFIG_PATH: {{ .Values.provisioning.configPath | quote }}
+  {{- if .Values.provisioning.dryRun }}
+  PROVISIONING_DRY_RUN: "true"
+  {{- end }}
+  {{- if .Values.provisioning.prune }}
+  PROVISIONING_PRUNE: "true"
+  {{- end }}
+  {{- end }}
+  {{- if .Values.marketplace.productCode }}
+  AWS_MARKETPLACE_PRODUCT_CODE: {{ .Values.marketplace.productCode | quote }}
+  {{- end }}
+  {{- if .Values.marketplace.publicKeyVersion }}
+  AWS_MARKETPLACE_PUBLIC_KEY_VERSION: {{ .Values.marketplace.publicKeyVersion | quote }}
+  {{- end }}

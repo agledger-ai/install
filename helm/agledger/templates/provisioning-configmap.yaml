@@ -1,0 +1,29 @@
+{{- if .Values.provisioning.enabled }}
+{{- /* Keep subdirs list in sync with _helpers.tpl provisioningVolumeMounts/provisioningVolumes */}}
+{{- $subdirs := list "enterprises" "agents" "webhooks" "schemas" }}
+{{- $hasContent := false }}
+{{- range $subdir := $subdirs }}
+  {{- if index $.Values.provisioning $subdir }}
+    {{- $hasContent = true }}
+  {{- end }}
+{{- end }}
+{{- if $hasContent }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agledger.provisioningConfigMapName" . }}
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: provisioning
+{{- if .Values.provisioning.immutable }}
+immutable: true
+{{- end }}
+data:
+  {{- range $subdir := $subdirs }}
+  {{- range $key, $value := index $.Values.provisioning $subdir }}
+  {{ printf "%s--%s" $subdir $key }}: |
+    {{- $value | nindent 4 }}
+  {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}

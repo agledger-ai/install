@@ -1,0 +1,5 @@
+Contact: mailto:security@agledger.ai
+Expires: 2027-04-20T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://agledger.ai/.well-known/security.txt
+Policy: https://github.com/agledger-ai/install/blob/main/SECURITY.md
