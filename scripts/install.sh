@@ -165,6 +165,11 @@ if ! command -v jq &>/dev/null; then
   fatal "jq is not installed. Install: sudo apt-get install -y jq (or brew install jq)"
 fi
 
+# curl (used for Docker Hub tag lookup and demo-seed API calls)
+if ! command -v curl &>/dev/null; then
+  fatal "curl is not installed. Install: sudo apt-get install -y curl (or brew install curl)"
+fi
+
 # openssl (used for secret generation)
 if ! command -v openssl &>/dev/null; then
   fatal "openssl is not installed. Install: sudo apt-get install -y openssl"
@@ -523,11 +528,10 @@ fi
 
 echo ""
 echo -e "  ${BOLD}Next steps:${NC}"
-echo -e "    1. Save your platform API key in a secure location"
-echo -e "    2. Create an enterprise account: curl -X POST ${API_URL}/v1/enterprises"
-echo -e "       -H 'Authorization: Bearer <your-platform-key>'"
-echo -e "    3. Explore the API: ${API_URL}/docs"
-echo -e "    4. Check status: docker compose ps"
+echo -e "    Learn what AGLedger does:   https://agledger.ai/how-it-works"
+echo -e "    Self-hosted install guide:  https://agledger.ai/docs/guides/self-hosted/install"
+echo -e "    API reference (Swagger):    ${API_URL}/docs"
+echo -e "    Container status:           docker compose ps"
 
 # Telemetry notice for Developer Edition installs
 if [[ "${USES_BUNDLED_PG}" == "true" ]] || [[ -z "${AGLEDGER_LICENSE_KEY:-}" ]]; then
