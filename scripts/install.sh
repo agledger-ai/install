@@ -422,7 +422,23 @@ info "Migrations complete"
 
 step "Creating platform API key"
 
-COMPOSE_NETWORK=$("${COMPOSE[@]}" ps --format json 2>/dev/null | head -1 | jq -r '.Networks | keys[0]' 2>/dev/null || echo "docker-compose_default")
+# docker compose ps --format json reports Networks as a comma-separated STRING,
+# not an object — so `keys[0]` fails. Detect via the running postgres container's
+# actual network attachments, falling back to parsing the Networks string, then
+# finally to the install-repo layout default.
+COMPOSE_NETWORK=""
+POSTGRES_CID=$("${COMPOSE[@]}" ps -q postgres 2>/dev/null | head -1 || true)
+if [[ -n "$POSTGRES_CID" ]]; then
+  COMPOSE_NETWORK=$(docker inspect "$POSTGRES_CID" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null | awk '{print $1}')
+fi
+if [[ -z "$COMPOSE_NETWORK" ]]; then
+  COMPOSE_NETWORK=$("${COMPOSE[@]}" ps --format json 2>/dev/null | head -1 | jq -r '.Networks // "" | split(",")[0] // ""' 2>/dev/null || true)
+fi
+if [[ -z "$COMPOSE_NETWORK" ]]; then
+  # Install-repo layout: compose files live in compose/ subdir, project name "compose"
+  COMPOSE_NETWORK="compose_default"
+fi
+info "Using compose network: ${COMPOSE_NETWORK}"
 
 # Build DATABASE_URL via a temp env file to avoid exposing password in ps output
 INIT_ENV=$(mktemp)
