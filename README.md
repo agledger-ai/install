@@ -105,8 +105,16 @@ Developer Edition installs send an anonymous heartbeat (version, uptime, deploym
 The Docker image and Helm chart are signed with [cosign](https://github.com/sigstore/cosign). The public key is at `cosign.pub` in this repo.
 
 ```bash
+# Image signature — proves the image wasn't swapped between push and pull
 cosign verify --key cosign.pub agledger/agledger:<version>
+
+# Helm chart signature
 cosign verify --key cosign.pub oci://registry-1.docker.io/agledger/agledger-chart:<version>
+
+# SLSA L2 build provenance — cryptographic proof of the source commit and CodeBuild
+# run that produced the image. The output includes the git commit, build ID, and
+# start/finish timestamps.
+cosign verify-attestation --key cosign.pub --type slsaprovenance agledger/agledger:<version>
 ```
 
 SBOM and SLSA provenance attestations are attached to each release on this repo.
