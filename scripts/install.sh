@@ -165,7 +165,7 @@ if ! command -v jq &>/dev/null; then
   fatal "jq is not installed. Install: sudo apt-get install -y jq (or brew install jq)"
 fi
 
-# curl (used for Docker Hub tag lookup and demo-seed API calls)
+# curl (used for Docker Hub tag lookup)
 if ! command -v curl &>/dev/null; then
   fatal "curl is not installed. Install: sudo apt-get install -y curl (or brew install curl)"
 fi
