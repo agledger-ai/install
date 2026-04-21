@@ -70,7 +70,7 @@ Requirements:
 
 ### Federation (Gateway / Hub)
 
-Enterprise deployments can run in Gateway or Hub mode. See `compose/docker-compose.federation.yml`.
+Gateway and Hub modes are available in both Developer Edition and Enterprise Edition deployments. See `compose/docker-compose.federation.yml` for the configuration.
 
 ## Upgrading
 
@@ -121,9 +121,9 @@ SBOM and SLSA provenance attestations are attached to each release on this repo.
 
 ## Licensing
 
-AGLedger Developer Edition is free to self-host and evaluate. Enterprise licensing (federation, extended support, indemnity) is available — contact sales@agledger.ai.
+AGLedger Developer Edition is free to self-host for evaluation, development, and production use. Register at [agledger.ai](https://agledger.ai) to obtain a Developer Edition License Key. Enterprise Edition is available for customers who need the warranty, indemnification, and liability coverage in the Software License Agreement, or who elect to purchase Support under the Support Terms. See [agledger.ai/pricing](https://agledger.ai/pricing).
 
-This installer is proprietary software. See [LICENSE](LICENSE).
+The [LICENSE](LICENSE) in this repository is the **Installer License** — it governs your use of the deployment scripts, Compose files, Helm chart, and related packaging in this repository. The AGLedger server software itself (the `agledger/agledger` Docker image) is governed by the separate **Software License Agreement** at [agledger.ai/license](https://agledger.ai/license). Both apply when you run a full AGLedger deployment; where they conflict, the SWLA controls.
 
 ## Links
 

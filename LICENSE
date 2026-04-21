@@ -1,96 +1,138 @@
 AGLedger Installer Software License Agreement
 
-Copyright (c) 2026 AGLedger, Inc. All rights reserved.
+Copyright (c) 2026 AGLedger LLC. All rights reserved.
 
-NOTICE: This software and associated documentation files (the "Software") are
-the proprietary property of AGLedger, Inc. ("AGLedger"). By installing, copying,
-or otherwise using the Software, you ("Licensee") agree to be bound by the terms
-of this license agreement ("Agreement").
+PROPRIETARY SOFTWARE LICENSE
 
-1. GRANT OF LICENSE
+This software, together with its associated documentation files (the "Software"),
+is the proprietary property of AGLedger LLC ("Licensor"). The Software in this
+repository consists of the AGLedger installer — deployment scripts, Docker
+Compose files, Helm chart, cosign verification key, and related packaging used
+to install and operate a self-hosted AGLedger deployment.
 
-Subject to the terms of this Agreement, AGLedger grants Licensee a limited,
-non-exclusive, non-transferable, non-sublicensable license to install and use
-the Software solely for Licensee's internal business operations.
+This License governs your use of the installer. It is distinct from the AGLedger
+Software License Agreement ("SWLA", available at https://agledger.ai/license),
+which governs your use of the AGLedger server software itself (the container
+image published as `agledger/agledger` on Docker Hub). Your use of the server
+software is governed by the SWLA, not by this License. See Section 9 below for
+precedence rules when both apply.
+
+BY DOWNLOADING, INSTALLING, COPYING, OR OTHERWISE USING THE SOFTWARE (INCLUDING
+VIA `git clone`, `curl | bash`, `helm install`, OR ANY EQUIVALENT COMMAND), YOU
+AGREE TO THE TERMS OF THIS LICENSE. IF YOU DO NOT AGREE, DO NOT DOWNLOAD,
+INSTALL, OR USE THE SOFTWARE.
+
+1. GRANT OF USE
+
+Licensor grants you a limited, non-exclusive, non-transferable, revocable
+license to install and use the Software solely for the purpose of installing,
+configuring, and operating a self-hosted AGLedger deployment operated by you or
+your organization, or by a third party on your behalf with your authorization.
+The Software is not designed for, and is not licensed for use with, any
+AGLedger-hosted service. AGLedger operates the AGLedger software on a self-
+hosted model; there is no hosted AGLedger API.
 
 2. RESTRICTIONS
 
-Licensee shall NOT:
+You may not:
 
-  a. Modify, adapt, translate, or create derivative works based on the Software;
+(a) copy, modify, merge, publish, distribute, sublicense, sell, rent, lease,
+    or transfer copies of the Software, except as strictly required to use
+    the Software for its intended installation purpose;
+(b) offer the Software, or the functionality enabled by the Software, as a
+    hosted or managed service to third parties, whether as a standalone
+    offering or embedded within a larger service;
+(c) use the Software to build, train, or benchmark a product or service that
+    competes with AGLedger;
+(d) reverse engineer, decompile, or disassemble the Software, except to the
+    extent expressly permitted by applicable law that cannot be waived by
+    contract;
+(e) circumvent, disable, or tamper with any authentication, license, or usage-
+    enforcement mechanism of the Software or of any AGLedger deployment;
+(f) remove, alter, or obscure any copyright, trademark, patent, or other
+    proprietary notice in the Software;
+(g) use the Software in violation of U.S. Export Administration Regulations,
+    economic sanctions, or other applicable export and trade-control laws.
 
-  b. Redistribute, sublicense, lease, rent, sell, or otherwise transfer the
-     Software or any rights therein to any third party;
+3. OPEN SOURCE COMPONENTS
 
-  c. Reverse engineer, decompile, disassemble, or otherwise attempt to derive
-     the source code of the Software, except to the extent expressly permitted
-     by applicable law notwithstanding this restriction;
+The Software may include third-party open-source components, each subject to
+its own license terms. A list of such components and their licenses is included
+with or referenced from the Software. In the event of a conflict between this
+License and an open-source license, the open-source license governs solely with
+respect to that component.
 
-  d. Remove, alter, or obscure any proprietary notices, labels, or marks on the
-     Software;
+4. NO WARRANTY
 
-  e. Use the Software to provide services to third parties (including but not
-     limited to offering the Software as a managed service, hosting service, or
-     service bureau) without a separate written agreement with AGLedger;
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS, IMPLIED, OR STATUTORY, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND
+NONINFRINGEMENT. AGLEDGER LLC DOES NOT WARRANT THAT THE SOFTWARE WILL BE ERROR-
+FREE, SECURE, OR UNINTERRUPTED.
 
-  f. Use the Software in any manner that violates applicable laws or regulations.
+5. LIMITATION OF LIABILITY
 
-3. OWNERSHIP
+The limitations in this Section 5 are a material inducement to AGLedger LLC to
+make the Software publicly available at no charge, and they apply notwithstanding
+any failure of essential purpose of any limited remedy and regardless of the
+theory of liability (contract, tort, strict liability, statute, or otherwise).
 
-The Software is licensed, not sold. AGLedger retains all right, title, and
-interest in and to the Software, including all intellectual property rights.
-Nothing in this Agreement transfers any ownership rights to Licensee.
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL AGLEDGER
+LLC BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY,
+OR PUNITIVE DAMAGES, OR FOR LOSS OF PROFITS, REVENUE, DATA, USE, GOODWILL, OR
+BUSINESS OPPORTUNITY, ARISING FROM OR RELATED TO THE SOFTWARE, EVEN IF ADVISED
+OF THE POSSIBILITY OF SUCH DAMAGES. AGLEDGER LLC'S TOTAL AGGREGATE LIABILITY
+FOR ALL CLAIMS RELATED TO THE SOFTWARE SHALL NOT EXCEED ONE HUNDRED U.S.
+DOLLARS ($100.00). Any claim must be commenced within one (1) year after the
+cause of action accrues, to the maximum extent permitted by applicable law.
 
-4. CONFIDENTIALITY
+6. EXPORT COMPLIANCE
 
-Licensee agrees to treat the Software and any related documentation as
-confidential information of AGLedger and shall not disclose the Software or its
-contents to any third party without AGLedger's prior written consent.
+The Software may include cryptographic functionality (including Ed25519, AES-
+256-GCM, SHA-256, and X25519). AGLedger LLC classifies the Software under
+ECCN 5D002 in good faith. To the extent AGLedger LLC makes the source code of
+the Software publicly available through a public repository, that source code
+is subject to the treatment afforded under 15 CFR § 742.15(b) of the U.S.
+Export Administration Regulations. Binary and object-code distributions are
+subject to License Exception ENC under 15 CFR § 740.17, subject to the one-
+time notification and any required Encryption Registration to the U.S. Bureau
+of Industry and Security (BIS) and the NSA ENC Encryption Request Coordinator.
+This statement is not a warranty; you are responsible for independently
+confirming the correct classification and license authority for your use,
+destination, and end-user. You shall not export or re-export the Software to
+any destination, entity, or end-use prohibited by applicable export, sanctions,
+or trade-control laws.
 
-5. NO WARRANTY
+7. TRADEMARKS
 
-THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. AGLEDGER DOES NOT WARRANT THAT
-THE SOFTWARE WILL BE ERROR-FREE OR UNINTERRUPTED.
+AGLedger, Agentic Ledger, Settlement Signal, and Agentic Operations and
+Accountability Protocol (AOAP) are trademarks of AGLedger LLC. All other
+trademarks are the property of their respective owners.
 
-6. LIMITATION OF LIABILITY
+8. PATENTS
 
-IN NO EVENT SHALL AGLEDGER BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL,
-CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS, REVENUE, DATA, OR
-DATA USE, ARISING OUT OF OR IN CONNECTION WITH THIS AGREEMENT OR THE USE OF THE
-SOFTWARE, REGARDLESS OF THE THEORY OF LIABILITY, EVEN IF AGLEDGER HAS BEEN
-ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+The Software is covered by one or more U.S. patent applications pending before
+the U.S. Patent and Trademark Office in AGLedger LLC's patent portfolio.
 
-AGLEDGER'S TOTAL CUMULATIVE LIABILITY UNDER THIS AGREEMENT SHALL NOT EXCEED THE
-AMOUNTS PAID BY LICENSEE TO AGLEDGER FOR THE SOFTWARE DURING THE TWELVE (12)
-MONTHS PRECEDING THE CLAIM.
+9. RELATIONSHIP TO OTHER AGLEDGER AGREEMENTS
 
-7. TERMINATION
+If you are also a Licensee under an AGLedger Software License Agreement
+executed with an Order Form, that Software License Agreement governs your
+organization's use of the Licensed Software (including the Software distributed
+under this License) and supersedes this License to the extent of any conflict.
+Absent such an agreement, this License is the exclusive and entire license
+between you and AGLedger LLC for the Software.
 
-This Agreement is effective until terminated. AGLedger may terminate this
-Agreement immediately upon written notice if Licensee breaches any term of this
-Agreement. Upon termination:
+10. GOVERNING LAW
 
-  a. Licensee must cease all use of the Software;
+This License is governed by the laws of the State of Idaho, without regard to
+its conflict-of-laws provisions. Any dispute arising out of or related to this
+License shall first be subject to good-faith negotiation for thirty (30) days,
+and then, at AGLedger LLC's option, to binding arbitration under the rules of
+the American Arbitration Association in Ada County, Idaho, or to the state or
+federal courts located in Ada County, Idaho. You consent to the personal
+jurisdiction and venue of those forums.
 
-  b. Licensee must destroy all copies of the Software in its possession or
-     control;
+11. CONTACT
 
-  c. Sections 3, 4, 5, 6, and 8 shall survive termination.
-
-8. GENERAL
-
-  a. This Agreement constitutes the entire agreement between the parties
-     concerning the Software and supersedes all prior agreements.
-
-  b. This Agreement shall be governed by the laws of the State of Delaware,
-     United States, without regard to its conflict of laws provisions.
-
-  c. If any provision of this Agreement is held unenforceable, the remaining
-     provisions shall remain in full force and effect.
-
-  d. AGLedger's failure to enforce any right under this Agreement shall not
-     constitute a waiver of that right.
-
-For licensing inquiries, contact: licensing@agledger.ai
+For licensing inquiries, contact: legal@agledger.ai
