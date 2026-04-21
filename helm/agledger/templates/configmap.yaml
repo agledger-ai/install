@@ -25,9 +25,8 @@ data:
   AGLEDGER_EXTERNAL_URL: {{ $extUrl | quote }}
   {{- end }}
   TRUST_PROXY: {{ .Values.config.trustProxy | quote }}
-  REGISTRATION_ENABLED: {{ .Values.config.registrationEnabled | quote }}
   OTEL_PROVIDER: {{ .Values.config.otelProvider | quote }}
-  EMAIL_PROVIDER: {{ .Values.config.emailProvider | quote }}
+  AGLEDGER_EXAMPLE_CONTRACT_TYPE: {{ .Values.config.exampleContractType | quote }}
   RATE_LIMIT_ENABLED: {{ .Values.config.rateLimitEnabled | quote }}
   CORS_ENABLED: {{ .Values.config.corsEnabled | quote }}
   HELMET_ENABLED: {{ .Values.config.helmetEnabled | quote }}

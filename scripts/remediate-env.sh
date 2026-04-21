@@ -4,13 +4,13 @@ set -euo pipefail
 # =============================================================================
 # AGLedger — .env Remediation Script
 # =============================================================================
-# Applies the F-408 (REGISTRATION_ENABLED=true default) and F-410
-# (missing COMPOSE_FILE) fixes to an existing .env. Safe to run multiple times.
+# Applies the F-410 (missing COMPOSE_FILE) fix to an existing .env. Safe to run
+# multiple times.
 #
-# Context: v0.19.16 shipped an install.sh that left REGISTRATION_ENABLED=true
-# and omitted COMPOSE_FILE. v0.19.17 fixed the fresh-install path but did not
-# rewrite existing .env files. This script closes that gap for customers who
-# installed at v0.19.16 and have since upgraded. (F-415)
+# Context: v0.19.16 shipped an install.sh that omitted COMPOSE_FILE. v0.19.17
+# fixed the fresh-install path but did not rewrite existing .env files. This
+# script closes that gap for customers who installed at v0.19.16 and have since
+# upgraded. (F-415)
 #
 # Usage:
 #   ./deploy/scripts/remediate-env.sh
@@ -62,12 +62,6 @@ if ! grep -qE '^COMPOSE_FILE=' "$ENV_FILE" 2>/dev/null; then
     OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.prod.yml"
   fi
   PROPOSED+=("F-410|add|COMPOSE_FILE=${OVERLAY_LIST}|${OVERLAY_LIST}")
-fi
-
-# F-408: REGISTRATION_ENABLED=true without opt-in marker
-REG_STATE=$(get_env_value REGISTRATION_ENABLED "$ENV_FILE")
-if [[ "$REG_STATE" == "true" ]] && ! grep -qE '^# AGLEDGER_REGISTRATION_INTENTIONAL' "$ENV_FILE" 2>/dev/null; then
-  PROPOSED+=("F-408|set|REGISTRATION_ENABLED=false|false")
 fi
 
 if [[ ${#PROPOSED[@]} -eq 0 ]]; then
@@ -126,10 +120,6 @@ for p in "${PROPOSED[@]}"; do
     F-410)
       upsert_env_var COMPOSE_FILE "${value}" "$ENV_FILE"
       info "[F-410] Added ${summary}"
-      ;;
-    F-408)
-      upsert_env_var REGISTRATION_ENABLED "false" "$ENV_FILE"
-      info "[F-408] Set REGISTRATION_ENABLED=false"
       ;;
   esac
 done

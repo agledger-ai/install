@@ -258,7 +258,6 @@ PORT=3000
 NODE_ENV=production
 LOG_LEVEL=info
 ALLOW_DB_WITHOUT_SSL=true
-REGISTRATION_ENABLED=false
 ENVEOF
   fi
 
@@ -285,11 +284,6 @@ ENVEOF
 
   # Enable non-SSL for bundled Postgres (no TLS configured by default)
   sedi "s|.*ALLOW_DB_WITHOUT_SSL=.*|ALLOW_DB_WITHOUT_SSL=true|" "$ENV_FILE"
-
-  # Keep REGISTRATION_ENABLED=false by default (matches .env.example posture).
-  # Admin uses the printed platform API key to create the first enterprise via
-  # POST /v1/admin/enterprises. Customers who explicitly want open self-service
-  # registration can flip this to true in .env after install. (F-408)
 
   chmod 600 "$ENV_FILE"
   info "Created ${ENV_FILE}"
@@ -344,17 +338,6 @@ if [[ "$EXISTING_VERSION" != "$AGLEDGER_VERSION" ]]; then
     RECONCILE_CHANGES+=("added AGLEDGER_VERSION=${AGLEDGER_VERSION}")
   else
     RECONCILE_CHANGES+=("updated AGLEDGER_VERSION: ${EXISTING_VERSION} → ${AGLEDGER_VERSION}")
-  fi
-fi
-
-# F-408 warning: existing .env with REGISTRATION_ENABLED=true. Don't auto-flip
-# — customer may have deliberately enabled open signup. Silence via marker.
-if [[ "$FRESH_ENV" != "true" ]]; then
-  EXISTING_REG=$(get_env_value REGISTRATION_ENABLED "$ENV_FILE")
-  if [[ "$EXISTING_REG" == "true" ]] && ! grep -qE '^# AGLEDGER_REGISTRATION_INTENTIONAL' "$ENV_FILE" 2>/dev/null; then
-    warn "REGISTRATION_ENABLED=true in existing .env — exposes open signup at POST /v1/auth/enterprise."
-    warn "If intentional, add '# AGLEDGER_REGISTRATION_INTENTIONAL=1' to .env to silence this warning."
-    warn "To disable: set REGISTRATION_ENABLED=false, or run ./scripts/remediate-env.sh. (F-408)"
   fi
 fi
 

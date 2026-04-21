@@ -141,14 +141,6 @@ detect_db_mode
 
 step "Checking configuration state"
 
-REG_STATE=$(get_env_value REGISTRATION_ENABLED "$ENV_FILE")
-if [[ "$REG_STATE" == "true" ]] && ! grep -qE '^# AGLEDGER_REGISTRATION_INTENTIONAL' "$ENV_FILE" 2>/dev/null; then
-  warn "REGISTRATION_ENABLED=true in .env — exposes open signup at POST /v1/auth/enterprise."
-  warn "v0.19.16 installed this by accident; v0.19.17+ ships with it disabled. (F-408)"
-  warn "If intentional, add '# AGLEDGER_REGISTRATION_INTENTIONAL=1' to .env to silence."
-  warn "To remediate: run ./scripts/remediate-env.sh after the upgrade."
-fi
-
 if ! grep -qE '^COMPOSE_FILE=' "$ENV_FILE" 2>/dev/null; then
   warn "COMPOSE_FILE not persisted in .env — manual 'docker compose' commands will drop overlays."
   warn "Auto-adding based on current deployment (F-410 fix)."
