@@ -200,8 +200,8 @@ else
     echo "-- Phase 2: Mandate Lifecycle --"
     echo ""
 
-    # Step 1: Create enterprise
-    api POST "/v1/auth/enterprise" '{"name":"Smoke Test Enterprise"}'
+    # Step 1: Create enterprise via admin API (no self-service registration)
+    api POST "/v1/admin/enterprises" '{"name":"Smoke Test Enterprise"}'
     if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
         ENTERPRISE_ID=$(echo "$API_BODY" | jq -r '.id // .enterpriseId // empty' 2>/dev/null || true)
         if [[ -n "$ENTERPRISE_ID" ]]; then
@@ -220,18 +220,18 @@ else
 
     if [[ -n "${ENTERPRISE_ID:-}" ]]; then
 
-        # Step 2: Register an agent (performer for the mandate)
-        api POST "/v1/auth/agent" '{"name":"Smoke Test Agent"}'
+        # Step 2: Create an agent via admin API (performer for the mandate)
+        api POST "/v1/admin/agents" '{"displayName":"Smoke Test Agent"}'
         if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
             AGENT_ID=$(echo "$API_BODY" | jq -r '.id // empty' 2>/dev/null || true)
             if [[ -n "$AGENT_ID" ]]; then
-                echo "PASS: Registered agent ($AGENT_ID)"
+                echo "PASS: Created agent ($AGENT_ID)"
             else
-                echo "FAIL: Register agent — no ID in response"
+                echo "FAIL: Create agent — no ID in response"
                 FAILURES=$((FAILURES+1))
             fi
         else
-            echo "FAIL: Register agent — HTTP $HTTP_CODE"
+            echo "FAIL: Create agent — HTTP $HTTP_CODE"
             echo "      Response: $(echo "$API_BODY" | head -c 200)"
             FAILURES=$((FAILURES+1))
             AGENT_ID=""

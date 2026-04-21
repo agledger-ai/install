@@ -183,13 +183,15 @@ config:
   mode: standalone
   logLevel: info
   trustProxy: false
-  registrationEnabled: false
   nodeEnv: production
   externalUrl: ""  # Public URL where this instance is reachable (e.g., https://agledger.example.com).
-                    # Cascades to A2A agent card URL, email links, federation endpoints.
+                    # Cascades to A2A agent card URL, federation endpoints.
                     # Auto-derived from ingress.hosts[0] if not set explicitly.
   otelProvider: "generic"
-  emailProvider: "console"
+  # Primary contract type for agent discovery docs (/llms.txt, /llms-full.txt).
+  # Pick your primary use case so agents see it first; empty string uses the
+  # first alphabetical active contract as a deterministic fallback.
+  exampleContractType: ""
   rateLimitEnabled: true
   corsEnabled: true
   helmetEnabled: true
