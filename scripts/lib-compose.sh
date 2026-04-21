@@ -40,6 +40,21 @@ upsert_env_var() {
   fi
 }
 
+# Read KEY=VALUE from an env file, stripping inline comments (whitespace + '#')
+# and surrounding whitespace — matching docker-compose's native parser. Naive
+# `cut -d= -f2-` leaves inline comments in place and defeats equality checks
+# against values like "true" (.env.example ships trailing comments). (F-415)
+# Returns empty string if the key is absent.
+# Usage: VALUE=$(get_env_value KEY FILE)
+get_env_value() {
+  local key="$1" file="$2"
+  [[ -f "$file" ]] || return 0
+  grep -E "^${key}=" "$file" 2>/dev/null \
+    | head -1 \
+    | sed -E "s|^${key}=||; s|[[:space:]]+#.*$||" \
+    | tr -d '[:space:]'
+}
+
 # --- Colors & Logging ---
 
 RED='\033[0;31m'

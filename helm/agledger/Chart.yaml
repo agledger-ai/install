@@ -2,8 +2,8 @@ apiVersion: v2
 name: agledger-chart
 description: AGLedger — Accountability and audit infrastructure for agentic systems
 type: application
-version: 0.19.18
-appVersion: "0.19.18"
+version: 0.19.19
+appVersion: "0.19.19"
 kubeVersion: ">=1.27.0-0"
 maintainers:
   - name: AGLedger
