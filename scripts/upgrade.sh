@@ -141,7 +141,7 @@ detect_db_mode
 
 step "Checking configuration state"
 
-REG_STATE=$(grep -E '^REGISTRATION_ENABLED=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]' || true)
+REG_STATE=$(get_env_value REGISTRATION_ENABLED "$ENV_FILE")
 if [[ "$REG_STATE" == "true" ]] && ! grep -qE '^# AGLEDGER_REGISTRATION_INTENTIONAL' "$ENV_FILE" 2>/dev/null; then
   warn "REGISTRATION_ENABLED=true in .env — exposes open signup at POST /v1/auth/enterprise."
   warn "v0.19.16 installed this by accident; v0.19.17+ ships with it disabled. (F-408)"

@@ -350,7 +350,7 @@ fi
 # F-408 warning: existing .env with REGISTRATION_ENABLED=true. Don't auto-flip
 # — customer may have deliberately enabled open signup. Silence via marker.
 if [[ "$FRESH_ENV" != "true" ]]; then
-  EXISTING_REG=$(grep -E '^REGISTRATION_ENABLED=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]' || true)
+  EXISTING_REG=$(get_env_value REGISTRATION_ENABLED "$ENV_FILE")
   if [[ "$EXISTING_REG" == "true" ]] && ! grep -qE '^# AGLEDGER_REGISTRATION_INTENTIONAL' "$ENV_FILE" 2>/dev/null; then
     warn "REGISTRATION_ENABLED=true in existing .env — exposes open signup at POST /v1/auth/enterprise."
     warn "If intentional, add '# AGLEDGER_REGISTRATION_INTENTIONAL=1' to .env to silence this warning."

@@ -65,7 +65,7 @@ if ! grep -qE '^COMPOSE_FILE=' "$ENV_FILE" 2>/dev/null; then
 fi
 
 # F-408: REGISTRATION_ENABLED=true without opt-in marker
-REG_STATE=$(grep -E '^REGISTRATION_ENABLED=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]' || true)
+REG_STATE=$(get_env_value REGISTRATION_ENABLED "$ENV_FILE")
 if [[ "$REG_STATE" == "true" ]] && ! grep -qE '^# AGLEDGER_REGISTRATION_INTENTIONAL' "$ENV_FILE" 2>/dev/null; then
   PROPOSED+=("F-408|set|REGISTRATION_ENABLED=false|false")
 fi
