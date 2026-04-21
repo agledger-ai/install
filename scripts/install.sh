@@ -256,7 +256,7 @@ PORT=3000
 NODE_ENV=production
 LOG_LEVEL=info
 ALLOW_DB_WITHOUT_SSL=true
-REGISTRATION_ENABLED=false
+REGISTRATION_ENABLED=true
 ENVEOF
   fi
 
@@ -284,26 +284,15 @@ ENVEOF
   # Enable non-SSL for bundled Postgres (no TLS configured by default)
   sedi "s|.*ALLOW_DB_WITHOUT_SSL=.*|ALLOW_DB_WITHOUT_SSL=true|" "$ENV_FILE"
 
-  # Keep REGISTRATION_ENABLED=false by default (matches .env.example posture).
-  # Admin uses the printed platform API key to create the first enterprise via
-  # POST /v1/admin/enterprises. Customers who explicitly want open self-service
-  # registration can flip this to true in .env after install. (F-408)
+  # Enable registration so admin can create first enterprise account
+  sedi "s|REGISTRATION_ENABLED=false|REGISTRATION_ENABLED=true|" "$ENV_FILE"
 
-  # Persist COMPOSE_FILE so `docker compose <cmd>` run manually from compose/
-  # picks up all the overlays this installer selected (prod + optional bundled
-  # postgres). Without this, manual commands drop to bare docker-compose.yml
-  # and e.g. the postgres container stops reacting to `restart`. (F-410)
-  OVERLAY_LIST="docker-compose.yml"
-  if [[ "${USES_BUNDLED_PG}" == "true" ]] && [[ -f "${COMPOSE_DIR}/docker-compose.postgres.yml" ]]; then
-    OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.postgres.yml"
+  # Set version
+  if grep -q 'AGLEDGER_VERSION=' "$ENV_FILE"; then
+    sedi "s|AGLEDGER_VERSION=.*|AGLEDGER_VERSION=${AGLEDGER_VERSION}|" "$ENV_FILE"
+  else
+    echo "AGLEDGER_VERSION=${AGLEDGER_VERSION}" >> "$ENV_FILE"
   fi
-  if [[ -f "${COMPOSE_DIR}/docker-compose.prod.yml" ]]; then
-    OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.prod.yml"
-  fi
-  upsert_env_var COMPOSE_FILE "${OVERLAY_LIST}" "$ENV_FILE"
-  info "Persisted COMPOSE_FILE=${OVERLAY_LIST}"
-
-  upsert_env_var AGLEDGER_VERSION "${AGLEDGER_VERSION}" "$ENV_FILE"
 
   chmod 600 "$ENV_FILE"
   info "Updated ${ENV_FILE}"
@@ -429,42 +418,9 @@ step "Running database migrations"
 "${COMPOSE[@]}" run --rm agledger-migrate
 info "Migrations complete"
 
-# --- Create Platform API Key (idempotent on reinstall) ---
+# --- Create Platform API Key ---
 
-# If a platform key is already present in .env from a previous install, reuse
-# it instead of minting a new one. Creating a second platform owner ID on
-# every reinstall produces duplicate keys and banner confusion. (F-392/F-405)
-EXISTING_PLATFORM_KEY=""
-if grep -qE '^PLATFORM_API_KEY=ach_pla_' "$ENV_FILE" 2>/dev/null; then
-  # Use the LAST entry — defensive against older installs that appended
-  # multiple lines. This is also the line we'll de-dupe below.
-  EXISTING_PLATFORM_KEY=$(grep -E '^PLATFORM_API_KEY=ach_pla_' "$ENV_FILE" | tail -1 | cut -d= -f2-)
-fi
-
-if [[ -n "$EXISTING_PLATFORM_KEY" ]]; then
-  step "Reusing existing platform API key from .env"
-  PLATFORM_KEY="$EXISTING_PLATFORM_KEY"
-  # De-dupe: rewrite .env so only one PLATFORM_API_KEY= line exists. grep -v
-  # exits 1 when nothing matches the inverse pattern (i.e. the file was all
-  # PLATFORM_API_KEY lines) — that's not an error here, but `set -e` would
-  # treat any other failure (disk full, permissions) as success without the
-  # explicit size check below.
-  TMP_ENV=$(mktemp)
-  grep -vE '^PLATFORM_API_KEY=|^# --- Platform API Key' "$ENV_FILE" > "$TMP_ENV" || true
-  if [[ ! -s "$TMP_ENV" ]] && [[ -s "$ENV_FILE" ]]; then
-    rm -f "$TMP_ENV"
-    fatal "Refusing to truncate .env (filter produced empty output despite non-empty source)"
-  fi
-  {
-    echo ""
-    echo "# --- Platform API Key (from initial install) ---"
-    echo "PLATFORM_API_KEY=${PLATFORM_KEY}"
-  } >> "$TMP_ENV"
-  chmod 600 "$TMP_ENV"
-  mv "$TMP_ENV" "$ENV_FILE"
-  info "Platform API key retained (install is idempotent)"
-else
-  step "Creating platform API key"
+step "Creating platform API key"
 
 # docker compose ps --format json reports Networks as a comma-separated STRING,
 # not an object — so `keys[0]` fails. Detect via the running postgres container's
@@ -507,23 +463,22 @@ rm -f "$INIT_ENV"
 # Extract the platform key from output (look for ach_pla_ prefix)
 PLATFORM_KEY=$(echo "$INIT_OUTPUT" | grep -oP 'ach_pla_[A-Za-z0-9_-]+' | head -1 || true)
 
-  if [[ -n "$PLATFORM_KEY" ]]; then
-    info "Platform API key created"
-    # Save to .env so upgrade/smoke scripts can use it (file is already chmod 600)
-    {
-      echo ""
-      echo "# --- Platform API Key (generated at install) ---"
-      echo "PLATFORM_API_KEY=${PLATFORM_KEY}"
-    } >> "$ENV_FILE"
-    info "Platform API key saved to .env"
-  else
-    warn "Could not extract platform API key from init output."
-    warn "You can regenerate it later."
+if [[ -n "$PLATFORM_KEY" ]]; then
+  info "Platform API key created"
+  # Save to .env so upgrade/smoke scripts can use it (file is already chmod 600)
+  {
     echo ""
-    echo "--- init output ---"
-    echo "$INIT_OUTPUT" | grep -v -iE '(password|secret|key_secret)' || true
-    echo "--- end output ---"
-  fi
+    echo "# --- Platform API Key (generated at install) ---"
+    echo "PLATFORM_API_KEY=${PLATFORM_KEY}"
+  } >> "$ENV_FILE"
+  info "Platform API key saved to .env"
+else
+  warn "Could not extract platform API key from init output."
+  warn "You can regenerate it later."
+  echo ""
+  echo "--- init output ---"
+  echo "$INIT_OUTPUT" | grep -v -iE '(password|secret|key_secret)' || true
+  echo "--- end output ---"
 fi
 
 # --- Start All Services ---

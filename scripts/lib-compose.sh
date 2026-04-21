@@ -29,17 +29,6 @@ sedi() {
   fi
 }
 
-# Set KEY=VALUE in an env file: replace the line if KEY exists, append if not.
-# Usage: upsert_env_var KEY VALUE FILE
-upsert_env_var() {
-  local key="$1" value="$2" file="$3"
-  if grep -q "^${key}=" "$file"; then
-    sedi "s|^${key}=.*|${key}=${value}|" "$file"
-  else
-    echo "${key}=${value}" >> "$file"
-  fi
-}
-
 # --- Colors & Logging ---
 
 RED='\033[0;31m'
@@ -112,14 +101,14 @@ wait_for_http() {
 # Prints the semver string (e.g., "0.19.13") to stdout on success.
 # Returns non-zero if the network call fails AND no usable cache exists.
 # Cache: ${HOME}/.cache/agledger/latest-version, 1 hour TTL, falls back to
-# stale cache if the API is unreachable — and warns on stderr with the age.
+# stale cache if the API is unreachable.
 resolve_latest_version() {
   local cache_dir="${HOME}/.cache/agledger"
   local cache_file="${cache_dir}/latest-version"
   local cache_max_age=3600
-  local cache_age=""
 
   if [[ -f "$cache_file" ]]; then
+    local cache_age
     if [[ "$(uname -s)" == "Darwin" ]]; then
       cache_age=$(( $(date +%s) - $(stat -f %m "$cache_file") ))
     else
@@ -149,11 +138,6 @@ resolve_latest_version() {
   fi
 
   if [[ -f "$cache_file" ]]; then
-    local age_min=$(( ${cache_age:-0} / 60 ))
-    # Warn to stderr (keeping stdout clean for the version string). Agents
-    # piping this call into a variable still get the version back — they just
-    # also see the warning, which is the point. (F-397)
-    echo "WARN: Docker Hub unreachable; using cached latest-version (age: ~${age_min} min). Pin with --version X.Y.Z to be explicit, or check network and retry." >&2
     cat "$cache_file"
     return 0
   fi
