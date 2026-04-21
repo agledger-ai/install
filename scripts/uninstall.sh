@@ -55,13 +55,6 @@ if [[ "$NON_INTERACTIVE" != "true" ]]; then
   else
     echo "${ENV_FILE} will be kept so secrets survive a reinstall."
   fi
-  # Fail loud when stdin isn't a TTY — otherwise `read` returns empty, confirm
-  # is empty, and we silently abort with exit 0 (looks like success in
-  # automation logs). (F-399)
-  if [[ ! -t 0 ]]; then
-    echo "ERROR: uninstall prompt requires an interactive TTY. Re-run with --non-interactive to skip the prompt." >&2
-    exit 2
-  fi
   read -rp "Continue? [y/N] " confirm
   if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
     echo "Aborted."
