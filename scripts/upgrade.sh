@@ -207,11 +207,7 @@ info "Migrations complete"
 
 step "Updating configuration"
 
-if grep -q 'AGLEDGER_VERSION=' "$ENV_FILE"; then
-  sedi "s|AGLEDGER_VERSION=.*|AGLEDGER_VERSION=${TARGET_VERSION}|" "$ENV_FILE"
-else
-  echo "AGLEDGER_VERSION=${TARGET_VERSION}" >> "$ENV_FILE"
-fi
+upsert_env_var AGLEDGER_VERSION "${TARGET_VERSION}" "$ENV_FILE"
 info "Updated AGLEDGER_VERSION=${TARGET_VERSION} in .env"
 
 # --- Restart All Services ---
