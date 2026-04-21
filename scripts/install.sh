@@ -237,11 +237,13 @@ fi
 step "Configuring environment"
 
 ENV_FILE="${COMPOSE_DIR}/.env"
+FRESH_ENV=false
 
 if [[ -f "$ENV_FILE" ]]; then
   warn ".env already exists at ${ENV_FILE} — skipping secret generation."
   warn "Delete it and re-run if you want a fresh configuration."
 else
+  FRESH_ENV=true
   if [[ -f "${COMPOSE_DIR}/.env.example" ]]; then
     info "Copying .env.example to .env"
     cp "${COMPOSE_DIR}/.env.example" "$ENV_FILE"
@@ -289,24 +291,8 @@ ENVEOF
   # POST /v1/admin/enterprises. Customers who explicitly want open self-service
   # registration can flip this to true in .env after install. (F-408)
 
-  # Persist COMPOSE_FILE so `docker compose <cmd>` run manually from compose/
-  # picks up all the overlays this installer selected (prod + optional bundled
-  # postgres). Without this, manual commands drop to bare docker-compose.yml
-  # and e.g. the postgres container stops reacting to `restart`. (F-410)
-  OVERLAY_LIST="docker-compose.yml"
-  if [[ "${USES_BUNDLED_PG:-true}" == "true" ]] && [[ -f "${COMPOSE_DIR}/docker-compose.postgres.yml" ]]; then
-    OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.postgres.yml"
-  fi
-  if [[ -f "${COMPOSE_DIR}/docker-compose.prod.yml" ]]; then
-    OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.prod.yml"
-  fi
-  upsert_env_var COMPOSE_FILE "${OVERLAY_LIST}" "$ENV_FILE"
-  info "Persisted COMPOSE_FILE=${OVERLAY_LIST}"
-
-  upsert_env_var AGLEDGER_VERSION "${AGLEDGER_VERSION}" "$ENV_FILE"
-
   chmod 600 "$ENV_FILE"
-  info "Updated ${ENV_FILE}"
+  info "Created ${ENV_FILE}"
 fi
 
 # --- Detect Database Mode ---
@@ -318,6 +304,65 @@ source "$ENV_FILE"
 detect_db_mode
 if [[ "${EXTERNAL_DB_FLAG}" == "true" ]]; then
   USES_BUNDLED_PG=false
+fi
+
+# --- Idempotent Environment Reconciliation ---
+# Runs on BOTH fresh and existing .env so F-408/F-410/version-tracking fixes
+# reach customers who installed at v0.19.16 and re-run install.sh at v0.19.17+.
+# Never auto-flips security-sensitive values — only adds missing keys and
+# updates version-tracking keys. (F-415)
+
+RECONCILE_CHANGES=()
+
+# F-410: persist COMPOSE_FILE so manual `docker compose` commands from compose/
+# pick up all overlays (prod + optional bundled postgres). Without this, manual
+# commands drop to bare docker-compose.yml and the postgres container stops
+# reacting to `restart`.
+OVERLAY_LIST="docker-compose.yml"
+if [[ "${USES_BUNDLED_PG}" == "true" ]] && [[ -f "${COMPOSE_DIR}/docker-compose.postgres.yml" ]]; then
+  OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.postgres.yml"
+fi
+if [[ -f "${COMPOSE_DIR}/docker-compose.prod.yml" ]]; then
+  OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.prod.yml"
+fi
+
+EXISTING_COMPOSE_FILE=$(grep -E '^COMPOSE_FILE=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+if [[ "$EXISTING_COMPOSE_FILE" != "$OVERLAY_LIST" ]]; then
+  upsert_env_var COMPOSE_FILE "${OVERLAY_LIST}" "$ENV_FILE"
+  if [[ -z "$EXISTING_COMPOSE_FILE" ]]; then
+    RECONCILE_CHANGES+=("added COMPOSE_FILE=${OVERLAY_LIST}")
+  else
+    RECONCILE_CHANGES+=("updated COMPOSE_FILE: ${EXISTING_COMPOSE_FILE} → ${OVERLAY_LIST}")
+  fi
+fi
+
+# Track the installed version in .env so upgrade.sh can read it later.
+EXISTING_VERSION=$(grep -E '^AGLEDGER_VERSION=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]' || true)
+if [[ "$EXISTING_VERSION" != "$AGLEDGER_VERSION" ]]; then
+  upsert_env_var AGLEDGER_VERSION "${AGLEDGER_VERSION}" "$ENV_FILE"
+  if [[ -z "$EXISTING_VERSION" ]]; then
+    RECONCILE_CHANGES+=("added AGLEDGER_VERSION=${AGLEDGER_VERSION}")
+  else
+    RECONCILE_CHANGES+=("updated AGLEDGER_VERSION: ${EXISTING_VERSION} → ${AGLEDGER_VERSION}")
+  fi
+fi
+
+# F-408 warning: existing .env with REGISTRATION_ENABLED=true. Don't auto-flip
+# — customer may have deliberately enabled open signup. Silence via marker.
+if [[ "$FRESH_ENV" != "true" ]]; then
+  EXISTING_REG=$(grep -E '^REGISTRATION_ENABLED=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]' || true)
+  if [[ "$EXISTING_REG" == "true" ]] && ! grep -qE '^# AGLEDGER_REGISTRATION_INTENTIONAL' "$ENV_FILE" 2>/dev/null; then
+    warn "REGISTRATION_ENABLED=true in existing .env — exposes open signup at POST /v1/auth/enterprise."
+    warn "If intentional, add '# AGLEDGER_REGISTRATION_INTENTIONAL=1' to .env to silence this warning."
+    warn "To disable: set REGISTRATION_ENABLED=false, or run ./scripts/remediate-env.sh. (F-408)"
+  fi
+fi
+
+if [[ "$FRESH_ENV" != "true" ]] && [[ ${#RECONCILE_CHANGES[@]} -gt 0 ]]; then
+  info "Reconciled existing .env (${#RECONCILE_CHANGES[@]} change(s)):"
+  for change in "${RECONCILE_CHANGES[@]}"; do
+    info "  - ${change}"
+  done
 fi
 
 if [[ "${USES_BUNDLED_PG}" == "true" ]]; then
