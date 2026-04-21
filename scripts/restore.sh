@@ -50,10 +50,17 @@ if [[ "${NON_INTERACTIVE}" != "true" ]]; then
     echo "  Database: Bundled PostgreSQL"
   fi
   echo ""
-  read -rp "  Continue? (y/N) " confirm
-  if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
-    log "Restore cancelled."
-    exit 0
+  # Treat non-TTY stdin as implicit --non-interactive (matches upgrade.sh:143-151).
+  # DR runbooks pipe into restore.sh expecting it to run; silently aborting with
+  # exit 0 masks the no-op and subsequent smoke tests hit an empty database. (F-414)
+  if [[ ! -t 0 ]]; then
+    log "WARN: non-TTY stdin detected — proceeding as if --non-interactive was passed."
+  else
+    read -rp "  Continue? (y/N) " confirm
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
+      log "Restore cancelled."
+      exit 0
+    fi
   fi
 fi
 
