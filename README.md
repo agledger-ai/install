@@ -108,8 +108,8 @@ The Docker image and Helm chart are signed with [cosign](https://github.com/sigs
 # Image signature — proves the image wasn't swapped between push and pull
 cosign verify --key cosign.pub agledger/agledger:<version>
 
-# Helm chart signature
-cosign verify --key cosign.pub oci://registry-1.docker.io/agledger/agledger-chart:<version>
+# Helm chart signature — cosign takes a bare OCI reference (no oci:// prefix)
+cosign verify --key cosign.pub registry-1.docker.io/agledger/agledger-chart:<version>
 
 # SLSA L2 build provenance — cryptographic proof of the source commit and CodeBuild
 # run that produced the image. The output includes the git commit, build ID, and
