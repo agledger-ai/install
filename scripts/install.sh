@@ -463,10 +463,10 @@ info "Migrations complete"
 # it instead of minting a new one. Creating a second platform owner ID on
 # every reinstall produces duplicate keys and banner confusion. (F-392/F-405)
 EXISTING_PLATFORM_KEY=""
-if grep -qE '^PLATFORM_API_KEY=ach_pla_' "$ENV_FILE" 2>/dev/null; then
+if grep -qE '^PLATFORM_API_KEY=agl_plt_' "$ENV_FILE" 2>/dev/null; then
   # Use the LAST entry — defensive against older installs that appended
   # multiple lines. We de-dupe below.
-  EXISTING_PLATFORM_KEY=$(grep -E '^PLATFORM_API_KEY=ach_pla_' "$ENV_FILE" | tail -1 | cut -d= -f2-)
+  EXISTING_PLATFORM_KEY=$(grep -E '^PLATFORM_API_KEY=agl_plt_' "$ENV_FILE" | tail -1 | cut -d= -f2-)
 fi
 
 if [[ -n "$EXISTING_PLATFORM_KEY" ]]; then
@@ -531,8 +531,8 @@ else
     dist/scripts/init.js --non-interactive 2>&1) || true
   rm -f "$INIT_ENV"
 
-  # Extract the platform key from output (look for ach_pla_ prefix)
-  PLATFORM_KEY=$(echo "$INIT_OUTPUT" | grep -oP 'ach_pla_[A-Za-z0-9_-]+' | head -1 || true)
+  # Extract the platform key from output (look for agl_plt_ prefix)
+  PLATFORM_KEY=$(echo "$INIT_OUTPUT" | grep -oP 'agl_plt_[A-Za-z0-9_-]+' | head -1 || true)
 
   if [[ -n "$PLATFORM_KEY" ]]; then
     info "Platform API key created"
