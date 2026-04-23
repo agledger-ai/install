@@ -108,6 +108,13 @@ worker:
     targetCPUUtilizationPercentage: 80
 
 # ---
+# Pre-install/pre-upgrade migration Job
+# ---
+migrate:
+  # Defaults to api.resources. Override here if migrations need different limits.
+  resources: {}
+
+# ---
 # Database (PostgreSQL)
 # ---
 database:

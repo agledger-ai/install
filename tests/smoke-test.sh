@@ -18,7 +18,7 @@ set -euo pipefail
 #   ./tests/smoke-test.sh http://localhost:3001 --api-key KEY  # Full lifecycle
 #   ./tests/smoke-test.sh URL --save-state /tmp/state.json # Save IDs for later verify
 #   ./tests/smoke-test.sh URL --verify /tmp/state.json     # Verify saved data exists
-#   AGLEDGER_API_KEY=ach_pla_... ./tests/smoke-test.sh     # Key via env var
+#   AGLEDGER_API_KEY=agl_plt_... ./tests/smoke-test.sh     # Key via env var
 #
 # The script also auto-reads PLATFORM_API_KEY from docker-compose/.env if
 # present and no key is provided via flag or env var.
