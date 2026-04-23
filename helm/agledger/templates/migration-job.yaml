@@ -52,6 +52,8 @@ spec:
           {{- end }}
           securityContext:
             {{- toYaml .Values.api.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml (.Values.migrate.resources | default .Values.api.resources) | nindent 12 }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp

@@ -8,6 +8,7 @@ metadata:
     app.kubernetes.io/component: api
 spec:
   minAvailable: {{ .Values.pdb.minAvailable }}
+  unhealthyPodEvictionPolicy: {{ .Values.pdb.unhealthyPodEvictionPolicy | default "AlwaysAllow" }}
   selector:
     matchLabels:
       {{- include "agledger.selectorLabels" . | nindent 6 }}
