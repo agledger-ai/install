@@ -590,7 +590,8 @@ echo -e "  ${BOLD}Version:${NC}       ${AGLEDGER_VERSION}"
 echo -e "  ${BOLD}API URL:${NC}       ${API_URL}"
 echo -e "  ${BOLD}Health:${NC}        ${API_URL}/health"
 echo -e "  ${BOLD}Conformance:${NC}   ${API_URL}/conformance"
-echo -e "  ${BOLD}API Docs:${NC}      ${API_URL}/docs"
+echo -e "  ${BOLD}OpenAPI spec:${NC}  ${API_URL}/openapi.json"
+echo -e "  ${BOLD}Agent guide:${NC}   ${API_URL}/llms.txt"
 if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   echo -e "  ${BOLD}Database:${NC}      External ($(echo "${DATABASE_URL}" | sed -E 's|://[^@]*@|://***@|' | cut -d'?' -f1))"
 else
@@ -618,7 +619,7 @@ echo ""
 echo -e "  ${BOLD}Next steps:${NC}"
 echo -e "    Learn what AGLedger does:   https://agledger.ai/how-it-works"
 echo -e "    Self-hosted install guide:  https://agledger.ai/docs/guides/self-hosted/install"
-echo -e "    API reference (Swagger):    ${API_URL}/docs"
+echo -e "    API reference (hosted):     https://agledger.ai/api"
 echo -e "    Container status:           docker compose ps"
 
 # Telemetry notice for Developer Edition installs

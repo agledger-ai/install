@@ -19,12 +19,7 @@ services:
     ports:
       - '127.0.0.1:5432:5432'
     volumes:
-      # postgres:18+ stores data in a version-specific subdirectory under
-      # /var/lib/postgresql (e.g. /var/lib/postgresql/18/docker). Mounting
-      # the parent directory is the image's supported configuration; the
-      # pre-18 convention of mounting /var/lib/postgresql/data causes the
-      # entrypoint to refuse to initialize on a fresh volume.
-      - pgdata:/var/lib/postgresql
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-agledger}']
       interval: 5s
