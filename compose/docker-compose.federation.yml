@@ -54,7 +54,7 @@ services:
     ports:
       - '127.0.0.1:5433:5432'
     volumes:
-      - hub-pgdata:/var/lib/postgresql
+      - hub-pgdata:/var/lib/postgresql/data
     <<: *pg-healthcheck
     restart: unless-stopped
 
@@ -114,7 +114,7 @@ services:
     ports:
       - '127.0.0.1:5434:5432'
     volumes:
-      - gw1-pgdata:/var/lib/postgresql
+      - gw1-pgdata:/var/lib/postgresql/data
     <<: *pg-healthcheck
     restart: unless-stopped
 
@@ -180,7 +180,7 @@ services:
     ports:
       - '127.0.0.1:5435:5432'
     volumes:
-      - gw2-pgdata:/var/lib/postgresql
+      - gw2-pgdata:/var/lib/postgresql/data
     <<: *pg-healthcheck
     restart: unless-stopped
 
