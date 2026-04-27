@@ -7,7 +7,7 @@ set -euo pipefail
 # Verifies that AGLedger is running and responding correctly.
 #
 # Phase 1 (unauthenticated): Health, readiness, conformance, schema seeding
-# Phase 2 (authenticated):   Mandate lifecycle — create enterprise, mandate,
+# Phase 2 (authenticated):   Record lifecycle — create enterprise, record,
 #                             receipt, verify events. Requires platform API key.
 # Verify mode:               Read-only checks against previously created data.
 #                             Used after upgrade/restore to confirm data survived.
@@ -119,11 +119,11 @@ VERSION=$(curl -sf "$BASE_URL/health/ready" | jq -r '.version' 2>/dev/null || ec
 echo ""
 echo "Version: $VERSION"
 
-# --- Phase 2: Mandate Lifecycle (requires API key) ---
+# --- Phase 2: Record Lifecycle (requires API key) ---
 
 echo ""
 if [[ -z "$API_KEY" ]]; then
-    echo "-- Phase 2: Mandate Lifecycle (SKIPPED — no API key) --"
+    echo "-- Phase 2: Record Lifecycle (SKIPPED — no API key) --"
     echo ""
     echo "  Provide a platform API key to run lifecycle checks:"
     echo "    --api-key KEY, AGLEDGER_API_KEY env var, or PLATFORM_API_KEY in .env"
@@ -138,34 +138,34 @@ elif [[ -n "$VERIFY_STATE" ]]; then
         FAILURES=$((FAILURES+1))
     else
         V_ENTERPRISE_ID=$(jq -r '.enterpriseId // empty' "$VERIFY_STATE" 2>/dev/null || true)
-        V_MANDATE_ID=$(jq -r '.mandateId // empty' "$VERIFY_STATE" 2>/dev/null || true)
+        V_RECORD_ID=$(jq -r '.recordId // empty' "$VERIFY_STATE" 2>/dev/null || true)
         V_EVENT_COUNT=$(jq -r '.eventCount // "0"' "$VERIFY_STATE" 2>/dev/null || true)
 
-        # Verify mandate still exists and has expected state
-        if [[ -n "$V_MANDATE_ID" ]]; then
-            api GET "/v1/mandates/${V_MANDATE_ID}"
+        # Verify record still exists and has expected state
+        if [[ -n "$V_RECORD_ID" ]]; then
+            api GET "/v1/records/${V_RECORD_ID}"
             if [[ "$HTTP_CODE" == "200" ]]; then
                 V_STATUS=$(echo "$API_BODY" | jq -r '.status // empty' 2>/dev/null || true)
                 V_ENT=$(echo "$API_BODY" | jq -r '.enterpriseId // empty' 2>/dev/null || true)
                 V_SUBS=$(echo "$API_BODY" | jq -r '.submissionCount // 0' 2>/dev/null || true)
                 if [[ "$V_ENT" == "$V_ENTERPRISE_ID" ]]; then
-                    echo "PASS: Mandate $V_MANDATE_ID exists — status: $V_STATUS, submissions: $V_SUBS"
+                    echo "PASS: Record $V_RECORD_ID exists — status: $V_STATUS, submissions: $V_SUBS"
                 else
-                    echo "FAIL: Mandate enterprise mismatch — expected $V_ENTERPRISE_ID, got $V_ENT"
+                    echo "FAIL: Record enterprise mismatch — expected $V_ENTERPRISE_ID, got $V_ENT"
                     FAILURES=$((FAILURES+1))
                 fi
             else
-                echo "FAIL: Get mandate $V_MANDATE_ID — HTTP $HTTP_CODE"
+                echo "FAIL: Get record $V_RECORD_ID — HTTP $HTTP_CODE"
                 FAILURES=$((FAILURES+1))
             fi
         else
-            echo "FAIL: No mandateId in state file"
+            echo "FAIL: No recordId in state file"
             FAILURES=$((FAILURES+1))
         fi
 
         # Verify audit events still exist
-        if [[ -n "$V_MANDATE_ID" ]]; then
-            api GET "/v1/events?mandateId=${V_MANDATE_ID}&since=2020-01-01T00:00:00Z"
+        if [[ -n "$V_RECORD_ID" ]]; then
+            api GET "/v1/events?recordId=${V_RECORD_ID}&since=2020-01-01T00:00:00Z"
             if [[ "$HTTP_CODE" == "200" ]]; then
                 CURRENT_EVENTS=$(echo "$API_BODY" | jq '.data | length' 2>/dev/null || echo "0")
                 if [[ "$CURRENT_EVENTS" -ge "$V_EVENT_COUNT" ]]; then
@@ -197,7 +197,7 @@ elif [[ -n "$VERIFY_STATE" ]]; then
     fi
 else
     # --- Create mode: full lifecycle --
-    echo "-- Phase 2: Mandate Lifecycle --"
+    echo "-- Phase 2: Record Lifecycle --"
     echo ""
 
     # Step 1: Create enterprise via admin API (no self-service registration)
@@ -220,7 +220,7 @@ else
 
     if [[ -n "${ENTERPRISE_ID:-}" ]]; then
 
-        # Step 2: Create an agent via admin API (performer for the mandate)
+        # Step 2: Create an agent via admin API (performer for the record)
         api POST "/v1/admin/agents" '{"displayName":"Smoke Test Agent"}'
         if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
             AGENT_ID=$(echo "$API_BODY" | jq -r '.id // empty' 2>/dev/null || true)
@@ -249,11 +249,11 @@ else
             fi
         fi
 
-        # Step 3: Create mandate with autoActivate (DRAFT → REGISTERED → ACTIVE)
-        api POST "/v1/mandates" "{
+        # Step 3: Create record with autoActivate (DRAFT → REGISTERED → ACTIVE)
+        api POST "/v1/records" "{
             \"enterpriseId\": \"${ENTERPRISE_ID}\",
             \"performerAgentId\": \"${AGENT_ID}\",
-            \"contractType\": \"ACH-PROC-v1\",
+            \"type\": \"ACH-PROC-v1\",
             \"contractVersion\": \"1\",
             \"platform\": \"smoke-test\",
             \"autoActivate\": true,
@@ -263,27 +263,27 @@ else
             }
         }"
         if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
-            MANDATE_ID=$(echo "$API_BODY" | jq -r '.id // empty' 2>/dev/null || true)
-            MANDATE_STATUS=$(echo "$API_BODY" | jq -r '.status // empty' 2>/dev/null || true)
-            if [[ -n "$MANDATE_ID" && "$MANDATE_STATUS" == "ACTIVE" ]]; then
-                echo "PASS: Created mandate ($MANDATE_ID) — status: ACTIVE"
-            elif [[ -n "$MANDATE_ID" ]]; then
-                echo "PASS: Created mandate ($MANDATE_ID) — status: ${MANDATE_STATUS} (expected ACTIVE)"
+            RECORD_ID=$(echo "$API_BODY" | jq -r '.id // empty' 2>/dev/null || true)
+            RECORD_STATUS=$(echo "$API_BODY" | jq -r '.status // empty' 2>/dev/null || true)
+            if [[ -n "$RECORD_ID" && "$RECORD_STATUS" == "ACTIVE" ]]; then
+                echo "PASS: Created record ($RECORD_ID) — status: ACTIVE"
+            elif [[ -n "$RECORD_ID" ]]; then
+                echo "PASS: Created record ($RECORD_ID) — status: ${RECORD_STATUS} (expected ACTIVE)"
             else
-                echo "FAIL: Create mandate — no ID in response"
+                echo "FAIL: Create record — no ID in response"
                 echo "      Response: $(echo "$API_BODY" | head -c 200)"
                 FAILURES=$((FAILURES+1))
             fi
         else
-            echo "FAIL: Create mandate — HTTP $HTTP_CODE"
+            echo "FAIL: Create record — HTTP $HTTP_CODE"
             echo "      Response: $(echo "$API_BODY" | head -c 200)"
             FAILURES=$((FAILURES+1))
-            MANDATE_ID=""
+            RECORD_ID=""
         fi
 
         # Step 4: Submit receipt
-        if [[ -n "${MANDATE_ID:-}" ]]; then
-            api POST "/v1/mandates/${MANDATE_ID}/receipts" "{
+        if [[ -n "${RECORD_ID:-}" ]]; then
+            api POST "/v1/records/${RECORD_ID}/receipts" "{
                 \"evidence\": {
                     \"item_description\": \"Smoke test item\",
                     \"quantity\": 100,
@@ -310,27 +310,27 @@ else
             fi
         fi
 
-        # Step 5: Verify mandate has progressed (GET mandate)
-        if [[ -n "${MANDATE_ID:-}" ]]; then
-            api GET "/v1/mandates/${MANDATE_ID}"
+        # Step 5: Verify record has progressed (GET record)
+        if [[ -n "${RECORD_ID:-}" ]]; then
+            api GET "/v1/records/${RECORD_ID}"
             if [[ "$HTTP_CODE" == "200" ]]; then
                 FINAL_STATUS=$(echo "$API_BODY" | jq -r '.status // empty' 2>/dev/null || true)
                 SUBMISSION_COUNT=$(echo "$API_BODY" | jq -r '.submissionCount // 0' 2>/dev/null || true)
-                echo "PASS: Mandate status: ${FINAL_STATUS}, submissions: ${SUBMISSION_COUNT}"
+                echo "PASS: Record status: ${FINAL_STATUS}, submissions: ${SUBMISSION_COUNT}"
             else
-                echo "FAIL: Get mandate — HTTP $HTTP_CODE"
+                echo "FAIL: Get record — HTTP $HTTP_CODE"
                 FAILURES=$((FAILURES+1))
             fi
         fi
 
         # Step 6: Verify audit events exist
         EVENT_COUNT=0
-        if [[ -n "${MANDATE_ID:-}" ]]; then
+        if [[ -n "${RECORD_ID:-}" ]]; then
             # Use a timestamp from 5 minutes ago to catch all events
             SINCE=$(date -u -d '5 minutes ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
                 || date -u -v-5M '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
                 || echo "2020-01-01T00:00:00Z")
-            api GET "/v1/events?mandateId=${MANDATE_ID}&since=${SINCE}"
+            api GET "/v1/events?recordId=${RECORD_ID}&since=${SINCE}"
             if [[ "$HTTP_CODE" == "200" ]]; then
                 EVENT_COUNT=$(echo "$API_BODY" | jq '.data | length' 2>/dev/null || echo "0")
                 if [[ "$EVENT_COUNT" -ge 2 ]]; then
@@ -346,14 +346,14 @@ else
         fi
 
         # Save state for verify mode (upgrade/restore tests)
-        if [[ -n "$SAVE_STATE" && -n "${MANDATE_ID:-}" ]]; then
+        if [[ -n "$SAVE_STATE" && -n "${RECORD_ID:-}" ]]; then
             jq -n \
                 --arg eid "${ENTERPRISE_ID:-}" \
                 --arg aid "${AGENT_ID:-}" \
-                --arg mid "${MANDATE_ID:-}" \
+                --arg mid "${RECORD_ID:-}" \
                 --arg rid "${RECEIPT_ID:-}" \
                 --arg ec "$EVENT_COUNT" \
-                '{enterpriseId: $eid, agentId: $aid, mandateId: $mid, receiptId: $rid, eventCount: ($ec | tonumber)}' \
+                '{enterpriseId: $eid, agentId: $aid, recordId: $mid, receiptId: $rid, eventCount: ($ec | tonumber)}' \
                 > "$SAVE_STATE"
             echo ""
             echo "State saved to $SAVE_STATE"

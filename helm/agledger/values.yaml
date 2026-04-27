@@ -198,7 +198,7 @@ config:
   # Primary contract type for agent discovery docs (/llms.txt, /llms-full.txt).
   # Pick your primary use case so agents see it first; empty string uses the
   # first alphabetical active contract as a deterministic fallback.
-  exampleContractType: ""
+  exampleType: ""
   rateLimitEnabled: true
   corsEnabled: true
   helmetEnabled: true
