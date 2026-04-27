@@ -26,7 +26,7 @@ data:
   {{- end }}
   TRUST_PROXY: {{ .Values.config.trustProxy | quote }}
   OTEL_PROVIDER: {{ .Values.config.otelProvider | quote }}
-  AGLEDGER_EXAMPLE_CONTRACT_TYPE: {{ .Values.config.exampleContractType | quote }}
+  AGLEDGER_EXAMPLE_TYPE: {{ .Values.config.exampleType | quote }}
   RATE_LIMIT_ENABLED: {{ .Values.config.rateLimitEnabled | quote }}
   CORS_ENABLED: {{ .Values.config.corsEnabled | quote }}
   HELMET_ENABLED: {{ .Values.config.helmetEnabled | quote }}
