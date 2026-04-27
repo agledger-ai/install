@@ -124,8 +124,31 @@ resolve_latest_version() {
       cache_age=$(( $(date +%s) - $(stat -c %Y "$cache_file") ))
     fi
     if [[ $cache_age -lt $cache_max_age ]]; then
-      cat "$cache_file"
-      return 0
+      # Validate the cached version still exists on Docker Hub before
+      # returning it — a published-then-deleted tag (rare but real: v0.21.1
+      # was pulled after F-447) leaves the cache pointing at a 404. Cheap
+      # HEAD; on failure or non-404 fall through to the freshness query.
+      local cached
+      cached=$(cat "$cache_file")
+      if [[ -n "$cached" ]]; then
+        local tag_status
+        # No -f: we want curl to surface 4xx via the captured %{http_code}
+        # rather than exit non-zero (which would clobber the variable with the
+        # || fallback). -sS keeps it quiet on success, surfaces real errors.
+        tag_status=$(curl -sSL --max-time 5 -o /dev/null -w '%{http_code}' \
+          "https://hub.docker.com/v2/repositories/agledger/agledger/tags/${cached}/" 2>/dev/null \
+          || echo "000")
+        if [[ "$tag_status" == "200" ]]; then
+          echo "$cached"
+          return 0
+        fi
+        if [[ "$tag_status" == "404" ]]; then
+          echo "WARN: cached latest-version (${cached}) no longer exists on Docker Hub — refreshing." >&2
+          rm -f "$cache_file"
+        fi
+        # Any other status (000 network, 5xx, etc): fall through to refresh,
+        # but keep the cache file so the offline-fallback below still works.
+      fi
     fi
   fi
 

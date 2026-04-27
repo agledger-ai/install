@@ -105,7 +105,13 @@ eval "$HELM_CMD"
 echo ""
 info "AGLedger installed. Waiting for pods..."
 
-kubectl rollout status deployment/"$RELEASE"-agledger-api --namespace "$NAMESPACE" --timeout=120s 2>/dev/null || true
+# Don't swallow the rollout status — a crashlooping image (F-447 class) would
+# otherwise pass through silently and the script prints "Next steps:" as if
+# the install succeeded. Surface the real exit so the customer sees the bad
+# install before they try to use it.
+if ! kubectl rollout status deployment/"$RELEASE"-agledger-api --namespace "$NAMESPACE" --timeout=120s; then
+  fatal "Pod did not become ready within 120s. Check: kubectl logs deploy/$RELEASE-agledger-api -n $NAMESPACE --previous"
+fi
 
 echo ""
 echo "  Next steps:"
