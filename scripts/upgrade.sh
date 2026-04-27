@@ -234,7 +234,13 @@ info "Updated AGLEDGER_VERSION=${TARGET_VERSION} in .env"
 
 step "Restarting all services"
 
-"${COMPOSE[@]}" up -d
+# --wait fails the upgrade if the new image crashloops at boot (e.g. a
+# missing runtime asset like F-447). Without it, `up -d` returns as soon as
+# the container is created, the preflight loop below logs a soft WARN, and
+# the script exits 0 — handing the customer a broken upgrade with no
+# visible signal anything went wrong.
+"${COMPOSE[@]}" up -d --wait \
+  || fatal "Services failed to become healthy after upgrade. Check: docker compose logs agledger-api"
 info "All services restarted"
 
 # --- Preflight Check ---
