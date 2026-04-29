@@ -448,6 +448,12 @@ if [[ "${USES_BUNDLED_PG}" == "true" ]]; then
   if [[ $ELAPSED -ge $HEALTHCHECK_TIMEOUT ]]; then
     fatal "Postgres did not become healthy within ${HEALTHCHECK_TIMEOUT}s. Check: docker compose logs postgres"
   fi
+
+  # Postgres's healthcheck runs inside its own container (pg_isready) and can
+  # pass while sibling-container reachability is broken (stale Docker iptables
+  # on the compose bridge). Probe before migrate so we fail fast with a clear
+  # recovery path instead of letting migrate retry for ~55s on TCP timeout.
+  verify_sibling_reachability
 fi
 
 # --- Run Migrations ---
