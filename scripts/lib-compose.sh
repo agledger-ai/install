@@ -226,3 +226,43 @@ build_compose_cmd() {
     COMPOSE+=(-f "${prod_file}")
   fi
 }
+
+# Verify a sibling container can actually reach Postgres on the compose network.
+#
+# Postgres's own healthcheck (`pg_isready`) runs INSIDE the postgres container,
+# so it can pass while sibling-container reachability is broken — most commonly
+# when Docker daemon iptables rules for the compose bridge are stale (FORWARD
+# chain DROPs traffic between containers on the same bridge). Without this
+# check, migrate hangs ~55s on a TCP timeout and the customer sees a confusing
+# Node stack trace. With it, we fail fast and point at the canonical recovery.
+#
+# Bundled-PG only: skipped when DATABASE_URL points off-host (Aurora, RDS,
+# managed PG), where the failure modes are different and the recovery is not
+# "restart Docker."
+#
+# Requires: build_compose_cmd has run (so COMPOSE is set), images are pulled.
+verify_sibling_reachability() {
+  if [[ "${USES_BUNDLED_PG:-true}" != "true" ]]; then
+    return 0
+  fi
+  # The agledger image is distroless (no nc, no pg_isready) — node + net is the
+  # only reliable TCP-probe primitive shipped in it. Using `compose run` against
+  # the agledger-migrate service definition guarantees we hit the same network
+  # path migrate itself will use moments later.
+  local probe='const net=require("net");const s=net.createConnection({host:"postgres",port:5432,timeout:5000},()=>{s.end();process.exit(0);});s.on("error",e=>{console.error(e.code||e.message);process.exit(1);});s.on("timeout",()=>{console.error("ETIMEDOUT");process.exit(1);});'
+  if "${COMPOSE[@]}" run --rm --no-deps --entrypoint /nodejs/bin/node agledger-migrate -e "$probe" >/dev/null 2>&1; then
+    info "Sibling-container reachability: OK"
+    return 0
+  fi
+  error "Postgres healthcheck passed, but a sibling container cannot reach it on the compose network."
+  error "This is almost always Docker daemon iptables state — the FORWARD chain is dropping"
+  error "container-to-container traffic on the compose bridge."
+  error ""
+  error "Recovery (recovers in seconds, no data loss):"
+  error "  1. sudo systemctl restart docker"
+  error "  2. Re-run this install script."
+  error ""
+  error "If that doesn't help: 'sudo iptables -L FORWARD -n -v' should show DOCKER-FORWARD"
+  error "before the default DROP policy. If not, file an issue at https://github.com/agledger-ai/install/issues"
+  fatal "Aborting before migrations would hang on a TCP timeout."
+}
