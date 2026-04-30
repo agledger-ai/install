@@ -120,6 +120,11 @@ migrate:
 database:
   externalUrl: ""  # required if postgres.bundled.enabled is false
   poolMax: 20
+  # Auto-rollback any idle-in-transaction backend that exceeds this many ms.
+  # Closes the F-507 deadlock class where a stalled handler holds an advisory
+  # lock indefinitely. 30s tolerates legitimate slow handlers while keeping
+  # deadlock recovery within livez/readyz windows. Set to 0 to disable.
+  idleInTxTimeoutMs: 30000
 
 postgres:
   bundled:
@@ -148,7 +153,6 @@ secrets:
                              # standard DATABASE_URL. Enables DB role separation:
                              # owner for DDL (migrations), agledger_app for DML (API/Worker).
   licenseKey: ""            # optional — Inline PEM license string (AGLEDGER_LICENSE_KEY)
-  proxyDatabaseUrl: ""      # optional — DATABASE_URL for proxy/read-replica routing
   apiKeySecretPrevious: ""  # optional — Previous API_KEY_SECRET for key rotation (zero-downtime)
   existingSecret: ""        # set to use a pre-existing Kubernetes Secret
                              # The Secret must contain these keys (as env var names):
