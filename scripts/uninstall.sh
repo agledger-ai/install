@@ -9,7 +9,7 @@ set -euo pipefail
 #
 # Usage:
 #   ./uninstall.sh
-#   ./uninstall.sh --non-interactive
+#   ./uninstall.sh --non-interactive   (alias: -y, --yes)
 #   ./uninstall.sh --purge
 # =============================================================================
 
@@ -22,7 +22,7 @@ PURGE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --non-interactive)
+    -y|--yes|--non-interactive)
       NON_INTERACTIVE=true
       shift
       ;;
@@ -31,10 +31,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      echo "Usage: $0 [--non-interactive] [--purge]"
+      echo "Usage: $0 [-y|--yes|--non-interactive] [--purge]"
       echo ""
       echo "Options:"
-      echo "  --non-interactive    Skip the confirmation prompt"
+      echo "  -y, --yes,           Skip the confirmation prompt"
+      echo "  --non-interactive"
       echo "  --purge              Also remove .env (secrets will be regenerated on reinstall)"
       echo "  -h, --help           Show this help"
       exit 0
