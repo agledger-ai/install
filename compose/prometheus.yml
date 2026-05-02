@@ -9,6 +9,16 @@ scrape_configs:
     metrics_path: /metrics
     scrape_interval: 10s
 
+  # Worker process exposes its own /metrics on the health port. Federation
+  # outbound, webhook delivery, worker_jobs_processed, persist_event_unmapped,
+  # and siem_mapper counters fire in this process; without scraping it,
+  # operators see HELP/TYPE only on the API-side scrape (F-518).
+  - job_name: agledger-worker
+    static_configs:
+      - targets: ['agledger-worker:3001']
+    metrics_path: /metrics
+    scrape_interval: 10s
+
   - job_name: otel-collector
     static_configs:
       - targets: ['otel-collector:8889']
