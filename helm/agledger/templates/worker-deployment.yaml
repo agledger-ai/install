@@ -20,6 +20,15 @@ spec:
       labels:
         {{- include "agledger.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: worker
+      annotations:
+        # Federation outbound, webhook delivery, worker_jobs_processed,
+        # persist_event_unmapped, and SIEM mapper counters fire in this
+        # process. Without these annotations the prometheus-pod-discoverer
+        # only sees the API and operators get HELP/TYPE only on the worker
+        # counter half of /metrics (F-518).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.worker.healthPort | quote }}
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: {{ include "agledger.serviceAccountName" . }}
       {{- with .Values.image.pullSecrets }}
