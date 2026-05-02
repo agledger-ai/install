@@ -20,6 +20,10 @@ spec:
       labels:
         {{- include "agledger.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: {{ include "agledger.serviceAccountName" . }}
       {{- with .Values.image.pullSecrets }}
