@@ -38,7 +38,7 @@ AGLedger supports good-faith security research. We will not pursue legal action 
 
 ## Data Sovereignty
 
-AGLedger is self-hosted. All application data — mandates, receipts, audit logs, API keys — stays within your infrastructure. License validation runs locally with no phone-home.
+AGLedger is self-hosted. All application data — records, receipts, audit logs, API keys — stays within your infrastructure. License validation runs locally with no phone-home.
 
 The Developer Edition (free, unlicensed installs) sends an anonymous heartbeat to `telemetry.agledger.ai` every 48 hours. The heartbeat contains only the running version, uptime, deployment mode, and an anonymous install ID. It contains no application data, no usage metrics, and no identifiers that can be traced to a customer or account. Disable it by setting `AGLEDGER_TELEMETRY=false` in your `.env` file. Enterprise licenses disable telemetry automatically.
 
