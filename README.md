@@ -2,7 +2,7 @@
 
 Install scripts, Docker Compose files, and Helm chart for [AGLedger](https://agledger.ai).
 
-AGLedger is an accountability layer for automated operations. It records what an agent or process was asked to do (mandate), what it delivered (receipt), and whether the principal accepted the result (verdict) — with a hash-chained, Ed25519-signed audit trail. AGLedger does not inspect or judge deliverable content; it records acceptance, not correctness.
+AGLedger is a cryptographic notary for automated operations. An agent notarizes what it is about to do, then notarizes what was done — both signed and hash-chained. For workloads where the deliverable is measurable (procurement, finance, compliance), an optional gated mode adds a receipt + verdict phase. AGLedger does not inspect or judge deliverable content; it records what was claimed and when, signed and chainable.
 
 This repository contains only the deployment packaging. The server image is distributed on [Docker Hub](https://hub.docker.com/r/agledger/agledger) and the Helm chart on OCI at `oci://registry-1.docker.io/agledger/agledger-chart`.
 
