@@ -595,7 +595,7 @@ echo ""
 echo -e "  ${BOLD}Version:${NC}       ${AGLEDGER_VERSION}"
 echo -e "  ${BOLD}API URL:${NC}       ${API_URL}"
 echo -e "  ${BOLD}Health:${NC}        ${API_URL}/health"
-echo -e "  ${BOLD}Conformance:${NC}   ${API_URL}/conformance"
+echo -e "  ${BOLD}Conformance:${NC}   ${API_URL}/v1/conformance"
 echo -e "  ${BOLD}OpenAPI spec:${NC}  ${API_URL}/openapi.json"
 echo -e "  ${BOLD}Agent guide:${NC}   ${API_URL}/llms.txt"
 if [[ "${USES_BUNDLED_PG}" == "false" ]]; then

@@ -110,8 +110,8 @@ collect "disk (df -h)" "system-disk.txt" \
 collect "GET /health" "health.json" \
   curl -sf --max-time 5 http://localhost:3001/health
 
-collect "GET /conformance" "conformance.json" \
-  curl -sf --max-time 5 http://localhost:3001/conformance
+collect "GET /v1/conformance" "conformance.json" \
+  curl -sf --max-time 5 http://localhost:3001/v1/conformance
 
 collect "GET /status" "status.json" \
   curl -sf --max-time 5 http://localhost:3001/status
