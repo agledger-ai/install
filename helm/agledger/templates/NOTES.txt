@@ -5,12 +5,12 @@ AGLedger has been installed successfully.
   API URL:  https://{{ .host }}
 {{- end }}
 {{- else }}
-  API URL:  kubectl port-forward svc/{{ include "agledger.fullname" . }} 3000:80
-            then open http://localhost:3000
+  API URL:  kubectl port-forward svc/{{ include "agledger.fullname" . }} 3001:80
+            then open http://localhost:3001
 {{- end }}
 
 Health check:
-  curl http://localhost:3000/health
+  curl http://localhost:3001/health
 
 {{- if .Values.postgres.bundled.enabled }}
 Database:   Bundled PostgreSQL (not recommended for production)
@@ -24,16 +24,16 @@ Next steps:
        /nodejs/bin/node dist/scripts/init.js --non-interactive
 
   2. Verify health:
-     curl http://localhost:3000/health
+     curl http://localhost:3001/health
 
   3. Check API docs:
-     http://localhost:3000/docs
+     http://localhost:3001/docs
 
   4. View license status:
-     curl -H "Authorization: Bearer <platform-key>" http://localhost:3000/admin/license
+     curl -H "Authorization: Bearer <platform-key>" http://localhost:3001/v1/admin/license
 
   5. Apply an Enterprise license:
-     curl -X POST http://localhost:3000/admin/license/reload \
+     curl -X POST http://localhost:3001/v1/admin/license/reload \
        -H "Authorization: Bearer <platform-key>"
 
 {{- if .Values.provisioning.enabled }}
@@ -46,9 +46,9 @@ Provisioning:
   {{- if .Values.provisioning.prune }}
   Prune:       enabled (removed resources will be deactivated)
   {{- end }}
-  Reload:      curl -X POST -H "Authorization: Bearer <platform-key>" http://localhost:3000/v1/admin/provisioning/reload
+  Reload:      curl -X POST -H "Authorization: Bearer <platform-key>" http://localhost:3001/v1/admin/provisioning/reload
   Or:          kubectl exec deploy/{{ include "agledger.fullname" . }}-api -- kill -SIGHUP 1
 {{- end }}
 
-Documentation: https://docs.agledger.ai
+Documentation: https://agledger.ai/docs
 Pricing:       https://agledger.ai/pricing
