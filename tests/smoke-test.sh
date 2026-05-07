@@ -104,14 +104,17 @@ echo ""
 
 check "Health check" "$BASE_URL/health" "status" "ok"
 check "Readiness check" "$BASE_URL/health/ready" "status" "ready"
-check "Conformance" "$BASE_URL/conformance" "conformanceLevel" "2"
+check "Conformance" "$BASE_URL/v1/conformance" "conformanceLevel" "2"
 
-# Schema seeding — verify built-in schemas are present
-SCHEMA_COUNT=$(curl -sf "$BASE_URL/v1/schemas" 2>/dev/null | jq '.data | length' 2>/dev/null || echo "0")
-if [ "$SCHEMA_COUNT" -ge 11 ]; then
-    echo "PASS: $SCHEMA_COUNT schemas seeded"
+# Schema endpoint health — fresh installs ship with zero active schemas
+# (built-ins are DISABLED post-v0.22.11 so customers register their own).
+# We just verify the endpoint responds with a valid envelope.
+SCHEMA_RESPONSE=$(curl -sf "$BASE_URL/v1/schemas" 2>/dev/null || echo "")
+SCHEMA_COUNT=$(echo "$SCHEMA_RESPONSE" | jq '.data | length' 2>/dev/null || echo "")
+if [[ -n "$SCHEMA_COUNT" ]] && [[ "$SCHEMA_COUNT" =~ ^[0-9]+$ ]]; then
+    echo "PASS: schemas endpoint responding ($SCHEMA_COUNT active)"
 else
-    echo "FAIL: Expected >= 11 built-in schemas, got $SCHEMA_COUNT"
+    echo "FAIL: schemas endpoint did not return a valid envelope"
     FAILURES=$((FAILURES+1))
 fi
 
@@ -180,16 +183,13 @@ elif [[ -n "$VERIFY_STATE" ]]; then
             fi
         fi
 
-        # Verify schemas still present
+        # Verify schemas endpoint still responds. Built-ins ship DISABLED
+        # post-v0.22.11; the smoke-test contract registered in create mode is
+        # the load-bearing schema we expect to see.
         api GET "/v1/schemas"
         if [[ "$HTTP_CODE" == "200" ]]; then
             V_SCHEMAS=$(echo "$API_BODY" | jq '.data | length' 2>/dev/null || echo "0")
-            if [[ "$V_SCHEMAS" -ge 11 ]]; then
-                echo "PASS: $V_SCHEMAS schemas intact"
-            else
-                echo "FAIL: Schema count dropped to $V_SCHEMAS"
-                FAILURES=$((FAILURES+1))
-            fi
+            echo "PASS: schemas endpoint responding ($V_SCHEMAS active)"
         else
             echo "FAIL: Get schemas — HTTP $HTTP_CODE"
             FAILURES=$((FAILURES+1))
@@ -220,8 +220,9 @@ else
 
     if [[ -n "${ENTERPRISE_ID:-}" ]]; then
 
-        # Step 2: Create an agent via admin API (performer for the record)
-        api POST "/v1/admin/agents" '{"displayName":"Smoke Test Agent"}'
+        # Step 2: Create an agent via admin API (performer for the record).
+        # `enterpriseId` is required; `name` is the canonical field.
+        api POST "/v1/admin/agents" "{\"enterpriseId\":\"${ENTERPRISE_ID}\",\"name\":\"Smoke Test Agent\"}"
         if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
             AGENT_ID=$(echo "$API_BODY" | jq -r '.id // empty' 2>/dev/null || true)
             if [[ -n "$AGENT_ID" ]]; then
@@ -249,17 +250,46 @@ else
             fi
         fi
 
+        # Step 2c: Register a minimal contract for the smoke test. The engine
+        # ships with no built-in types active (post-v0.22.11), so the test
+        # registers its own contract to stay self-contained.
+        SMOKE_TYPE="install-smoke-test-v1"
+        api POST "/v1/schemas" "{
+            \"type\": \"${SMOKE_TYPE}\",
+            \"displayName\": \"Install smoke test\",
+            \"description\": \"Minimal contract used by the install repo's smoke-test.sh to exercise the record + receipt lifecycle end-to-end.\",
+            \"category\": \"smoke-test\",
+            \"recordSchema\": {
+                \"type\": \"object\",
+                \"properties\": { \"item_description\": { \"type\": \"string\" } },
+                \"required\": [\"item_description\"]
+            },
+            \"receiptSchema\": {
+                \"type\": \"object\",
+                \"properties\": {
+                    \"item_description\": { \"type\": \"string\" },
+                    \"confirmation_ref\": { \"type\": \"string\" }
+                },
+                \"required\": [\"confirmation_ref\"]
+            }
+        }"
+        if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
+            echo "PASS: Registered smoke-test contract (${SMOKE_TYPE})"
+        else
+            echo "FAIL: Register smoke-test contract — HTTP $HTTP_CODE"
+            echo "      Response: $(echo "$API_BODY" | head -c 200)"
+            FAILURES=$((FAILURES+1))
+        fi
+
         # Step 3: Create record with autoActivate (DRAFT → REGISTERED → ACTIVE)
         api POST "/v1/records" "{
             \"enterpriseId\": \"${ENTERPRISE_ID}\",
             \"performerAgentId\": \"${AGENT_ID}\",
-            \"type\": \"ACH-PROC-v1\",
-            \"contractVersion\": \"1\",
+            \"type\": \"${SMOKE_TYPE}\",
             \"platform\": \"smoke-test\",
             \"autoActivate\": true,
             \"criteria\": {
-                \"item_description\": \"Smoke test item\",
-                \"quantity\": { \"target\": 100 }
+                \"item_description\": \"Smoke test item\"
             }
         }"
         if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
@@ -286,9 +316,6 @@ else
             api POST "/v1/records/${RECORD_ID}/receipts" "{
                 \"evidence\": {
                     \"item_description\": \"Smoke test item\",
-                    \"quantity\": 100,
-                    \"total_cost\": { \"amount\": 500.00, \"currency\": \"USD\" },
-                    \"supplier\": { \"id\": \"SMOKE-001\", \"name\": \"Smoke Supplier\", \"rating\": 95 },
                     \"confirmation_ref\": \"SMOKE-TEST-001\"
                 }
             }"

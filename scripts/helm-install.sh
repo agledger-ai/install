@@ -7,6 +7,12 @@
 #   curl -fsSL https://agledger.ai/helm-install.sh | bash -s -- --bundled
 #   curl -fsSL https://agledger.ai/helm-install.sh | bash -s -- --values my-values.yaml
 #
+# External-database TLS:
+#   The image bundles the AWS RDS / Aurora root CA at /etc/ssl/certs/rds-global-bundle.pem.
+#   It is auto-applied when an external DB is chosen interactively.
+#     --ca-cert <path>   override the cert path (must exist inside the container)
+#     --no-ca-cert       skip the cert (only safe for DBs that don't require TLS)
+#
 set -euo pipefail
 
 CHART="oci://registry-1.docker.io/agledger/agledger-chart"
@@ -17,6 +23,9 @@ BUNDLED=false
 EXTRA_VALUES=""
 EXTRA_ARGS=""
 VERSION=""
+CA_CERT=""
+# Bundled in the agledger/agledger image at build time. Covers AWS RDS / Aurora.
+DEFAULT_RDS_CA="/etc/ssl/certs/rds-global-bundle.pem"
 
 info()  { echo "  [*] $*"; }
 fatal() { echo "  [!] $*" >&2; exit 1; }
@@ -30,6 +39,8 @@ while [[ $# -gt 0 ]]; do
     --values)       EXTRA_VALUES="$2"; shift 2 ;;
     --version)      VERSION="$2"; shift 2 ;;
     --marketplace)  EXTRA_ARGS="$EXTRA_ARGS --set marketplace.productCode=$2"; shift 2 ;;
+    --ca-cert)      CA_CERT="$2"; shift 2 ;;
+    --no-ca-cert)   CA_CERT="none"; shift ;;
     *)              EXTRA_ARGS="$EXTRA_ARGS $1"; shift ;;
   esac
 done
@@ -59,7 +70,17 @@ else
   case "${db_choice:-1}" in
     1) BUNDLED=true; info "Using bundled PostgreSQL" ;;
     2) read -rp "  DATABASE_URL: " DB_URL
-       [[ -n "$DB_URL" ]] || fatal "DATABASE_URL is required for external database" ;;
+       [[ -n "$DB_URL" ]] || fatal "DATABASE_URL is required for external database"
+       if [[ -z "$CA_CERT" ]]; then
+         echo ""
+         echo "  Database TLS root CA?"
+         echo "    Press Enter to use the bundled AWS RDS / Aurora cert (${DEFAULT_RDS_CA})"
+         echo "    Type a path inside the container for a custom CA"
+         echo "    Type 'none' to skip (most managed Postgres providers require a CA)"
+         read -rp "  CA cert [${DEFAULT_RDS_CA}]: " ca_choice
+         CA_CERT="${ca_choice:-$DEFAULT_RDS_CA}"
+       fi
+       ;;
     *) fatal "Invalid option" ;;
   esac
 fi
@@ -93,6 +114,10 @@ if [[ "$BUNDLED" == "true" ]]; then
   HELM_CMD="$HELM_CMD --set postgres.bundled.enabled=true"
 elif [[ -n "$DB_URL" ]]; then
   HELM_CMD="$HELM_CMD --set database.externalUrl=$DB_URL"
+  if [[ -n "$CA_CERT" && "$CA_CERT" != "none" ]]; then
+    HELM_CMD="$HELM_CMD --set config.nodeExtraCaCerts=$CA_CERT"
+    info "Using TLS CA cert: $CA_CERT"
+  fi
 fi
 
 [[ -n "$EXTRA_VALUES" ]] && HELM_CMD="$HELM_CMD -f $EXTRA_VALUES"
@@ -123,7 +148,7 @@ echo "       kubectl port-forward svc/$RELEASE-agledger -n $NAMESPACE 3001:80"
 echo "       curl http://localhost:3001/health"
 echo ""
 echo "    3. View license status:"
-echo "       curl -H 'Authorization: Bearer <platform-key>' http://localhost:3001/admin/license"
+echo "       curl -H 'Authorization: Bearer <platform-key>' http://localhost:3001/v1/admin/license"
 echo ""
 if [[ -n "$VAULT_KEY" ]]; then
   echo "    Vault signing key (save this for backup/rotation):"
