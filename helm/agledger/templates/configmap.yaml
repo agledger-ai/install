@@ -12,7 +12,6 @@ data:
   PORT: "3000"
   HOST: "0.0.0.0"
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
-  AGLEDGER_MODE: {{ .Values.config.mode | quote }}
   {{- /* Derive external URL: explicit config → first ingress host → omit (app warns at startup) */}}
   {{- $extUrl := .Values.config.externalUrl }}
   {{- if and (not $extUrl) .Values.ingress.enabled (gt (len .Values.ingress.hosts) 0) }}
@@ -46,10 +45,6 @@ data:
   ALLOW_DB_WITHOUT_SSL: "true"
   AGLEDGER_PG_BUNDLED: "true"
   {{- end }}
-  {{- if .Values.federation.hubUrl }}
-  AGLEDGER_HUB_URL: {{ .Values.federation.hubUrl | quote }}
-  {{- end }}
-  {{/* Registration token moved to Secret — it is a credential, not configuration */}}
   {{- if .Values.provisioning.enabled }}
   PROVISIONING_CONFIG_PATH: {{ .Values.provisioning.configPath | quote }}
   {{- if .Values.provisioning.dryRun }}
