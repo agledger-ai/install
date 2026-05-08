@@ -191,7 +191,6 @@ marketplace:
 # Application Config
 # ---
 config:
-  mode: standalone
   logLevel: info
   trustProxy: false
   nodeEnv: production
@@ -209,15 +208,6 @@ config:
   nodeExtraCaCerts: ""  # Path to CA bundle inside the container.
                          # For Aurora/RDS: /etc/ssl/certs/rds-global-bundle.pem (bundled in image)
                          # For Cloud SQL or private CAs: mount your cert and set the path here
-
-# ---
-# Federation (gateway/hub mode only)
-# ---
-federation:
-  hubUrl: ""                    # Hub endpoint URL (required for gateway mode)
-  registrationToken: ""         # Single-use token for initial gateway registration
-  signingKeySecret: ""          # K8s Secret key containing Ed25519 signing key
-  encryptionKeySecret: ""       # K8s Secret key containing X25519 encryption key
 
 # ---
 # Ingress
