@@ -8,7 +8,7 @@ set -euo pipefail
 #
 # Phase 1 (unauthenticated): Health, readiness, conformance, schema seeding
 # Phase 2 (authenticated):   Record lifecycle — create enterprise, record,
-#                             receipt, verify events. Requires platform API key.
+#                             completion, verify events. Requires platform API key.
 # Verify mode:               Read-only checks against previously created data.
 #                             Used after upgrade/restore to confirm data survived.
 #
@@ -257,14 +257,14 @@ else
         api POST "/v1/schemas" "{
             \"type\": \"${SMOKE_TYPE}\",
             \"displayName\": \"Install smoke test\",
-            \"description\": \"Minimal contract used by the install repo's smoke-test.sh to exercise the record + receipt lifecycle end-to-end.\",
+            \"description\": \"Minimal contract used by the install repo's smoke-test.sh to exercise the record + completion lifecycle end-to-end.\",
             \"category\": \"smoke-test\",
             \"recordSchema\": {
                 \"type\": \"object\",
                 \"properties\": { \"item_description\": { \"type\": \"string\" } },
                 \"required\": [\"item_description\"]
             },
-            \"receiptSchema\": {
+            \"completionSchema\": {
                 \"type\": \"object\",
                 \"properties\": {
                     \"item_description\": { \"type\": \"string\" },
@@ -311,29 +311,29 @@ else
             RECORD_ID=""
         fi
 
-        # Step 4: Submit receipt
+        # Step 4: Submit completion
         if [[ -n "${RECORD_ID:-}" ]]; then
-            api POST "/v1/records/${RECORD_ID}/receipts" "{
+            api POST "/v1/records/${RECORD_ID}/completions" "{
                 \"evidence\": {
                     \"item_description\": \"Smoke test item\",
                     \"confirmation_ref\": \"SMOKE-TEST-001\"
                 }
             }"
             if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
-                RECEIPT_ID=$(echo "$API_BODY" | jq -r '.id // empty' 2>/dev/null || true)
+                COMPLETION_ID=$(echo "$API_BODY" | jq -r '.id // empty' 2>/dev/null || true)
                 STRUCTURAL=$(echo "$API_BODY" | jq -r '.structuralValidation // empty' 2>/dev/null || true)
-                if [[ -n "$RECEIPT_ID" ]]; then
-                    echo "PASS: Submitted receipt ($RECEIPT_ID) — validation: ${STRUCTURAL:-unknown}"
+                if [[ -n "$COMPLETION_ID" ]]; then
+                    echo "PASS: Submitted completion ($COMPLETION_ID) — validation: ${STRUCTURAL:-unknown}"
                 else
-                    echo "FAIL: Submit receipt — no ID in response"
+                    echo "FAIL: Submit completion — no ID in response"
                     echo "      Response: $(echo "$API_BODY" | head -c 200)"
                     FAILURES=$((FAILURES+1))
                 fi
             else
-                echo "FAIL: Submit receipt — HTTP $HTTP_CODE"
+                echo "FAIL: Submit completion — HTTP $HTTP_CODE"
                 echo "      Response: $(echo "$API_BODY" | head -c 200)"
                 FAILURES=$((FAILURES+1))
-                RECEIPT_ID=""
+                COMPLETION_ID=""
             fi
         fi
 
@@ -378,9 +378,9 @@ else
                 --arg eid "${ENTERPRISE_ID:-}" \
                 --arg aid "${AGENT_ID:-}" \
                 --arg mid "${RECORD_ID:-}" \
-                --arg rid "${RECEIPT_ID:-}" \
+                --arg rid "${COMPLETION_ID:-}" \
                 --arg ec "$EVENT_COUNT" \
-                '{enterpriseId: $eid, agentId: $aid, recordId: $mid, receiptId: $rid, eventCount: ($ec | tonumber)}' \
+                '{enterpriseId: $eid, agentId: $aid, recordId: $mid, completionId: $rid, eventCount: ($ec | tonumber)}' \
                 > "$SAVE_STATE"
             echo ""
             echo "State saved to $SAVE_STATE"
