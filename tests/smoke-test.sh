@@ -104,7 +104,13 @@ echo ""
 
 check "Health check" "$BASE_URL/health" "status" "ok"
 check "Readiness check" "$BASE_URL/health/ready" "status" "ready"
-check "Conformance" "$BASE_URL/v1/conformance" "conformanceLevel" "2"
+# `conformanceLevel`/`level`/`specVersion` were retired in api v0.22.32
+# (api#460 — V1-FRAME.md is the authoritative spec, standards-play deferred).
+# The durable conformance contract is `{capabilities, contractTypes,
+# schemasUrl, settlementSignals, version}` — confirm the envelope shape via a
+# field that survives both the retired-fields cleanup and any future
+# capability additions.
+check "Conformance envelope" "$BASE_URL/v1/conformance" "capabilities | type" "object"
 
 # Schema endpoint health — fresh installs ship with zero active schemas
 # (built-ins are DISABLED post-v0.22.11 so customers register their own).
@@ -238,17 +244,11 @@ else
             AGENT_ID=""
         fi
 
-        # Step 2b: Approve agent for the enterprise
-        if [[ -n "${AGENT_ID:-}" ]]; then
-            api PUT "/v1/enterprises/${ENTERPRISE_ID}/agents/${AGENT_ID}" '{}'
-            if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
-                echo "PASS: Approved agent for enterprise"
-            else
-                echo "FAIL: Approve agent — HTTP $HTTP_CODE"
-                echo "      Response: $(echo "$API_BODY" | head -c 200)"
-                FAILURES=$((FAILURES+1))
-            fi
-        fi
+        # (No separate approve step — agents created via POST /v1/admin/agents
+        # are immediately usable as the named principal/performer on records.
+        # The legacy `PUT /v1/enterprises/{id}/agents/{id}` approval route was
+        # never part of the V1 API; record creation gates membership via the
+        # FK on `enterpriseId`.)
 
         # Step 2c: Register a minimal contract for the smoke test. The engine
         # ships with no built-in types active (post-v0.22.11), so the test
