@@ -58,5 +58,22 @@ Provisioning:
   Or:          kubectl exec deploy/{{ include "agledger.fullname" . }}-api -- kill -SIGHUP 1
 {{- end }}
 
+{{- if not .Values.image.digest }}
+
+Image pin (production hardening):
+  Your deployment pulls `{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}` with
+  `pullPolicy: {{ .Values.image.pullPolicy }}`. Kubelet's tag-name cache means a node that
+  previously pulled ANY image under this tag will NOT re-pull on the next
+  deploy — pods can silently boot against stale layers when a tag is
+  re-pushed. For production, pin by content hash:
+
+    helm upgrade ... \
+      --set image.digest="sha256:<digest-from-registry>" \
+      --set image.tag="{{ default .Chart.AppVersion .Values.image.tag }}"   # cosmetic when digest is set
+
+  Look up the current digest:
+    docker buildx imagetools inspect {{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}
+{{- end }}
+
 Documentation: https://agledger.ai/docs
 Pricing:       https://agledger.ai/pricing
