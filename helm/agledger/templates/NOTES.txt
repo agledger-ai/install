@@ -36,6 +36,14 @@ Next steps:
      curl -X POST http://localhost:3001/v1/admin/license/reload \
        -H "Authorization: Bearer <platform-key>"
 
+SCITT / COSE export surfaces (T1 audit interop):
+  - GET /v1/records/{id}/attestation               canonical COSE_Sign1 chain (application/cose-sequence)
+  - GET /v1/records/{id}/attestation?receipts=true Transparent Statements (Receipts at label 394)
+  - GET /v1/records/{id}/attestation.bundle        sigstore-bundle v0.3 projection
+  - POST /v1/scitt/entries                         register a customer Signed Statement → Receipt
+  - GET /.well-known/scitt-keys                    CBOR COSE_KeySet (unauthenticated)
+  Capability matrix: curl http://localhost:3001/v1/conformance | jq .capabilities
+
 {{- if .Values.provisioning.enabled }}
 
 Provisioning:
