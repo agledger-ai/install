@@ -51,10 +51,22 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{/*
 Build the full image reference from values.
+
+If `image.digest` is set, it is concatenated as `repository@sha256:...` and the
+tag is omitted from the rendered reference (kubelet resolves by content hash,
+ignoring any tag drift). The mutable-tag `IfNotPresent` cache trap — where a
+node keeps an older image because something is already tagged with the same
+name — is bypassed entirely. For production, prefer pinning by digest.
+
+Otherwise the reference is `repository:tag` (tag defaults to Chart.AppVersion).
 */}}
 {{- define "agledger.image" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest }}
+{{- else -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repository $tag }}
+{{- end -}}
 {{- end }}
 
 {{/*
