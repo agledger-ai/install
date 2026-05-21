@@ -305,16 +305,16 @@ provisioning:
   # Mutually exclusive with inline content below.
   # Each ConfigMap is mounted directly as the corresponding subdirectory.
   existingConfigMaps:
-    enterprises: ""  # ConfigMap name for enterprises/*.yaml
+    orgs: ""  # ConfigMap name for orgs/*.yaml
     agents: ""       # ConfigMap name for agents/*.yaml
     webhooks: ""     # ConfigMap name for webhooks/*.yaml
     schemas: ""      # ConfigMap name for schemas/*.yaml
 
   # Inline YAML content — a ConfigMap is created automatically.
   # Each key becomes a file in the corresponding subdirectory.
-  enterprises: {}
+  orgs: {}
   #  my-corp.yaml: |
-  #    enterprises:
+  #    orgs:
   #      - name: My Corp
   #        slug: my-corp
 
