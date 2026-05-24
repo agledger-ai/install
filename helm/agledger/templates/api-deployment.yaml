@@ -37,6 +37,9 @@ spec:
         - name: api
           image: {{ include "agledger.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Node 24 Permission Model hardening (see values.yaml `permission`).
+          # Prepends --permission + --allow-* to the image CMD's entry script.
+          args: [{{ include "agledger.permissionArgs" . }}"dist/src/index.js"]
           ports:
             - name: http
               containerPort: 3000
