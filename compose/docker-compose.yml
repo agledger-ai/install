@@ -63,7 +63,12 @@ services:
   agledger-worker:
     image: agledger/agledger:${AGLEDGER_VERSION:-latest}
     init: true
-    command: ['dist/src/worker.js']
+    # The worker overrides the image CMD, so it must carry the Node 24
+    # Permission Model flags itself (the API inherits them from the Dockerfile
+    # CMD). Same profile: deny writes + child-process/worker/addons/wasi/
+    # inspector; network is ungated. File SIEM sink → add
+    # --allow-fs-write=/var/log/agledger here too.
+    command: ['--permission', '--allow-fs-read=*', 'dist/src/worker.js']
     ports:
       - '127.0.0.1:3002:3001'
     env_file:

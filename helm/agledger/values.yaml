@@ -36,6 +36,19 @@ image:
 #     terminating old ones, so the cluster needs ~2x per-pod CPU/memory headroom
 #     during a rollout. On a single 2 vCPU node this fails to schedule and
 #     `helm upgrade` hangs (issue #241 / testbed F-366).
+# Node 24 Permission Model runtime hardening (--permission, stable in Node 24).
+# Applied to both the API and worker. Denies filesystem WRITES, child processes,
+# worker threads, native addons, WASI, and the inspector — the primitives a
+# compromised npm dependency reaches for. Network is NOT gated by Node's
+# permission model, so listeners + outbound webhook/JWKS/federation calls are
+# unaffected. Both the API and worker boot verified-clean under this profile.
+permission:
+  enabled: true
+  # Extra node --allow-* args appended to both API and worker argv. Use to widen
+  # the sandbox for opt-in features that need a denied capability, e.g.:
+  #   - "--allow-fs-write=/var/log/agledger"   # file SIEM sink (SIEM_FILE_ENABLED)
+  extraAllowArgs: []
+
 api:
   replicaCount: 1
   # Recreate is the safe default for single-node clusters. Switch to RollingUpdate

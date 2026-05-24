@@ -42,7 +42,8 @@ spec:
         - name: worker
           image: {{ include "agledger.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/nodejs/bin/node", "dist/src/worker.js"]
+          # Node 24 Permission Model hardening (see values.yaml `permission`).
+          command: ["/nodejs/bin/node", {{ include "agledger.permissionArgs" . }}"dist/src/worker.js"]
           ports:
             - name: health
               containerPort: {{ .Values.worker.healthPort }}
