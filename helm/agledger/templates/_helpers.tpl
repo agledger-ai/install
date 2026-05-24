@@ -116,6 +116,19 @@ License file volume (use inside pod.volumes).
 {{- end }}
 
 {{/*
+Node 24 Permission Model argv prefix. Emits a comma-terminated list of quoted
+node argv entries (`"--permission", "--allow-fs-read=*", ...`) to prepend before
+the entry script in a container command/args array. Empty when
+`permission.enabled` is false. `permission.extraAllowArgs` widens the sandbox
+(e.g. `--allow-fs-write=/var/log/agledger` for the file SIEM sink).
+*/}}
+{{- define "agledger.permissionArgs" -}}
+{{- if .Values.permission.enabled -}}
+"--permission", "--allow-fs-read=*", {{ range .Values.permission.extraAllowArgs }}{{ . | quote }}, {{ end }}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Provisioning ConfigMap name (chart-generated).
 */}}
 {{- define "agledger.provisioningConfigMapName" -}}
