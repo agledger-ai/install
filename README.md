@@ -117,9 +117,12 @@ cosign verify --key cosign.pub --insecure-ignore-tlog=true registry-1.docker.io/
 # run that produced the image. The output includes the git commit, build ID, and
 # start/finish timestamps.
 cosign verify-attestation --key cosign.pub --type slsaprovenance1 --insecure-ignore-tlog=true agledger/agledger:<version>
+
+# CycloneDX SBOM — the software bill of materials, cryptographically bound to the image.
+cosign verify-attestation --key cosign.pub --type cyclonedx --insecure-ignore-tlog=true agledger/agledger:<version>
 ```
 
-SBOM and SLSA provenance attestations are attached to each release on this repo.
+SBOM (also bound as the `cyclonedx` attestation above) and SLSA provenance attestations are attached to each release on this repo.
 
 ## Licensing
 
