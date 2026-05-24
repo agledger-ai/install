@@ -57,9 +57,9 @@ services:
     environment:
       - AGLEDGER_PG_BUNDLED=true
       - ALLOW_DB_WITHOUT_SSL=true
-      # Bundled PG ships with max_connections=100. The app-side default pool
-      # of 100 oversubscribes on its own — trigger headroom WARN on every
-      # fresh install. Right-size the pool for a single-host deployment. (F-395)
+      # Bundled PG ships with max_connections=100. The app default (20) already
+      # fits a single host (API pool + worker pool + pg-boss). Pinned explicitly
+      # here so the bundled-PG sizing is visible and overridable. (F-395)
       - DATABASE_POOL_MAX=${DATABASE_POOL_MAX:-20}
     depends_on:
       postgres:
