@@ -52,10 +52,12 @@ For restricted-network deployments, pull images into an internal registry and pa
 
 ## Release Verification
 
-All Docker images and Helm charts are signed with [cosign](https://github.com/sigstore/cosign). The public key is at `cosign.pub` in this repo. SBOM (CycloneDX) and SLSA provenance attestations are attached to each GitHub release.
+All Docker images and Helm charts are signed with [cosign](https://github.com/sigstore/cosign). The public key is at `cosign.pub` in this repo. SBOM (CycloneDX) and SLSA provenance attestations are attached to each GitHub release. **Requires cosign 3.0 or later.**
 
 ```bash
-cosign verify --key cosign.pub agledger/agledger:<version>
+cosign verify --key cosign.pub --insecure-ignore-tlog=true agledger/agledger:<version>
 ```
+
+`--insecure-ignore-tlog=true` is expected — signatures are not published to a public transparency log, so verification is fully offline against the public key (no external-service dependency). cosign 2.x cannot verify these signatures (OCI 1.1 referrer format); use 3.0+.
 
 The signing-key rotation procedure and historical keys are documented at <https://agledger.ai/trust>.
