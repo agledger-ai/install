@@ -63,8 +63,10 @@ Enterprise license files can be delivered out of band. Place the `.pem` at the c
 
 ## Verifying the Image
 
-The public cosign key is at `cosign.pub` in this repo. Verify after loading:
+The public cosign key is at `cosign.pub` in this repo. Verify after loading (**requires cosign 3.0+**):
 
 ```bash
-cosign verify --key cosign.pub agledger/agledger:${VERSION}
+cosign verify --key cosign.pub --insecure-ignore-tlog=true agledger/agledger:${VERSION}
 ```
+
+`--insecure-ignore-tlog=true` is expected — signatures are not in a public transparency log; verification is fully offline against `cosign.pub`. (cosign 2.x cannot read the 3.0 OCI-referrer format.) For a true air-gap, also verify from the offline bundle: `cosign verify --key cosign.pub --bundle agledger-<version>-cosign.bundle --insecure-ignore-tlog=true agledger/agledger:<version>`.

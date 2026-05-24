@@ -102,19 +102,21 @@ Developer Edition installs send an anonymous heartbeat (version, uptime, deploym
 
 ## Verifying the Release
 
-The Docker image and Helm chart are signed with [cosign](https://github.com/sigstore/cosign). The public key is at `cosign.pub` in this repo.
+The Docker image and Helm chart are signed with [cosign](https://github.com/sigstore/cosign). The public key is at `cosign.pub` in this repo. **Requires cosign 3.0 or later.**
+
+`--insecure-ignore-tlog=true` is expected on every command below: signatures are not published to a public transparency log (Rekor), so verification is fully offline against `cosign.pub` with no external-service dependency. The flag only tells cosign not to look for a transparency-log entry — it does not weaken verification against the public key. (cosign 2.x cannot verify these signatures; they use the OCI 1.1 referrer format introduced in cosign 3.0.)
 
 ```bash
 # Image signature — proves the image wasn't swapped between push and pull
-cosign verify --key cosign.pub agledger/agledger:<version>
+cosign verify --key cosign.pub --insecure-ignore-tlog=true agledger/agledger:<version>
 
 # Helm chart signature — cosign takes a bare OCI reference (no oci:// prefix)
-cosign verify --key cosign.pub registry-1.docker.io/agledger/agledger-chart:<version>
+cosign verify --key cosign.pub --insecure-ignore-tlog=true registry-1.docker.io/agledger/agledger-chart:<version>
 
 # SLSA L2 build provenance — cryptographic proof of the source commit and CodeBuild
 # run that produced the image. The output includes the git commit, build ID, and
 # start/finish timestamps.
-cosign verify-attestation --key cosign.pub --type slsaprovenance1 agledger/agledger:<version>
+cosign verify-attestation --key cosign.pub --type slsaprovenance1 --insecure-ignore-tlog=true agledger/agledger:<version>
 ```
 
 SBOM and SLSA provenance attestations are attached to each release on this repo.
