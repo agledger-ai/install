@@ -227,8 +227,10 @@ config:
   trustProxy: false
   nodeEnv: production
   externalUrl: ""  # Public URL where this instance is reachable (e.g., https://agledger.example.com).
-                    # Cascades to A2A agent card URL, federation endpoints.
-                    # Auto-derived from ingress.hosts[0] if not set explicitly.
+                    # The Server's published identity — the issuer (`iss`) signed into every
+                    # record/receipt/cert; required in production. Cascades to the A2A agent
+                    # card URL. Auto-derived from ingress.hosts[0] when set; otherwise falls
+                    # back to https://localhost so the pod boots — override for a real issuer.
   otelProvider: "generic"
   # Primary contract type for agent discovery docs (/llms.txt, /llms-full.txt).
   # Pick your primary use case so agents see it first; empty string uses the

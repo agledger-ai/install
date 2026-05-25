@@ -12,7 +12,12 @@ data:
   PORT: "3000"
   HOST: "0.0.0.0"
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
-  {{- /* Derive external URL: explicit config → first ingress host → omit (app warns at startup) */}}
+  {{- /* Derive the Server's published issuer identity: explicit config → first
+         ingress host → https://localhost. AGLEDGER_EXTERNAL_URL is the `iss`
+         signed into every record/receipt/cert and is required in production;
+         the localhost fallback keeps a default `helm install` bootable, but a
+         real deployment should set config.externalUrl (or an ingress host) so
+         the chain carries a verifiable issuer. */}}
   {{- $extUrl := .Values.config.externalUrl }}
   {{- if and (not $extUrl) .Values.ingress.enabled (gt (len .Values.ingress.hosts) 0) }}
     {{- $firstHost := (index .Values.ingress.hosts 0).host }}
@@ -20,12 +25,10 @@ data:
     {{- $scheme := ternary "https" "http" (or (gt (len .Values.ingress.tls) 0) $hasAlbSsl) }}
     {{- $extUrl = printf "%s://%s" $scheme $firstHost }}
   {{- end }}
-  {{- if $extUrl }}
-  AGLEDGER_EXTERNAL_URL: {{ $extUrl | quote }}
-  {{- end }}
+  AGLEDGER_EXTERNAL_URL: {{ $extUrl | default "https://localhost" | quote }}
   TRUST_PROXY: {{ .Values.config.trustProxy | quote }}
   OTEL_PROVIDER: {{ .Values.config.otelProvider | quote }}
-  AGLEDGER_EXAMPLE_TYPE: {{ .Values.config.exampleType | quote }}
+  AGLEDGER_EXAMPLE_CONTRACT_TYPE: {{ .Values.config.exampleType | quote }}
   RATE_LIMIT_ENABLED: {{ .Values.config.rateLimitEnabled | quote }}
   CORS_ENABLED: {{ .Values.config.corsEnabled | quote }}
   HELMET_ENABLED: {{ .Values.config.helmetEnabled | quote }}
