@@ -53,6 +53,13 @@ spec:
                 name: {{ include "agledger.fullname" . }}
             - secretRef:
                 name: {{ include "agledger.secretName" . }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           livenessProbe:
             httpGet:
               path: /health
