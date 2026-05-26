@@ -171,6 +171,28 @@ postgres:
         memory: 1Gi
 
 # ---
+# Extra environment (API + worker)
+# ---
+# Inject additional env vars into both workloads. The primary use is secrets
+# CONSUMED BY PROVISIONING at boot — e.g. an HMAC webhook secret referenced from
+# provisioning YAML as `secret: ${WEBHOOK_ACME_SECRET}` (substitution happens in
+# the loader; provisioning runs on the API pod). The chart-managed Secret below
+# only carries the engine's own keys, so bring webhook/integration secrets here,
+# ideally by reference to an operator-managed (or External-Secrets-synced) Secret
+# rather than inline plaintext.
+extraEnv: []
+  # - name: WEBHOOK_ACME_SECRET
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: agledger-webhook-secrets
+  #       key: acme
+# Load every key of a Secret/ConfigMap as env — cleanest when you have several
+# provisioning secrets at once.
+extraEnvFrom: []
+  # - secretRef:
+  #     name: agledger-webhook-secrets
+
+# ---
 # Secrets
 # ---
 secrets:
