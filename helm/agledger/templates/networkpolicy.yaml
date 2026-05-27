@@ -16,7 +16,10 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow traffic from ingress controllers
+    # Allow traffic from ingress controllers (podSelectors) and/or explicit CIDRs.
+    # AWS ALB with target-type: ip sends health checks and traffic from VPC ENIs,
+    # not a pod — no podSelector can match it, so admit the VPC/subnet CIDR via
+    # networkPolicy.ingressCIDRs rather than disabling the policy (F-680 / api#592).
     - from:
         {{- range .Values.networkPolicy.ingressFrom }}
         - namespaceSelector: {}
@@ -27,6 +30,10 @@ spec:
           {{- else }}
           podSelector: {}
           {{- end }}
+        {{- end }}
+        {{- range .Values.networkPolicy.ingressCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
         {{- end }}
       ports:
         - port: 3000

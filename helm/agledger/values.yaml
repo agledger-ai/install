@@ -150,7 +150,17 @@ migrate:
 # Database (PostgreSQL)
 # ---
 database:
-  externalUrl: ""  # required if postgres.bundled.enabled is false
+  externalUrl: ""  # required if postgres.bundled.enabled is false.
+                   # IMPORTANT: the role that runs MIGRATIONS (this URL, or
+                   # secrets.databaseUrlMigrate if set) must be a SUPERUSER —
+                   # rds_superuser on Amazon RDS/Aurora, a true superuser on
+                   # self-managed PostgreSQL. The schema installs an event
+                   # trigger (agledger_block_audit_drop, which blocks dropping
+                   # the audit chain), and event triggers require superuser;
+                   # object-ownership / CREATE privileges alone are NOT enough
+                   # and the migration fails with "permission denied to create
+                   # event trigger" (F-679 / api#591). The API/Worker role
+                   # (this URL when databaseUrlMigrate is set) only needs DML.
   poolMax: 20
   # Auto-rollback any idle-in-transaction backend that exceeds this many ms.
   # Closes the F-507 deadlock class where a stalled handler holds an advisory
@@ -202,10 +212,13 @@ secrets:
                              #     -- /nodejs/bin/node dist/scripts/generate-signing-key.js
                              # Preserved across upgrades once set.
   webhookEncryptionKey: ""
-  databaseUrlMigrate: ""    # optional — Owner-role DATABASE_URL for migrations (DDL).
+  databaseUrlMigrate: ""    # optional — superuser DATABASE_URL for migrations (DDL).
                              # When set, the migration job uses this instead of the
                              # standard DATABASE_URL. Enables DB role separation:
-                             # owner for DDL (migrations), agledger_app for DML (API/Worker).
+                             # a SUPERUSER for DDL (migrations — see the event-trigger
+                             # note on database.externalUrl: rds_superuser on RDS/Aurora,
+                             # superuser on self-managed PG), agledger_app for DML
+                             # (API/Worker). scripts/setup-db-roles.sh wires this split.
   licenseKey: ""            # optional — Inline PEM license string (AGLEDGER_LICENSE_KEY)
   apiKeySecretPrevious: ""  # optional — Previous API_KEY_SECRET for key rotation (zero-downtime)
   existingSecret: ""        # set to use a pre-existing Kubernetes Secret
@@ -310,6 +323,13 @@ networkPolicy:
     - podSelector:
         matchLabels:
           app.kubernetes.io/name: traefik
+  # Source CIDRs allowed to reach the API on port 3000, in addition to the
+  # ingressFrom podSelectors above. Required for load balancers that connect
+  # from outside the pod network — e.g. AWS ALB with target-type: ip health-
+  # checks and forwards traffic from VPC ENIs, which no podSelector can match.
+  # Set this to your VPC or subnet CIDR(s) instead of disabling the policy.
+  ingressCIDRs: []
+  #  - 10.0.0.0/16
 
 # ---
 # Pod Disruption Budget
