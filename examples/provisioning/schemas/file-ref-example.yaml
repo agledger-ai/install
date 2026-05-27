@@ -1,0 +1,8 @@
+schemas:
+  # Schemas can reference external JSON files instead of inline objects.
+  # Paths are relative to the provisioning directory root.
+  - type: CUSTOM-REPORT-v1
+    displayName: Report Generation
+    category: Analysis
+    recordSchema: schemas/report-record.json
+    completionSchema: schemas/report-completion.json

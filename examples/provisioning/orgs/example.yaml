@@ -1,0 +1,22 @@
+# Orgs (with inline agents + API keys) provisioned as config-as-code.
+# Reconciled on every boot; rows are tagged managed_by=provisioning. The natural
+# key is `name` — keep it stable across reconciles (renaming creates a new org).
+orgs:
+  - name: Acme Corp
+
+    # Admin-role API key for external integrations. The generated key is returned
+    # once in the provisioning result (and logged at startup) — capture it then;
+    # it is not retrievable afterwards.
+    apiKeys:
+      - role: admin
+        label: primary-api-key
+        scopeProfile: admin-standard
+
+    # Agents owned by this org (they inherit org_id from the parent).
+    agents:
+      - displayName: Acme Task Processor
+        agentClass: system
+        apiKeys:
+          - role: agent
+            label: processor-key
+            scopeProfile: agent-full

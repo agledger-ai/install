@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "required": ["report_type", "date_range_start", "date_range_end"],
+  "properties": {
+    "report_type": {
+      "type": "string",
+      "enum": ["daily_summary", "weekly_digest", "compliance_audit"],
+      "description": "Type of report to generate. Determines template and required data sources."
+    },
+    "date_range_start": {
+      "type": "string",
+      "format": "date",
+      "description": "Start date for the report period (inclusive, ISO 8601)."
+    },
+    "date_range_end": {
+      "type": "string",
+      "format": "date",
+      "description": "End date for the report period (inclusive, ISO 8601)."
+    },
+    "include_charts": {
+      "type": "boolean",
+      "description": "Whether to include generated chart images in the report output."
+    }
+  },
+  "additionalProperties": false
+}
