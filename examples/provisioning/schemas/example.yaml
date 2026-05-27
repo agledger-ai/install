@@ -1,0 +1,62 @@
+schemas:
+  - type: CUSTOM-INVOICE-v1
+    displayName: Invoice Processing
+    category: Financial Operations
+    recordSchema:
+      type: object
+      required:
+        - vendor_name
+        - invoice_number
+        - expected_total
+        - currency
+      properties:
+        vendor_name:
+          type: string
+          maxLength: 200
+          description: Legal name of the vendor submitting the invoice.
+        invoice_number:
+          type: string
+          maxLength: 50
+          description: Unique invoice identifier assigned by the vendor.
+        expected_total:
+          type: number
+          minimum: 0
+          description: Expected invoice total. Verification checks completion amount within tolerance.
+        currency:
+          type: string
+          enum: [USD, EUR, GBP, CAD]
+          description: ISO 4217 currency code for the invoice amount.
+        due_date:
+          type: string
+          format: date
+          description: Payment due date in ISO 8601 format (YYYY-MM-DD).
+      additionalProperties: false
+    completionSchema:
+      type: object
+      required:
+        - invoice_number
+        - actual_total
+        - currency
+        - submitted_at
+      properties:
+        invoice_number:
+          type: string
+          maxLength: 50
+          description: Invoice identifier matching the record.
+        actual_total:
+          type: number
+          minimum: 0
+          description: Actual invoice total after processing. Compared against expected_total.
+        currency:
+          type: string
+          enum: [USD, EUR, GBP, CAD]
+          description: ISO 4217 currency code matching the record currency.
+        line_item_count:
+          type: integer
+          minimum: 1
+          description: Number of line items processed from the invoice.
+        submitted_at:
+          type: string
+          format: date-time
+          description: Timestamp when the completion was submitted (ISO 8601).
+      additionalProperties: false

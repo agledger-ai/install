@@ -1,0 +1,14 @@
+# Standalone agents — each names its owning org via `orgName` (agents.org_id is
+# NOT NULL). The org must already exist (declared under orgs/ or provisioned in
+# an earlier run). The natural key is (orgName, displayName).
+agents:
+  - displayName: External Monitor Agent
+    orgName: Acme Corp
+    agentClass: system
+    apiKeys:
+      - role: agent
+        label: monitor-key
+        scopes:
+          - records:read
+          - completions:read
+          - webhooks:manage

@@ -1,0 +1,50 @@
+# Webhook subscriptions provisioned as config-as-code.
+#
+# `ownerName` matches an org name (ownerType: org) or an agent displayName
+# (ownerType: agent, with `ownerOrgName` to disambiguate the agent). Env-var
+# refs like ${VAR} are substituted from the pod environment at load time —
+# inject secrets via the chart's extraEnv / extraEnvFrom (see values.yaml),
+# never as plaintext here.
+webhooks:
+  # Org webhook — specific record lifecycle events, CloudEvents envelope.
+  - ownerName: Acme Corp
+    ownerType: org
+    url: ${ACME_WEBHOOK_URL:-https://hooks.acme-corp.example.com/agledger}
+    format: cloudevents
+    eventTypes:
+      - record.created
+      - record.completion_submitted
+      - record.gate_complete
+      - record.fulfilled
+      - record.failed
+
+  # Verifiable HMAC webhook — supply the shared secret so the receiver can verify
+  # deliveries (X-AGLedger-Signature: t=...,v1=...). Without a secret the Server
+  # generates a random one that is never surfaced — fine for ed25519, useless for
+  # HMAC. Supplying a secret also pins the scheme to hmac.
+  - ownerName: Acme Corp
+    ownerType: org
+    url: https://hooks.acme-corp.example.com/agledger-hmac
+    eventTypes:
+      - record.created
+    secret: ${ACME_WEBHOOK_SECRET}
+
+  # Settlement webhook → external payment/ERP system. Listing a settlement event
+  # on a Server that has a VAULT_SIGNING_KEY defaults to ed25519 (RFC 9421): the
+  # receiver verifies against /v1/verification-keys with no shared secret
+  # (non-repudiation, same key that signs the chain). Pin it explicitly here.
+  - ownerName: Acme Corp
+    ownerType: org
+    url: https://erp.acme-corp.example.com/agledger/settlement
+    signingAlg: ed25519
+    eventTypes:
+      - signal.emitted
+      - signal.received
+
+  # Agent-owned webhook — all events (no eventTypes filter) for the monitoring
+  # agent. `ownerOrgName` disambiguates the agent's displayName within its org.
+  - ownerName: External Monitor Agent
+    ownerType: agent
+    ownerOrgName: Acme Corp
+    url: https://monitor.example.com/webhooks/agledger
+    format: standard

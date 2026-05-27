@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "required": ["report_type", "page_count", "output_url", "submitted_at"],
+  "properties": {
+    "report_type": {
+      "type": "string",
+      "enum": ["daily_summary", "weekly_digest", "compliance_audit"],
+      "description": "Report type matching the record specification."
+    },
+    "page_count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of pages in the generated report."
+    },
+    "output_url": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048,
+      "description": "URL where the generated report can be downloaded."
+    },
+    "submitted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when the completion was submitted (ISO 8601)."
+    }
+  },
+  "additionalProperties": false
+}
