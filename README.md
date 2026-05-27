@@ -68,9 +68,9 @@ Requirements:
 
 `install.sh --image` lets you point at an internal registry. See [air-gap/README.md](air-gap/README.md) for the full flow.
 
-### Federation (Gateway / Hub)
+### Federation (link multiple Servers)
 
-Gateway and Hub modes are available in both Developer Edition and Enterprise Edition deployments. See `compose/docker-compose.federation.yml` for the configuration.
+AGLedger has a single role: Server. To federate, run more than one Server — each a full, independent install with its own database and signing key — and link them so chains can reference records across Servers. There is no hub, gateway, or central coordinator: peers exchange public keys out of band and handshake directly via `POST /federation/v1/peer`. Configure it by setting the `AGLEDGER_FEDERATION_*` keys in `compose/.env` (see `compose/.env.example`); the keypair generator ships inside the image. Full setup is at [agledger.ai/docs](https://agledger.ai/docs).
 
 ## Upgrading
 
