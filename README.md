@@ -70,7 +70,7 @@ Requirements:
 
 ### Federation (link multiple Servers)
 
-AGLedger has a single role: Server. To federate, run more than one Server — each a full, independent install with its own database and signing key — and link them so chains can reference records across Servers. There is no hub, gateway, or central coordinator: peers exchange public keys out of band and handshake directly via `POST /federation/v1/peer`. Configure it by setting the `AGLEDGER_FEDERATION_*` keys in `compose/.env` (see `compose/.env.example`); the keypair generator ships inside the image. Full setup is at [agledger.ai/docs](https://agledger.ai/docs).
+AGLedger has a single role: Server. To federate, run more than one Server — each a full, independent install with its own database and signing key — and link them so chains can reference records across Servers. There is no hub, gateway, or central coordinator: peers exchange public keys out of band and handshake directly via `POST /federation/v1/peer`. Configure it by setting the `AGLEDGER_FEDERATION_*` keys in `compose/.env` — generate them with `./scripts/generate-federation-keys.sh` (see `compose/.env.example`). Full setup is at [agledger.ai/docs](https://agledger.ai/docs).
 
 ## Upgrading
 
