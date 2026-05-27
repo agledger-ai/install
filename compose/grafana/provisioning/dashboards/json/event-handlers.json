@@ -39,7 +39,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(increase(agledger_cascade_cancel_enqueue_failures_total[24h])) + sum(increase(agledger_webhook_enqueue_failures_total[24h])) + sum(increase(agledger_cascading_verification_enqueue_failures_total[24h])) + sum(increase(agledger_phase2_enqueue_failures_total[24h])) + sum(increase(agledger_reputation_update_failures_total[24h])) + sum(increase(agledger_siem_mapper_failures_total[24h])) + sum(increase(agledger_auth_audit_persist_failures_total[24h])) + sum(increase(agledger_federation_outbound_enqueue_failed_total[24h])) + sum(increase(agledger_siem_http_batches_dropped_total[24h])) + sum(increase(agledger_siem_file_lines_dropped_total[24h]))",
+          "expr": "sum(increase(agledger_cascade_cancel_enqueue_failures_total[24h])) + sum(increase(agledger_webhook_enqueue_failures_total[24h])) + sum(increase(agledger_cascading_gate_enqueue_failures_total[24h])) + sum(increase(agledger_phase2_enqueue_failures_total[24h])) + sum(increase(agledger_reputation_update_failures_total[24h])) + sum(increase(agledger_siem_mapper_failures_total[24h])) + sum(increase(agledger_auth_audit_persist_failures_total[24h])) + sum(increase(agledger_federation_outbound_enqueue_failed_total[24h])) + sum(increase(agledger_siem_http_batches_dropped_total[24h])) + sum(increase(agledger_siem_file_lines_dropped_total[24h]))",
           "legendFormat": "drops in last 24h",
           "refId": "A"
         }
@@ -141,17 +141,17 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(agledger_cascading_verification_enqueue_failures_total[5m])",
+          "expr": "rate(agledger_cascading_gate_enqueue_failures_total[5m])",
           "legendFormat": "drops/sec",
           "refId": "A"
         }
       ],
-      "title": "Cascading-verification enqueue failures",
+      "title": "Cascading-gate enqueue failures",
       "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Phase-2 verification enqueue failures. Same sweep-safety-net pattern as cascading-verification — non-zero rate means we're papering over a queue or DB issue with the periodic sweep.",
+      "description": "Phase-2 gate enqueue failures. Same sweep-safety-net pattern as cascading-gate — non-zero rate means we're papering over a queue or DB issue with the periodic sweep.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
