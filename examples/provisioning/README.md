@@ -7,7 +7,7 @@ Example YAML configuration files for AGLedger's provisioning directory feature. 
 1. Copy this directory to your desired location:
 
    ```bash
-   cp -r deploy/examples/provisioning/ /etc/agledger/provisioning/
+   cp -r examples/provisioning/ /etc/agledger/provisioning/
    ```
 
 2. Customize the YAML files for your environment.
