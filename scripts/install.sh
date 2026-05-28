@@ -291,9 +291,15 @@ fi
 
 # --- Detect Database Mode ---
 
-# Source .env to pick up DATABASE_URL if customer pre-configured it
+# Source .env to pick up DATABASE_URL if customer pre-configured it.
+# A fresh .env copied from .env.example carries AGLEDGER_VERSION=latest, so the
+# source would otherwise clobber an explicit --version request (or the resolved
+# Docker Hub version) and silently install :latest. Preserve the resolved
+# version across the source; the reconciliation below writes it back into .env.
+RESOLVED_VERSION="$AGLEDGER_VERSION"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
+AGLEDGER_VERSION="$RESOLVED_VERSION"
 
 detect_db_mode
 if [[ "${EXTERNAL_DB_FLAG}" == "true" ]]; then
