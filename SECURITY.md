@@ -13,7 +13,7 @@ Email **security@agledger.ai** with:
 - Environment details: version, deployment method (Compose or Helm), OS, relevant configuration
 - Proof of concept: screenshots, logs, or code snippets, if available
 
-For sensitive reports, encrypt using the PGP key published at <https://agledger.ai/.well-known/security.txt>.
+For sensitive reports, request our PGP key by emailing **security@agledger.ai** and we will arrange an encrypted channel.
 
 ## Severity and Response
 
