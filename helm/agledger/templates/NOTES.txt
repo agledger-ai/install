@@ -14,6 +14,19 @@ Health check:
 
 {{- if .Values.postgres.bundled.enabled }}
 Database:   Bundled PostgreSQL (not recommended for production)
+{{- if not .Values.postgres.bundled.storageClassName }}
+
+  NOTE: bundled PG provisions a PersistentVolumeClaim using your cluster's
+  DEFAULT storageclass. If your cluster has none (e.g. EKS 1.30+, which ships
+  no default), the PVC stays Pending and this install hangs (F-727). Check:
+    kubectl get storageclass            # one row must be marked (default)
+    kubectl get pvc {{ include "agledger.fullname" . }}-pgdata   # should be Bound, not Pending
+  If there is no default, set an explicit class and re-run:
+    helm upgrade ... --set postgres.bundled.storageClassName=<class>   # e.g. gp3 on EKS
+{{- else }}
+
+  Bundled PG PVC uses storageclass: {{ .Values.postgres.bundled.storageClassName }}
+{{- end }}
 {{- else }}
 Database:   External (configured via DATABASE_URL secret)
 {{- end }}

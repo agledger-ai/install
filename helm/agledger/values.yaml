@@ -174,6 +174,13 @@ postgres:
     image: postgres:18-alpine
     password: agledger  # WARNING: Change for non-dev deployments. Also used in DATABASE_URL.
     storage: 10Gi
+    # storageClassName for the bundled-PG data PVC. Leave empty ("") to use the
+    # cluster's DEFAULT storageclass. Bundled PG REQUIRES either a default
+    # storageclass or an explicit value here — otherwise the PVC stays Pending
+    # forever and the install hangs (F-727). Modern EKS (1.30+) ships NO default
+    # storageclass (the in-tree gp2 default is gone; the EBS CSI addon does not
+    # mark one default) — on EKS set this to your provisioner's class, e.g. "gp3".
+    storageClassName: ""
     resources:
       requests:
         memory: 256Mi

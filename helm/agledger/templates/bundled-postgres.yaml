@@ -27,6 +27,11 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  {{- with .Values.postgres.bundled.storageClassName }}
+  # F-727: explicit class for clusters with no default storageclass (e.g. EKS
+  # 1.30+). Omitted when empty so the cluster default is used.
+  storageClassName: {{ . | quote }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.postgres.bundled.storage }}
