@@ -14,7 +14,7 @@ image:
   #
   #   image:
   #     repository: agledger/agledger
-  #     tag: "0.23.2"  # cosmetic; ignored when digest is set
+  #     tag: "0.26.5"  # cosmetic; ignored when digest is set
   #     digest: "sha256:749a5a25d05304cd5e6d312ae102cccc74493ccae7c3f4f1264d2749cb0f51d8"
   #
   # Look up the current digest via:
