@@ -7,7 +7,7 @@
 On a machine with internet access:
 
 ```bash
-VERSION=0.19.13
+VERSION=0.27.5   # set to the release you're installing
 docker pull agledger/agledger:${VERSION}
 docker save agledger/agledger:${VERSION} | gzip > agledger-${VERSION}.tar.gz
 ```
@@ -63,10 +63,27 @@ Enterprise license files can be delivered out of band. Place the `.pem` at the c
 
 ## Verifying the Image
 
-The public cosign key is at `cosign.pub` in this repo. Verify after loading (**requires cosign 3.0+**):
+Releases are **keyless-signed** (cosign → Sigstore/Fulcio → public Rekor). Keyless verification needs reachability to the public Sigstore trust root, so **verify on the internet-connected machine before transferring**, then move the *exact* verified bytes by digest. The image is content-addressed, so a matching digest inside the enclave is, by construction, the bytes you verified — `docker load` validates every layer against the manifest digest.
+
+On the internet-connected machine (full recipe in the top-level [README](../README.md#verifying-the-release)):
 
 ```bash
-cosign verify --key cosign.pub --insecure-ignore-tlog=true agledger/agledger:${VERSION}
+IDENTITY='^https://github\.com/agledger-ai/agledger-api/\.github/workflows/.+@refs/tags/v.+$'
+ISSUER='https://token.actions.githubusercontent.com'
+cosign verify --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" agledger/agledger:${VERSION}
+
+# Capture the verified digest and save THAT (not a mutable tag):
+DIGEST=$(crane digest agledger/agledger:${VERSION})
+echo "$DIGEST" > agledger-${VERSION}.digest
+docker save "agledger/agledger@${DIGEST}" | gzip > agledger-${VERSION}.tar.gz
 ```
 
-`--insecure-ignore-tlog=true` is expected — signatures are not in a public transparency log; verification is fully offline against `cosign.pub`. (cosign 2.x cannot read the 3.0 OCI-referrer format.) For a true air-gap, also verify from the offline bundle: `cosign verify --key cosign.pub --bundle agledger-<version>-cosign.bundle --insecure-ignore-tlog=true agledger/agledger:<version>`.
+Transfer `agledger-${VERSION}.tar.gz` and `agledger-${VERSION}.digest`. In the enclave, load and pin the install to that digest (a successful `docker load` of the digest-saved image is the integrity check):
+
+```bash
+docker load < agledger-${VERSION}.tar.gz
+docker tag "agledger/agledger@$(cat agledger-${VERSION}.digest)" registry.internal.example.com/agledger:${VERSION}
+docker push registry.internal.example.com/agledger:${VERSION}
+```
+
+> **Note:** fully *offline* re-verification of the keyless signature inside a disconnected enclave (no Rekor reachability) requires staging the Sigstore trust root out of band and is not part of the supported flow — verify on the connected side and carry the digest, as above. Track <https://agledger.ai/trust> for changes.
