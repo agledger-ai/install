@@ -52,12 +52,21 @@ For restricted-network deployments, pull images into an internal registry and pa
 
 ## Release Verification
 
-All Docker images and Helm charts are signed with [cosign](https://github.com/sigstore/cosign). The public key is at `cosign.pub` in this repo. SBOM (CycloneDX) and SLSA provenance attestations are attached to each GitHub release. **Requires cosign 3.0 or later.**
+All Docker images and Helm charts are **keyless-signed** with [cosign](https://github.com/sigstore/cosign): GitHub Actions OIDC → Sigstore Fulcio → the **public Rekor** transparency log. There is no static signing key — a valid signature binds to the GitHub Actions workflow that built the release, verifiable against the public Sigstore trust root with no source-repository access. **Requires cosign 3.0 or later.** SBOM (CycloneDX) + OpenVEX attestations and **SLSA Build L3** provenance ship with every release.
 
 ```bash
-cosign verify --key cosign.pub --insecure-ignore-tlog=true agledger/agledger:<version>
+IDENTITY='^https://github\.com/agledger-ai/agledger-api/\.github/workflows/.+@refs/tags/v.+$'
+ISSUER='https://token.actions.githubusercontent.com'
+
+# Image (and chart: registry-1.docker.io/agledger/agledger-chart:<version>)
+cosign verify --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" agledger/agledger:<version>
+
+# Attestations
+cosign verify-attestation --type cyclonedx --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" agledger/agledger:<version>
+cosign verify-attestation --type openvex   --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" agledger/agledger:<version>
+
+# SLSA Build L3 provenance (slsa-verifier; pin by digest)
+slsa-verifier verify-image "agledger/agledger@$(crane digest agledger/agledger:<version>)" --source-uri github.com/agledger-ai/agledger-api
 ```
 
-`--insecure-ignore-tlog=true` is expected — signatures are not published to a public transparency log, so verification is fully offline against the public key (no external-service dependency). cosign 2.x cannot verify these signatures (OCI 1.1 referrer format); use 3.0+.
-
-The signing-key rotation procedure and historical keys are documented at <https://agledger.ai/trust>.
+Verification is fully against the public Sigstore trust root — no AGLedger-hosted key or endpoint. The full recipe and per-surface assurance levels (container image = SLSA L3) are in the top-level [README](README.md#verifying-the-release). The signing-key rotation procedure and historical vault keys (the separate audit-chain signing keys) are documented at <https://agledger.ai/trust>.

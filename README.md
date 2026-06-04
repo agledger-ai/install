@@ -102,27 +102,33 @@ Developer Edition installs send an anonymous heartbeat (version, uptime, deploym
 
 ## Verifying the Release
 
-The Docker image and Helm chart are signed with [cosign](https://github.com/sigstore/cosign). The public key is at `cosign.pub` in this repo. **Requires cosign 3.0 or later.**
-
-`--insecure-ignore-tlog=true` is expected on every command below: signatures are not published to a public transparency log (Rekor), so verification is fully offline against `cosign.pub` with no external-service dependency. The flag only tells cosign not to look for a transparency-log entry — it does not weaken verification against the public key. (cosign 2.x cannot verify these signatures; they use the OCI 1.1 referrer format introduced in cosign 3.0.)
+The Docker image and Helm chart are **keyless-signed** with [cosign](https://github.com/sigstore/cosign): GitHub Actions OIDC → Sigstore Fulcio → the **public Rekor** transparency log. There is **no static public key** — a valid signature binds to the GitHub Actions workflow that built the release, and verification runs against the public Sigstore trust root with **no access to the source repository required**. **Requires cosign 3.0 or later** (and [`slsa-verifier`](https://github.com/slsa-framework/slsa-verifier) for the L3 provenance).
 
 ```bash
-# Image signature — proves the image wasn't swapped between push and pull
-cosign verify --key cosign.pub --insecure-ignore-tlog=true agledger/agledger:<version>
+# These two values identify a genuine AGLedger release signature:
+IDENTITY='^https://github\.com/agledger-ai/agledger-api/\.github/workflows/.+@refs/tags/v.+$'
+ISSUER='https://token.actions.githubusercontent.com'
 
-# Helm chart signature — cosign takes a bare OCI reference (no oci:// prefix)
-cosign verify --key cosign.pub --insecure-ignore-tlog=true registry-1.docker.io/agledger/agledger-chart:<version>
+# Image signature — proves the image is a genuine, untampered release
+cosign verify --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
+  agledger/agledger:<version>
 
-# SLSA L2 build provenance — cryptographic proof of the source commit and CodeBuild
-# run that produced the image. The output includes the git commit, build ID, and
-# start/finish timestamps.
-cosign verify-attestation --key cosign.pub --type slsaprovenance1 --insecure-ignore-tlog=true agledger/agledger:<version>
+# Helm chart signature (bare OCI reference, no oci:// prefix)
+cosign verify --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
+  registry-1.docker.io/agledger/agledger-chart:<version>
 
-# CycloneDX SBOM — the software bill of materials, cryptographically bound to the image.
-cosign verify-attestation --key cosign.pub --type cyclonedx --insecure-ignore-tlog=true agledger/agledger:<version>
+# CycloneDX SBOM + OpenVEX — cryptographically bound to the image
+cosign verify-attestation --type cyclonedx --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" agledger/agledger:<version>
+cosign verify-attestation --type openvex   --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" agledger/agledger:<version>
+
+# SLSA Build L3 provenance — proves the image was built by the isolated trusted
+# builder from the claimed source (no repo access needed). Pin by digest:
+DIGEST=$(crane digest agledger/agledger:<version>)   # or: docker buildx imagetools inspect agledger/agledger:<version> --format '{{.Manifest.Digest}}'
+slsa-verifier verify-image "agledger/agledger@${DIGEST}" \
+  --source-uri github.com/agledger-ai/agledger-api
 ```
 
-SBOM (also bound as the `cyclonedx` attestation above) and SLSA provenance attestations are attached to each release on this repo.
+The CycloneDX SBOM and OpenVEX documents are also attached to each release on this repo for direct download.
 
 ## Licensing
 
