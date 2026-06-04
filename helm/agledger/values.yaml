@@ -14,13 +14,14 @@ image:
   #
   #   image:
   #     repository: agledger/agledger
-  #     tag: "0.26.5"  # cosmetic; ignored when digest is set
-  #     digest: "sha256:749a5a25d05304cd5e6d312ae102cccc74493ccae7c3f4f1264d2749cb0f51d8"
+  #     tag: "X.Y.Z"  # cosmetic; ignored when digest is set
+  #     digest: "sha256:<the digest you cosign-verified>"
   #
-  # Look up the current digest via:
-  #   docker buildx imagetools inspect agledger/agledger:<tag>
-  # or (ECR):
-  #   aws ecr describe-images --repository-name agledger-ai/agledger --image-ids imageTag=<tag>
+  # Look up + verify the current digest via:
+  #   cosign verify --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  #     --certificate-identity-regexp '^https://github.com/agledger-ai/agledger-api/.+@refs/tags/v.+$' \
+  #     agledger/agledger:<tag>
+  #   docker buildx imagetools inspect agledger/agledger:<tag>   # to read the digest
   digest: ""
   pullPolicy: IfNotPresent
   pullSecrets: []  # For private registries (ECR, GCR): add imagePullSecrets here
@@ -172,7 +173,7 @@ postgres:
   bundled:
     enabled: false
     image: postgres:18-alpine
-    password: agledger  # WARNING: Change for non-dev deployments. Also used in DATABASE_URL.
+    password: ""  # Empty = auto-generated 32-char random, preserved across upgrades (like apiKeySecret). Set to pin a specific password; also used in DATABASE_URL.
     storage: 10Gi
     # storageClassName for the bundled-PG data PVC. Leave empty ("") to use the
     # cluster's DEFAULT storageclass. Bundled PG REQUIRES either a default
