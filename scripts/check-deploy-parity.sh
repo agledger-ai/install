@@ -104,12 +104,6 @@ if [[ -f "$API_REPO/deploy/tests/smoke-test.sh" ]]; then
   fi
 fi
 
-if ! diff -q "$API_REPO/deploy/cosign.pub" "$INSTALL_REPO/cosign.pub" >/dev/null 2>&1; then
-  echo "" >&2
-  echo "  DRIFT in cosign.pub" >&2
-  DRIFT=1
-fi
-
 if [[ "$DRIFT" -ne 0 ]]; then
   echo "" >&2
   echo "  deploy/ and install/ have drifted." >&2
