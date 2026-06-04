@@ -46,6 +46,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_BACKUP=true
       shift
       ;;
+    --skip-verify)
+      export AGLEDGER_SKIP_VERIFY=true
+      shift
+      ;;
     -h|--help)
       echo "Usage: $0 <TARGET_VERSION> [OPTIONS]"
       echo ""
@@ -54,6 +58,7 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Options:"
       echo "  --skip-backup        Skip pre-upgrade backup (not recommended)"
+      echo "  --skip-verify        Skip image signature verification (dev/local ONLY)"
       echo "  -h, --help           Show this help message"
       exit 0
       ;;
@@ -200,13 +205,20 @@ if [[ "${AGLEDGER_IMAGE}" != "agledger/agledger" ]]; then
   ecr_login
 fi
 
-# --- Pull New Image ---
+# --- Verify + Pull New Image ---
+# Verify the new image's signature BEFORE migrations run against it
+# (cross-repo #667). Pins the upgraded stack to the verified digest.
 
-step "Pulling new image"
-
-docker pull "${AGLEDGER_IMAGE}:${TARGET_VERSION}" \
-  || fatal "Failed to pull ${AGLEDGER_IMAGE}:${TARGET_VERSION}. Check the version exists."
-info "Pulled ${AGLEDGER_IMAGE}:${TARGET_VERSION}"
+verify_image "$AGLEDGER_IMAGE" "$TARGET_VERSION" \
+  || fatal "Image signature verification failed — aborting upgrade before running an unverified image."
+if [[ -n "${RESOLVED_DIGEST:-}" ]]; then
+  upsert_env_var AGLEDGER_IMAGE_PIN "${AGLEDGER_IMAGE}@${RESOLVED_DIGEST}" "${COMPOSE_DIR}/.env"
+  info "Pinned upgrade to verified digest: ${RESOLVED_DIGEST}"
+else
+  # No digest resolved (verification skipped / cosign absent). Drop any stale pin
+  # from a prior version so migrate + restart run the NEW target, not the old digest.
+  sedi '/^AGLEDGER_IMAGE_PIN=/d' "${COMPOSE_DIR}/.env"
+fi
 
 # --- Stop Worker ---
 

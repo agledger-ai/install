@@ -27,7 +27,7 @@ services:
   # --- Database migrations ---
 
   agledger-migrate:
-    image: agledger/agledger:${AGLEDGER_VERSION:-latest}
+    image: ${AGLEDGER_IMAGE_PIN:-agledger/agledger:${AGLEDGER_VERSION:-latest}}
     init: true
     command: ['dist/src/db/migrate.js']
     restart: 'no'
@@ -38,7 +38,7 @@ services:
   # --- API server ---
 
   agledger-api:
-    image: agledger/agledger:${AGLEDGER_VERSION:-latest}
+    image: ${AGLEDGER_IMAGE_PIN:-agledger/agledger:${AGLEDGER_VERSION:-latest}}
     init: true
     ports:
       - '127.0.0.1:3001:3000'
@@ -61,7 +61,7 @@ services:
   # --- Background worker ---
 
   agledger-worker:
-    image: agledger/agledger:${AGLEDGER_VERSION:-latest}
+    image: ${AGLEDGER_IMAGE_PIN:-agledger/agledger:${AGLEDGER_VERSION:-latest}}
     init: true
     # The worker overrides the image CMD, so it must carry the Node 24
     # Permission Model flags itself (the API inherits them from the Dockerfile

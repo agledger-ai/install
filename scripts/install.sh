@@ -68,6 +68,10 @@ while [[ $# -gt 0 ]]; do
       EXTERNAL_DB_FLAG=true
       shift
       ;;
+    --skip-verify)
+      export AGLEDGER_SKIP_VERIFY=true
+      shift
+      ;;
     -h|--help)
       echo "Usage: $0 [OPTIONS]"
       echo ""
@@ -77,6 +81,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --image IMAGE        Container image (default: agledger/agledger)"
       echo "  --with-monitoring    Enable monitoring stack (Jaeger, Prometheus, Grafana)"
       echo "  --external-db        Skip bundled PostgreSQL (DATABASE_URL must be set in .env)"
+      echo "  --skip-verify        Skip image signature verification (dev/local ONLY — never production)"
       echo "  -h, --help           Show this help message"
       exit 0
       ;;
@@ -232,6 +237,16 @@ else
   info "Using Docker Hub: ${AGLEDGER_IMAGE}"
 fi
 
+# --- Verify Image Signature (before anything executes it) ---
+# The image is run below to mint the vault signing key, so it must be proven
+# genuine first. Sets RESOLVED_DIGEST; we pin the running stack to that digest.
+verify_image "$AGLEDGER_IMAGE" "$AGLEDGER_VERSION" \
+  || fatal "Image signature verification failed — aborting before running an unverified image."
+AGLEDGER_IMAGE_PIN=""
+if [[ -n "${RESOLVED_DIGEST:-}" ]]; then
+  AGLEDGER_IMAGE_PIN="${AGLEDGER_IMAGE}@${RESOLVED_DIGEST}"
+fi
+
 # --- Environment Configuration ---
 
 step "Configuring environment"
@@ -272,7 +287,9 @@ ENVEOF
   info "Generated API_KEY_SECRET"
 
   info "Generating VAULT_SIGNING_KEY..."
-  VAULT_SIGNING_KEY_OUTPUT=$(docker run --rm "${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}" \
+  # Run the digest-pinned, signature-verified ref (falls back to tag only when
+  # verification was skipped and no digest resolved).
+  VAULT_SIGNING_KEY_OUTPUT=$(docker run --rm "${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}}" \
     dist/scripts/generate-signing-key.js 2>/dev/null) \
     || fatal "Failed to generate VAULT_SIGNING_KEY. Is the image available? Try: docker pull ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}"
   VAULT_SIGNING_KEY=$(echo "$VAULT_SIGNING_KEY_OUTPUT" | grep -oP '(?<=VAULT_SIGNING_KEY=)\S+' | head -1 || true)
@@ -347,6 +364,20 @@ if [[ "$EXISTING_VERSION" != "$AGLEDGER_VERSION" ]]; then
   fi
 fi
 
+# Pin the running stack to the signature-verified digest (cross-repo #667-C1).
+# compose images resolve `${AGLEDGER_IMAGE_PIN:-agledger/agledger:${AGLEDGER_VERSION}}`,
+# so this makes every container run the exact bytes we just verified — not a
+# floating tag that could be repointed after verification.
+EXISTING_PIN=$(grep -E '^AGLEDGER_IMAGE_PIN=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]' || true)
+if [[ -n "${AGLEDGER_IMAGE_PIN:-}" ]] && [[ "$EXISTING_PIN" != "$AGLEDGER_IMAGE_PIN" ]]; then
+  upsert_env_var AGLEDGER_IMAGE_PIN "${AGLEDGER_IMAGE_PIN}" "$ENV_FILE"
+  RECONCILE_CHANGES+=("pinned image to verified digest: ${AGLEDGER_IMAGE_PIN##*@}")
+elif [[ -z "${AGLEDGER_IMAGE_PIN:-}" ]] && [[ -n "$EXISTING_PIN" ]]; then
+  # Verification skipped this run but a stale pin lingers — drop it so we don't
+  # silently run an old digest against a newly requested version.
+  sedi '/^AGLEDGER_IMAGE_PIN=/d' "$ENV_FILE"
+fi
+
 if [[ "$FRESH_ENV" != "true" ]] && [[ ${#RECONCILE_CHANGES[@]} -gt 0 ]]; then
   info "Reconciled existing .env (${#RECONCILE_CHANGES[@]} change(s)):"
   for change in "${RECONCILE_CHANGES[@]}"; do
@@ -376,7 +407,7 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   DB_TEST_OUTPUT=$(docker run --rm \
     -e DATABASE_URL="${DATABASE_URL}" \
     -e ALLOW_DB_WITHOUT_SSL="${ALLOW_DB_WITHOUT_SSL:-false}" \
-    "${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}" \
+    "${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}}" \
     /nodejs/bin/node -e "
       const pg = require('pg');
       const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
@@ -403,7 +434,7 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   LISTEN_OUTPUT=$(docker run --rm \
     -e DATABASE_URL="${DATABASE_URL}" \
     -e ALLOW_DB_WITHOUT_SSL="${ALLOW_DB_WITHOUT_SSL:-false}" \
-    "${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}" \
+    "${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}}" \
     /nodejs/bin/node -e "
       const pg = require('pg');
       const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
@@ -638,9 +669,9 @@ echo -e "    Container status:           docker compose ps"
 if [[ "${USES_BUNDLED_PG}" == "true" ]] || [[ -z "${AGLEDGER_LICENSE_KEY:-}" ]]; then
   echo ""
   echo -e "  ${BOLD}Telemetry:${NC}"
-  echo -e "    Anonymous usage telemetry is enabled (heartbeat every 48h)."
-  echo -e "    Disable: set AGLEDGER_TELEMETRY=false in .env"
-  echo -e "    Or apply an Enterprise license to auto-disable."
+  echo -e "    Anonymous usage telemetry is OFF by default."
+  echo -e "    Opt in to help development: set AGLEDGER_TELEMETRY=true in .env"
+  echo -e "    (Anonymous heartbeat every 48h; never sent on an Enterprise license.)"
 fi
 
 echo ""

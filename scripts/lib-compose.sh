@@ -71,6 +71,119 @@ error()   { echo -e "$(ts) ${RED}[ERROR]${NC} $*"; }
 step()    { echo -e "\n$(ts) ${BLUE}[STEP]${NC}  ${BOLD}$*${NC}"; }
 fatal()   { error "$*"; exit 1; }
 
+# --- Supply-chain verification (keyless cosign) ---
+
+# The release pipeline (release.yml) keyless-signs every public image + chart via
+# GitHub OIDC -> Fulcio -> public Rekor. These identify a genuine AGLedger
+# release signature; verification is fully offline against the Sigstore trust
+# root and needs NO access to the (private) source repo.
+AGLEDGER_SIGNER_IDENTITY_REGEXP='^https://github\.com/agledger-ai/agledger-api/\.github/workflows/.+@refs/tags/v.+$'
+AGLEDGER_SIGNER_OIDC_ISSUER='https://token.actions.githubusercontent.com'
+
+# Pull + cryptographically verify a Docker Hub image BEFORE anything runs it,
+# then expose its digest in the global RESOLVED_DIGEST. The image is executed to
+# mint the vault signing key, so an unverified/tampered image is silent RCE +
+# key exfiltration — this is the gate that closes that (cross-repo #667-C1).
+#
+# Policy (OOTB-first: a default install must still boot):
+#   AGLEDGER_SKIP_VERIFY=true      -> skip entirely (dev/local ONLY), warn.
+#   custom/private --image         -> skip (not signed by our pipeline), warn.
+#   cosign present + verify FAILS   -> abort (fail closed). The RCE gate.
+#   cosign present + verify OK      -> proceed.
+#   cosign absent                  -> warn loudly + proceed, UNLESS
+#                                     AGLEDGER_REQUIRE_VERIFY=true (then abort).
+# Returns non-zero only when the caller should abort. Sets RESOLVED_DIGEST
+# whenever the pull succeeded (verified or not) so callers can still digest-pin.
+verify_image() {
+  local image="$1" version="$2"
+  local ref="${image}:${version}"
+  RESOLVED_DIGEST=""
+
+  step "Verifying image signature"
+
+  if ! docker pull "$ref"; then
+    error "docker pull ${ref} failed — cannot verify or run an image that isn't present."
+    return 1
+  fi
+  # Resolve the digest for THIS repo specifically — RepoDigests can carry entries
+  # for other repos the same image ID was previously pulled under (mirror/ECR),
+  # so blindly taking [0] could yield a foreign digest. Accept only a well-formed
+  # sha256; otherwise leave empty so callers skip pinning rather than write junk.
+  RESOLVED_DIGEST=$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "$ref" 2>/dev/null \
+    | grep "^${image}@" | head -1 | sed 's/.*@//' || true)
+  [[ "$RESOLVED_DIGEST" == sha256:* ]] || RESOLVED_DIGEST=""
+
+  if [[ "${AGLEDGER_SKIP_VERIFY:-false}" == "true" ]]; then
+    warn "AGLEDGER_SKIP_VERIFY=true — skipping image signature verification (dev/local ONLY, never production)."
+    return 0
+  fi
+  if [[ "$image" != "agledger/agledger" ]]; then
+    warn "Custom image '${image}' is not signed by the AGLedger release pipeline — skipping signature verification."
+    return 0
+  fi
+  if ! command -v cosign &>/dev/null; then
+    if [[ "${AGLEDGER_REQUIRE_VERIFY:-false}" == "true" ]]; then
+      error "cosign not installed and AGLEDGER_REQUIRE_VERIFY=true."
+      error "Install cosign 3.x: https://docs.sigstore.dev/system_config/installation/"
+      return 1
+    fi
+    warn "cosign not installed — cannot cryptographically verify the image before running it."
+    warn "Install cosign 3.x to enable supply-chain verification: https://docs.sigstore.dev/system_config/installation/"
+    warn "Proceeding UNVERIFIED. Set AGLEDGER_REQUIRE_VERIFY=true to make this fatal."
+    return 0
+  fi
+
+  # cosign's own output goes to stderr; we report the result ourselves.
+  if cosign verify \
+       --certificate-identity-regexp "$AGLEDGER_SIGNER_IDENTITY_REGEXP" \
+       --certificate-oidc-issuer "$AGLEDGER_SIGNER_OIDC_ISSUER" \
+       "${image}@${RESOLVED_DIGEST}" >/dev/null 2>&1; then
+    info "Image signature verified (keyless, public Rekor): ${image}@${RESOLVED_DIGEST}"
+    return 0
+  fi
+
+  error "Image signature verification FAILED for ${image}@${RESOLVED_DIGEST}."
+  error "This is NOT a genuine AGLedger release (tampered, swapped, or unsigned image)."
+  error "Refusing to run it. Override for local/dev ONLY with: AGLEDGER_SKIP_VERIFY=true"
+  return 1
+}
+
+# Verify a signed Helm OCI chart's keyless signature (cross-repo #667-C2).
+# Same policy as verify_image. The chart ref is the OCI image form
+# (registry-1.docker.io/agledger/agledger-chart:<version>).
+verify_chart() {
+  local chart_ref="$1"   # e.g. registry-1.docker.io/agledger/agledger-chart:0.27.2
+
+  step "Verifying Helm chart signature"
+
+  if [[ "${AGLEDGER_SKIP_VERIFY:-false}" == "true" ]]; then
+    warn "AGLEDGER_SKIP_VERIFY=true — skipping chart signature verification (dev/local ONLY)."
+    return 0
+  fi
+  if ! command -v cosign &>/dev/null; then
+    if [[ "${AGLEDGER_REQUIRE_VERIFY:-false}" == "true" ]]; then
+      error "cosign not installed and AGLEDGER_REQUIRE_VERIFY=true. Install cosign 3.x."
+      return 1
+    fi
+    warn "cosign not installed — cannot verify the chart signature before install."
+    warn "Install cosign 3.x: https://docs.sigstore.dev/system_config/installation/"
+    warn "Proceeding UNVERIFIED. Set AGLEDGER_REQUIRE_VERIFY=true to make this fatal."
+    return 0
+  fi
+
+  if cosign verify \
+       --certificate-identity-regexp "$AGLEDGER_SIGNER_IDENTITY_REGEXP" \
+       --certificate-oidc-issuer "$AGLEDGER_SIGNER_OIDC_ISSUER" \
+       "$chart_ref" >/dev/null 2>&1; then
+    info "Chart signature verified (keyless, public Rekor): ${chart_ref}"
+    return 0
+  fi
+
+  error "Chart signature verification FAILED for ${chart_ref}."
+  error "Refusing to install an unverified chart. Override for dev ONLY with: AGLEDGER_SKIP_VERIFY=true"
+  return 1
+}
+
 # --- ECR Authentication ---
 
 ecr_login() {
