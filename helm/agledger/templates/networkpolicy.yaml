@@ -65,7 +65,7 @@ spec:
         - port: 5432
           protocol: TCP
     {{- end }}
-    # Webhook delivery (HTTPS outbound) + telemetry + federation
+    # Webhook delivery (HTTPS outbound) + federation (+ opt-in telemetry, off by default)
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
