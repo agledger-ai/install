@@ -358,7 +358,7 @@ verify_sibling_reachability() {
   if [[ "${USES_BUNDLED_PG:-true}" != "true" ]]; then
     return 0
   fi
-  # The agledger image is distroless (no nc, no pg_isready) — node + net is the
+  # The agledger image ships no nc/pg_isready — node + net is the
   # only reliable TCP-probe primitive shipped in it. Using `compose run` against
   # the agledger-migrate service definition guarantees we hit the same network
   # path migrate itself will use moments later.
