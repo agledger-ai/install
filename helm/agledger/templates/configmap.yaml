@@ -57,8 +57,8 @@ data:
   PROVISIONING_PRUNE: "true"
   {{- end }}
   {{- end }}
-  {{- if .Values.marketplace.productCode }}
-  AWS_MARKETPLACE_PRODUCT_CODE: {{ .Values.marketplace.productCode | quote }}
+  {{- if .Values.marketplace.productId }}
+  AWS_MARKETPLACE_PRODUCT_ID: {{ .Values.marketplace.productId | quote }}
   {{- end }}
   {{- if .Values.marketplace.publicKeyVersion }}
   AWS_MARKETPLACE_PUBLIC_KEY_VERSION: {{ .Values.marketplace.publicKeyVersion | quote }}
