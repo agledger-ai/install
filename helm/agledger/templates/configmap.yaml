@@ -26,6 +26,10 @@ data:
     {{- $extUrl = printf "%s://%s" $scheme $firstHost }}
   {{- end }}
   AGLEDGER_EXTERNAL_URL: {{ $extUrl | default "https://localhost" | quote }}
+  # Post-v1.0 the migration baseline is frozen — the migrate job refuses to
+  # rebase an applied migration's checksum. Shipped migrations are immutable;
+  # every schema delta is a new numbered migration.
+  AGLEDGER_LAUNCH_FROZEN: "true"
   TRUST_PROXY: {{ .Values.config.trustProxy | quote }}
   OTEL_PROVIDER: {{ .Values.config.otelProvider | quote }}
   AGLEDGER_EXAMPLE_CONTRACT_TYPE: {{ .Values.config.exampleType | quote }}

@@ -34,6 +34,8 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL_MIGRATE:-${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-agledger}@postgres:5432/${POSTGRES_DB:-agledger}}}
       - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-}
+      # Post-v1.0: shipped migrations are immutable; refuse any baseline checksum rebase.
+      - AGLEDGER_LAUNCH_FROZEN=${AGLEDGER_LAUNCH_FROZEN:-true}
 
   # --- API server ---
 
