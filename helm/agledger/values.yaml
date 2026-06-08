@@ -255,7 +255,7 @@ license:
 # AWS Marketplace — alternative license source via License Manager
 # ---
 marketplace:
-  productCode: ""             # AWS Marketplace product code (enables Marketplace licensing)
+  productId: ""              # AWS Marketplace product ID (prod-…) — enables Marketplace licensing
   publicKeyVersion: ""        # Key version for CheckoutLicense (default: SDK default)
   # IAM role for License Manager access (IRSA on EKS)
   serviceAccountAnnotations: {}
