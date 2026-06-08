@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
     --release)      RELEASE="$2"; shift 2 ;;
     --values)       EXTRA_VALUES="$2"; shift 2 ;;
     --version)      VERSION="$2"; shift 2 ;;
-    --marketplace)  EXTRA_ARGS="$EXTRA_ARGS --set marketplace.productCode=$2"; shift 2 ;;
+    --marketplace)  EXTRA_ARGS="$EXTRA_ARGS --set marketplace.productId=$2"; shift 2 ;;
     --ca-cert)      CA_CERT="$2"; shift 2 ;;
     --no-ca-cert)   CA_CERT="none"; shift ;;
     --skip-verify)  export AGLEDGER_SKIP_VERIFY=true; shift ;;
