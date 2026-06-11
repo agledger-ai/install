@@ -91,8 +91,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Override image if --image was provided
+# Override image if --image was provided. A tag in --image (repo:tag) is split
+# off here: image refs are later composed as ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION},
+# so a tagged --image would otherwise compose an invalid `repo:tag:version`. A ':'
+# only counts as a tag when it's in the final path segment (after the last '/'),
+# so a registry port (e.g. localhost:5000/agledger) isn't mistaken for one; a
+# digest pin (...@sha256:...) is left untouched.
 if [[ -n "$CUSTOM_IMAGE" ]]; then
+  image_last_segment="${CUSTOM_IMAGE##*/}"
+  if [[ "$image_last_segment" == *:* && "$image_last_segment" != *@* ]]; then
+    image_tag="${CUSTOM_IMAGE##*:}"
+    CUSTOM_IMAGE="${CUSTOM_IMAGE%:*}"
+    if [[ -z "$REQUESTED_VERSION" ]]; then
+      REQUESTED_VERSION="$image_tag"
+    elif [[ "$REQUESTED_VERSION" != "$image_tag" ]]; then
+      fatal "--image tag ':${image_tag}' conflicts with --version '${REQUESTED_VERSION}'. Pass a tagless --image (e.g. registry/agledger) plus --version, or make them match."
+    fi
+  fi
   AGLEDGER_IMAGE="$CUSTOM_IMAGE"
 fi
 

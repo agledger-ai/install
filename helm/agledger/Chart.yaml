@@ -1,9 +1,9 @@
 apiVersion: v2
 name: agledger-chart
-description: AGLedger — Accountability and audit infrastructure for agentic systems
+description: AGLedger — a self-hosted cryptographic notary for automated work (Ed25519-signed, hash-chained, verifiable offline)
 type: application
-version: 1.0.0
-appVersion: "1.0.0"
+version: 1.0.1
+appVersion: "1.0.1"
 kubeVersion: ">=1.27.0-0"
 maintainers:
   - name: AGLedger
