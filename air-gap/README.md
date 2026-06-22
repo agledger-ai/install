@@ -7,7 +7,7 @@
 On a machine with internet access:
 
 ```bash
-VERSION=0.27.5   # set to the release you're installing
+VERSION=1.0.3   # set to the release you're installing
 docker pull agledger/agledger:${VERSION}
 docker save agledger/agledger:${VERSION} | gzip > agledger-${VERSION}.tar.gz
 ```
@@ -55,7 +55,7 @@ helm install agledger agledger-chart-${VERSION}.tgz \
 
 ## Telemetry
 
-Developer Edition sends an anonymous heartbeat to `telemetry.agledger.ai` every 48 hours. In a restricted-network environment this call will fail and log a warning; it has no effect on runtime behavior. Set `AGLEDGER_TELEMETRY=false` in `.env` to disable it cleanly. Enterprise licenses disable it automatically.
+Developer Edition can send an anonymous heartbeat to `telemetry.agledger.ai` every 48 hours, but it is **opt-in and off by default** — in an air-gapped install it sends nothing unless you set `AGLEDGER_TELEMETRY=true` in `.env`. If you do opt in within a restricted network, the call simply fails and logs a warning with no effect on runtime behavior. Enterprise licenses never send telemetry.
 
 ## License Activation
 

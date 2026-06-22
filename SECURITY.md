@@ -40,7 +40,7 @@ AGLedger supports good-faith security research. We will not pursue legal action 
 
 AGLedger is self-hosted. All application data — records, receipts, audit logs, API keys — stays within your infrastructure. License validation runs locally with no phone-home.
 
-The Developer Edition (free, unlicensed installs) sends an anonymous heartbeat to `telemetry.agledger.ai` every 48 hours. The heartbeat contains only the running version, uptime, deployment mode, and an anonymous install ID. It contains no application data, no usage metrics, and no identifiers that can be traced to a customer or account. Disable it by setting `AGLEDGER_TELEMETRY=false` in your `.env` file. Enterprise licenses disable telemetry automatically.
+The Developer Edition (free, unlicensed installs) can send an anonymous heartbeat to `telemetry.agledger.ai` every 48 hours, but it is **opt-in and off by default** — nothing is sent unless you explicitly set `AGLEDGER_TELEMETRY=true` in your `.env` file. When enabled, the heartbeat contains only the running version, uptime, deployment mode, and an anonymous install ID. It contains no application data, no usage metrics, and no identifiers that can be traced to a customer or account. Enterprise licenses never send telemetry.
 
 Outbound network access is required only for:
 
