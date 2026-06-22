@@ -98,7 +98,7 @@ Collects container logs, resource usage, redacted configuration, and database he
 
 ## Telemetry
 
-Developer Edition installs send an anonymous heartbeat (version, uptime, deployment mode — no usage data, no identifiers) every 48 hours. Disable it by setting `AGLEDGER_TELEMETRY=false` in `compose/.env`. Enterprise licenses disable telemetry automatically.
+Developer Edition installs can send an anonymous heartbeat (version, uptime, deployment mode — no usage data, no identifiers) every 48 hours, but it is **opt-in and off by default**: enable it by setting `AGLEDGER_TELEMETRY=true` in `compose/.env`. Enterprise licenses never send telemetry.
 
 ## Verifying the Release
 
