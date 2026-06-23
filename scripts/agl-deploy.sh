@@ -12,11 +12,13 @@ set -euo pipefail
 # migrations, or health gating. The Server's own scripts remain the source of
 # truth; this just carries them over SSH.
 #
-# POSITIONING: single-node evaluation and development convenience. The bundled
-# Compose stack binds the API to 127.0.0.1:3001 (loopback only), so you reach
-# it over an SSH tunnel (`tunnel`), optionally through a bastion (`-J`). For a
-# production deployment, use the Helm chart (Kubernetes) — see
-# https://agledger.ai/docs/guides/self-hosted/install — not this wrapper.
+# POSITIONING: deploys and operates a single-node AGLedger — the Developer
+# Edition (Docker Compose on Docker CE, bundled PostgreSQL): free and
+# production-ready. The Compose stack binds the API to 127.0.0.1:3001 (loopback
+# only), so you reach it over an SSH tunnel (`tunnel`), optionally through a
+# bastion (`-J`); for production, set AGLEDGER_EXTERNAL_URL and front the API
+# with TLS. Enterprise (Kubernetes/Helm, external database) is the path for
+# multi-node scale and HA — https://agledger.ai/docs/install.
 #
 # Requirements:
 #   Local : ssh, bash, base64.
@@ -106,8 +108,9 @@ Options (env var equivalent in parens):
   -y, --yes                                     don't prompt for confirmation
   -h, --help                                    show this help
 
-Production deploys use the Helm chart, not this wrapper:
-  https://agledger.ai/docs/guides/self-hosted/install
+Deploys the Developer Edition (Compose on Docker CE, bundled PostgreSQL) — free
+and production-ready. Enterprise (Kubernetes/Helm, external database) is the
+multi-node scale/HA tier: https://agledger.ai/docs/install
 EOF
 }
 
@@ -218,7 +221,7 @@ confirm() {
 
 # --- Commands ----------------------------------------------------------------
 
-# Idempotent prereq install: installs ONLY what's missing (docker via the
+# Idempotent prereq install: installs ONLY what's missing (Docker CE via the
 # official convenience script, apt packages, cosign from its GitHub release).
 # Escalates with sudo only when there's actually something to install, and
 # fails loudly with the gap list if root is needed but unavailable — it never
@@ -262,7 +265,11 @@ if [ -n "$MISSING_PKGS" ]; then
   $SUDO apt-get install -y -qq $MISSING_PKGS
 fi
 if [ "$NEED_DOCKER" = 1 ]; then
-  curl -fsSL https://get.docker.com | $SUDO sh
+  # Docker CE only — the Developer Edition substrate. If get.docker.com doesn't
+  # support the release yet, fail loudly pointing at the CE install rather than
+  # pulling in a different (distro-packaged) Docker.
+  curl -fsSL https://get.docker.com | $SUDO sh || true
+  have docker || { echo "ERROR: could not install Docker CE. Install Docker Engine (CE) — https://docs.docker.com/engine/install/ — and re-run." >&2; exit 1; }
   $SUDO systemctl enable --now docker >/dev/null 2>&1 || true
   NEED_GROUP=1
 fi
@@ -296,9 +303,9 @@ cmd_install() {
   require_target
   if [[ -n "$AGL_EXTERNAL_DB_URL" ]]; then
     fatal "--external-db is not supported by the remote wrapper (its secret/.env ordering is subtle).
-       Run the external-DB path directly on the target instead:
+       An external database is an Enterprise feature; run that path directly on the target:
          ssh ${AGL_SSH_TARGET} 'cd ${AGL_REMOTE_DIR} && DATABASE_URL=... scripts/install.sh --external-db --non-interactive'
-       The wrapper supports the bundled-PostgreSQL eval/dev path."
+       The wrapper deploys the Developer Edition (bundled PostgreSQL)."
   fi
 
   step "Installing prerequisites on ${AGL_SSH_TARGET}"
