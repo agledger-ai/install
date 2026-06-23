@@ -90,7 +90,7 @@ AGLedger has a single role: Server. To federate, run more than one Server — ea
 ./scripts/agl-deploy.sh -H user@10.0.0.5 -J you@bastion -i ~/.ssh/key tunnel
 ```
 
-Commands: `bootstrap install upgrade status health key logs tunnel shell uninstall [--purge]`. Flags can be set as `AGL_*` environment variables to pin a host once. This is a single-node evaluation/development convenience; for production use the [Helm chart](#kubernetes-helm). Run `./scripts/agl-deploy.sh --help` for the full reference.
+Commands: `bootstrap install upgrade status health key logs tunnel shell uninstall [--purge]`. Flags can be set as `AGL_*` environment variables to pin a host once. It deploys the Developer Edition (Compose on Docker CE, bundled PostgreSQL) — free and production-ready; for production, set `AGLEDGER_EXTERNAL_URL` and front the API with TLS. For multi-node scale, HA, or an external database, see the [Helm chart](#kubernetes-helm) (Enterprise). Run `./scripts/agl-deploy.sh --help` for the full reference.
 
 ## Upgrading
 
