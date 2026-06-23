@@ -72,6 +72,26 @@ Requirements:
 
 AGLedger has a single role: Server. To federate, run more than one Server — each a full, independent install with its own database and signing key — and link them so chains can reference records across Servers. There is no hub, gateway, or central coordinator: peers exchange public keys out of band and handshake directly via `POST /federation/v1/peer`. Configure it by setting the `AGLEDGER_FEDERATION_*` keys in `compose/.env` — generate them with `./scripts/generate-federation-keys.sh` (see `compose/.env.example`). Full setup is at [agledger.ai/docs](https://agledger.ai/docs).
 
+## Remote deploy (`agl-deploy.sh`)
+
+`scripts/agl-deploy.sh` is a client-side wrapper that deploys and operates a Server on a remote host over SSH. It runs from your machine, opens one SSH connection per operation, and drives the same signed installer and on-target scripts described above — it never reimplements image verification, key minting, or migrations.
+
+```bash
+# deploy to a fresh host: installs prerequisites, verifies the image, mints the platform key
+./scripts/agl-deploy.sh -H user@host -i ~/.ssh/key install
+
+# day-2: status / health / logs / reprint key / upgrade
+./scripts/agl-deploy.sh -H user@host -i ~/.ssh/key status
+
+# the Compose API is loopback-only on the remote — reach it over an SSH tunnel
+./scripts/agl-deploy.sh -H user@host -i ~/.ssh/key tunnel    # then: curl http://localhost:3001/health
+
+# reach a host you can't route to directly (bridge-private container) via a bastion
+./scripts/agl-deploy.sh -H user@10.0.0.5 -J you@bastion -i ~/.ssh/key tunnel
+```
+
+Commands: `bootstrap install upgrade status health key logs tunnel shell uninstall [--purge]`. Flags can be set as `AGL_*` environment variables to pin a host once. This is a single-node evaluation/development convenience; for production use the [Helm chart](#kubernetes-helm). Run `./scripts/agl-deploy.sh --help` for the full reference.
+
 ## Upgrading
 
 ```bash
