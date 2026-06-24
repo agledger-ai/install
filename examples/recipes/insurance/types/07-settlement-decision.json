@@ -1,0 +1,90 @@
+{
+  "type": "meridian-settlement-decision-v1",
+  "category": "settlement",
+  "defaultGateMode": "principal",
+  "displayName": "Settlement Decision (human override)",
+  "description": "The human-verdict path for a settlement that EXCEEDS delegated authority. You only open this record after meridian-authority-band-v1 returned FAILED (over-band) or a fraud/SIU/injury flag forces human review. AI recommends; a human supervisor renders the verdict. There is no agent-asserted `withinBand` boolean here on purpose \u2014 band membership was already decided by the engine on the band-check record (referenced by authorityBandCheckRef). Because reaching this type means the amount is over-band, an overrideJustification is unconditionally required. | Separation of duties: the accept/reject verdict MUST be rendered by a SEPARATE principal identity (the human supervisor agent key), NOT the performer agent that submitted the recommendation. One agent that both recommends and renders the verdict self-attests the gate and defeats the control.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "claimNumber",
+      "coverageCheckRef",
+      "authorityBandCheckRef",
+      "authorityBand"
+    ],
+    "properties": {
+      "claimNumber": {
+        "type": "string"
+      },
+      "coverageCheckRef": {
+        "type": "string"
+      },
+      "authorityBandCheckRef": {
+        "type": "string",
+        "description": "recordId of the FAILED meridian-authority-band-v1 check that routed this settlement to a human."
+      },
+      "authorityBand": {
+        "type": "string",
+        "enum": [
+          "junior",
+          "senior",
+          "manager",
+          "committee"
+        ]
+      },
+      "exposureId": {
+        "type": "string",
+        "description": "Optional exposure discriminator. One accident can have multiple exposures (e.g. own-vehicle collision + third-party property + bodily injury); set the same exposureId across the coverage/damage/authority/settlement records of one exposure so N exposures coexist under one claimNumber."
+      },
+      "appealOfRef": {
+        "type": "string",
+        "description": "Optional. recordId of the original settlement-outcome being appealed; recording the appeal as a fresh human re-determination that supersedes the original (the original chain stays intact)."
+      }
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "proposedAmount",
+      "coverage",
+      "rationale",
+      "overrideJustification"
+    ],
+    "properties": {
+      "proposedAmount": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "amount",
+          "currency"
+        ],
+        "properties": {
+          "amount": {
+            "type": "number",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD"
+            ]
+          }
+        }
+      },
+      "coverage": {
+        "type": "string",
+        "minLength": 3
+      },
+      "rationale": {
+        "type": "string",
+        "minLength": 10
+      },
+      "overrideJustification": {
+        "type": "string",
+        "minLength": 10
+      }
+    }
+  }
+}

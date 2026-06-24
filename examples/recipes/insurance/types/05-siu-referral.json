@@ -1,0 +1,30 @@
+{
+  "type": "meridian-siu-referral-v1",
+  "category": "fraud",
+  "displayName": "SIU Referral",
+  "description": "Flag-and-refer to the human Special Investigations Unit. A structurally separate human path: an agent that files this record cannot also settle the flagged claim.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "claimNumber",
+      "reason",
+      "routedTo"
+    ],
+    "properties": {
+      "claimNumber": {
+        "type": "string"
+      },
+      "reason": {
+        "type": "string",
+        "minLength": 5
+      },
+      "routedTo": {
+        "type": "string"
+      },
+      "fraudScoreRef": {
+        "type": "string"
+      }
+    }
+  }
+}

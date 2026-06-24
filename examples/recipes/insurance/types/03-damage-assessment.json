@@ -1,0 +1,41 @@
+{
+  "type": "meridian-damage-assessment-v1",
+  "category": "assessment",
+  "displayName": "Damage Assessment",
+  "description": "Loss estimate plus the method used and an evidence reference. Notarize-only \u2014 AGLedger records the estimate and how it was reached; it does not judge whether the estimate is correct.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "claimNumber",
+      "estimateAmount",
+      "method",
+      "evidenceRef"
+    ],
+    "properties": {
+      "claimNumber": {
+        "type": "string"
+      },
+      "estimateAmount": {
+        "type": "number",
+        "minimum": 0
+      },
+      "method": {
+        "type": "string",
+        "enum": [
+          "photo",
+          "computer-vision",
+          "adjuster-onsite",
+          "body-shop-estimate"
+        ]
+      },
+      "evidenceRef": {
+        "type": "string"
+      },
+      "exposureId": {
+        "type": "string",
+        "description": "Optional exposure discriminator. One accident can have multiple exposures (e.g. own-vehicle collision + third-party property + bodily injury); set the same exposureId across the coverage/damage/authority/settlement records of one exposure so N exposures coexist under one claimNumber."
+      }
+    }
+  }
+}
