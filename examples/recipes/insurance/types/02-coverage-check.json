@@ -1,0 +1,56 @@
+{
+  "type": "meridian-coverage-check-v1",
+  "category": "coverage",
+  "displayName": "Coverage Determination",
+  "description": "Coverage sub-agent assertion. A denial must carry both a factual and a legal basis \u2014 enforced by an if/then conditional-required, so the record cannot deny coverage without recording why.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "claimNumber",
+      "coverageRef",
+      "determination"
+    ],
+    "properties": {
+      "claimNumber": {
+        "type": "string"
+      },
+      "coverageRef": {
+        "type": "string"
+      },
+      "determination": {
+        "type": "string",
+        "enum": [
+          "covered",
+          "denied",
+          "partial"
+        ]
+      },
+      "denialBasis": {
+        "type": "string",
+        "minLength": 10
+      },
+      "denialLegalBasis": {
+        "type": "string",
+        "minLength": 3
+      },
+      "exposureId": {
+        "type": "string",
+        "description": "Optional exposure discriminator. One accident can have multiple exposures (e.g. own-vehicle collision + third-party property + bodily injury); set the same exposureId across the coverage/damage/authority/settlement records of one exposure so N exposures coexist under one claimNumber."
+      }
+    },
+    "if": {
+      "properties": {
+        "determination": {
+          "const": "denied"
+        }
+      }
+    },
+    "then": {
+      "required": [
+        "denialBasis",
+        "denialLegalBasis"
+      ]
+    }
+  }
+}

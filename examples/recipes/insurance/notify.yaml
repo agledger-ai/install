@@ -1,0 +1,28 @@
+# Insurance vertical recipe — Notify (webhook) subscriptions.
+# A declarative list of the webhook subscriptions this recipe expects. Create each
+# one against your Server with POST /v1/webhooks (see the Webhooks guide). The
+# signing secret is returned ONCE at create time — capture it then; it is null on
+# every subsequent read.
+#
+# SSRF: private / link-local / metadata IPs are blocked at connect regardless of
+# DNS; SSRF_ALLOW_CIDRS is the only escape hatch. Point each url at a public HTTPS
+# endpoint you control (or HTTP only on an LB-terminated-TLS install with
+# SSRF_ALLOW_PLAIN_HTTP set). Replace the example.com URLs with your own.
+subscriptions:
+  # The claims operations channel — every business-meaningful settlement moment.
+  - name: claims-ops
+    url: https://claims-events.example.com/agledger
+    signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
+    eventTypes:
+      - record.created            # a claim step opened
+      - record.gate_complete      # an engine/principal verdict rendered (band check or human settlement)
+      - record.fulfilled          # within-authority settlement settled
+      - record.failed             # over-authority band check FAILED -> escalate to human
+      - signal.emitted            # terminal Settlement Signal fired
+  # SIU / fraud channel — route flag-and-refer events to the investigations queue.
+  - name: siu-referrals
+    url: https://siu-queue.example.com/agledger
+    signingAlg: hmac
+    eventTypes:
+      - record.created            # filter receiver-side on type == meridian-siu-referral-v1
+      - record.reference_added

@@ -1,0 +1,56 @@
+{
+  "type": "meridian-claim-intake-v1",
+  "category": "claim-intake",
+  "displayName": "Claim Intake (FNOL)",
+  "description": "First Notice of Loss. Orchestrator-emitted claim binding \u2014 the root record every downstream step references by claimNumber. lossType is the PRIMARY loss mechanism; set injuryInvolved=true when an occupant-injury exposure accompanies it (e.g. collision + injury) so it is routed to PIP/injury handling rather than collapsing the two into one enum value.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "claimNumber",
+      "policyNumber",
+      "lossDate",
+      "lossDescription",
+      "insured",
+      "lossType"
+    ],
+    "properties": {
+      "claimNumber": {
+        "type": "string",
+        "minLength": 3
+      },
+      "policyNumber": {
+        "type": "string",
+        "minLength": 3
+      },
+      "lossDate": {
+        "type": "string",
+        "format": "date"
+      },
+      "lossDescription": {
+        "type": "string",
+        "minLength": 10
+      },
+      "insured": {
+        "type": "string"
+      },
+      "lossType": {
+        "type": "string",
+        "enum": [
+          "collision",
+          "hail",
+          "theft",
+          "liability",
+          "injury",
+          "flood",
+          "water",
+          "other"
+        ]
+      },
+      "injuryInvolved": {
+        "type": "boolean",
+        "description": "true if the loss carries an occupant-injury component alongside the primary lossType; signals a separate injury/PIP exposure."
+      }
+    }
+  }
+}
