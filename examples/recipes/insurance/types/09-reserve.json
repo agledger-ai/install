@@ -1,0 +1,54 @@
+{
+  "type": "meridian-reserve-v1",
+  "category": "reserve",
+  "displayName": "Claim Reserve",
+  "description": "The insurer's evolving estimate of the ultimate cost of a claim (or one exposure of it), set early and adjusted over the claim's life. Notarize-only audit record \u2014 premature reserve takedown or inflation is a known abuse, so each reserve change is recorded with its amount, type, and basis, attributed and tamper-evident. Reserve history is a chain of these records linked by supersedesRef; the latest non-superseded reserve is the current one. AGLedger records the reserve and its stated basis; it does not judge whether the reserve is actuarially correct.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "claimNumber",
+      "reserveAmount",
+      "currency",
+      "reserveType",
+      "basis"
+    ],
+    "properties": {
+      "claimNumber": {
+        "type": "string"
+      },
+      "exposureId": {
+        "type": "string",
+        "description": "Optional. Scope the reserve to one exposure of a multi-exposure claim."
+      },
+      "reserveAmount": {
+        "type": "number",
+        "minimum": 0
+      },
+      "currency": {
+        "type": "string",
+        "enum": [
+          "USD"
+        ]
+      },
+      "reserveType": {
+        "type": "string",
+        "enum": [
+          "indemnity",
+          "expense",
+          "combined"
+        ],
+        "description": "indemnity = expected payout to/for the claimant; expense = loss-adjustment expense; combined = both."
+      },
+      "basis": {
+        "type": "string",
+        "minLength": 10,
+        "description": "Why the reserve is set at this amount (the audit-relevant justification)."
+      },
+      "supersedesRef": {
+        "type": "string",
+        "description": "Optional. recordId of the prior reserve record this change supersedes, forming the reserve history chain."
+      }
+    }
+  }
+}

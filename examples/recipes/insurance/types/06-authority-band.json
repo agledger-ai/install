@@ -1,0 +1,96 @@
+{
+  "type": "meridian-authority-band-v1",
+  "category": "settlement",
+  "defaultGateMode": "auto",
+  "displayName": "Authority Band Check",
+  "description": "Engine-evaluated authority gate. The criteria carry the band ceiling for the claim; the performer submits the proposed amount as completion evidence. The rules engine settles FULFILLED when proposedAmount <= ceiling (within delegated authority) and FAILED otherwise (exceeds authority -> must escalate to the principal-gated settlement-decision). The ENGINE decides band membership from the amount; this deliberately replaces an agent-asserted `withinBand` boolean, which an agent can set false-ly to dodge the override path. Auto-gate criteria here are intrinsically terminal-determinable: proposedAmount<=ceiling has a truthful answer at completion time. | Band ceilings are OPERATOR POLICY, not an agent guess: the carrier configures a per-band ceiling table (illustrative: junior $10k, senior $50k, manager $250k, committee above) and the orchestrator supplies authorityCeiling from it \u2014 do not invent a ceiling per claim. On FAILED (over authority), open a meridian-settlement-decision-v1 and set its authorityBandCheckRef to THIS record id to route the settlement to a human supervisor.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "claimNumber",
+      "authorityBand",
+      "authorityCeiling"
+    ],
+    "properties": {
+      "claimNumber": {
+        "type": "string"
+      },
+      "authorityBand": {
+        "type": "string",
+        "enum": [
+          "junior",
+          "senior",
+          "manager",
+          "committee"
+        ]
+      },
+      "authorityCeiling": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "amount",
+          "currency"
+        ],
+        "properties": {
+          "amount": {
+            "type": "number",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD"
+            ]
+          }
+        }
+      },
+      "exposureId": {
+        "type": "string",
+        "description": "Optional exposure discriminator. One accident can have multiple exposures (e.g. own-vehicle collision + third-party property + bodily injury); set the same exposureId across the coverage/damage/authority/settlement records of one exposure so N exposures coexist under one claimNumber."
+      }
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "proposedAmount",
+      "rationale"
+    ],
+    "properties": {
+      "proposedAmount": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "amount",
+          "currency"
+        ],
+        "properties": {
+          "amount": {
+            "type": "number",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD"
+            ]
+          }
+        }
+      },
+      "rationale": {
+        "type": "string",
+        "minLength": 10
+      }
+    }
+  },
+  "fieldMappings": [
+    {
+      "ruleId": "denomination:max-inclusive",
+      "criteriaPath": "authorityCeiling",
+      "evidencePath": "proposedAmount",
+      "valueType": "denomination"
+    }
+  ]
+}

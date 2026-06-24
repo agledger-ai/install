@@ -1,0 +1,55 @@
+{
+  "type": "meridian-fraud-score-v1",
+  "category": "fraud",
+  "displayName": "Fraud Score",
+  "description": "Fraud sub-agent score. An SIU referral (referSIU=true) must carry at least one red flag and a referral reference (flag-and-refer audit) \u2014 enforced by an if/then conditional-required, so the agent cannot quietly refer without recording the basis.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "claimNumber",
+      "score",
+      "referSIU"
+    ],
+    "properties": {
+      "claimNumber": {
+        "type": "string"
+      },
+      "score": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "redFlags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "referSIU": {
+        "type": "boolean"
+      },
+      "siuReferralRef": {
+        "type": "string"
+      }
+    },
+    "if": {
+      "properties": {
+        "referSIU": {
+          "const": true
+        }
+      }
+    },
+    "then": {
+      "required": [
+        "redFlags",
+        "siuReferralRef"
+      ],
+      "properties": {
+        "redFlags": {
+          "minItems": 1
+        }
+      }
+    }
+  }
+}
