@@ -1,0 +1,21 @@
+{
+  "type": "keystone-credit-application-v1",
+  "category": "credit",
+  "displayName": "Credit Application Intake",
+  "description": "Credit-ECOA mirror. Root record for a consumer-credit application. Orchestrator-emitted: the scoring decision, underwriting verdict, and adverse-action notice reference this by applicationId. The creditor of record (the lending institution) is bound here; it is the party on whom the ECOA §1002.9 notice obligation falls, not the bureau or the scoring vendor. Notarize-only.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["applicationId", "creditorName", "product", "requestedAmount", "applicantRef"],
+    "properties": {
+      "applicationId": {"type": "string", "minLength": 3},
+      "creditorName": {"type": "string", "minLength": 2, "description": "The creditor of record — carries the ECOA notice obligation."},
+      "product": {"type": "string", "enum": ["personal-loan", "auto", "card", "mortgage", "line-of-credit"]},
+      "requestedAmount": {
+        "type": "object", "additionalProperties": false, "required": ["amount", "currency"],
+        "properties": {"amount": {"type": "number", "minimum": 0}, "currency": {"type": "string", "enum": ["USD"]}}
+      },
+      "applicantRef": {"type": "string", "description": "Internal reference to the applicant (no PII on-chain)."}
+    }
+  }
+}

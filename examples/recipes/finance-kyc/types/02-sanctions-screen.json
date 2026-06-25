@@ -1,0 +1,82 @@
+{
+  "type": "keystone-sanctions-screen-v1",
+  "category": "screening",
+  "displayName": "Sanctions / PEP Screen (external screening SoR)",
+  "description": "The screening engine's rendered disposition for a customer, as produced by the external system of record (OpenSanctions yente /match scores candidates against OFAC SDN, EU and UN sanctions, and PEP datasets, at a specific data/list version). Notarize-only: AGLedger notarizes what the screening engine rendered; the screening engine renders the match. This is the screening-engine seam, capturing which subject was screened, against which list version, with which scorer, and the top match score the engine returned. A match:false / low-score screen can terminate clean (auto-clear at the gate); a match:true / high-score screen is the contested input that the engine gate routes to a human analyst. The list version is load-bearing for audit: regulators want to know which snapshot a hit was rendered against.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "caseId",
+      "onboardingCaseRef",
+      "screeningProvider",
+      "datasetVersion",
+      "scope",
+      "scorer",
+      "topScore",
+      "matchCount",
+      "match"
+    ],
+    "properties": {
+      "caseId": {
+        "type": "string"
+      },
+      "onboardingCaseRef": {
+        "type": "string",
+        "description": "recordId of the keystone-onboarding-case-v1 this screen belongs to."
+      },
+      "screeningProvider": {
+        "type": "string",
+        "description": "The external screening system of record, e.g. 'OpenSanctions yente'."
+      },
+      "datasetVersion": {
+        "type": "string",
+        "description": "The list/dataset snapshot the disposition was rendered against (yente returns the dataset version) \u2014 the audit anchor for 'which snapshot'."
+      },
+      "scope": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The screening scope/dataset the engine rendered against, captured verbatim (e.g. yente 'default' = sanctions+PEPs+risk, 'sanctions', 'peps', or a deployment's custom collection name). Free-form on purpose: a closed enum would reject a faithful disposition rendered against a dataset this recipe did not anticipate."
+      },
+      "scorer": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The scoring algorithm/model the engine applied, captured verbatim (yente scorers include logic-v2 (default-equivalent multi-feature), logic-v1, name-based, name-qualified, and regression-v1). Free-form so a deployment on a different screening vendor is not forced into one engine's names."
+      },
+      "topScore": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Highest candidate match score the engine returned (0.0-1.0)."
+      },
+      "matchCount": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Number of candidates the engine returned above its own retrieval floor."
+      },
+      "match": {
+        "type": "boolean",
+        "description": "The engine's boolean disposition on the top candidate (yente results[].match)."
+      },
+      "topMatchId": {
+        "type": "string",
+        "description": "OpenSanctions entity id of the top candidate (cross-reference into the screening system of record)."
+      },
+      "topMatchCaption": {
+        "type": "string",
+        "description": "Display caption of the top candidate, e.g. 'Alexander Vyacheslavovich ZAKHAROV'."
+      },
+      "topMatchDatasets": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Which list(s) the top candidate is on (e.g. ['us_ofac_sdn','eu_fsf'])."
+      },
+      "explanationsDigest": {
+        "type": "string",
+        "description": "Hex digest of the yente per-feature explanations payload \u2014 binds the 'why' of the match without putting the full breakdown on-chain."
+      }
+    }
+  }
+}

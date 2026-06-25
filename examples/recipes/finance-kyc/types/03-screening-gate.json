@@ -1,0 +1,34 @@
+{
+  "type": "keystone-screening-gate-v1",
+  "category": "screening",
+  "defaultGateMode": "auto",
+  "displayName": "Screening Score Gate (engine-decided)",
+  "description": "Engine-evaluated screening threshold gate. The criteria carry the institution-configured clearThreshold (the documented, risk-based score cutoff below which a screen auto-clears); the performer submits the observedScore the screening engine returned as completion evidence. The rules engine settles FULFILLED when observedScore <= clearThreshold (auto-clear, no human needed) and FAILED otherwise (above the clear band, so a human dispositions the hit via keystone-alert-disposition-v1). The engine decides review-required from the score, which replaces an agent-asserted needsReview/isHit boolean an agent could set false to launder a hit past human review. clearThreshold is operator policy, not an agent guess: the institution configures the cutoff and keeps calibration evidence (an un-tuned threshold is a regulatory finding). On FAILED, open a keystone-alert-disposition-v1 and set screeningGateRef to this record id to route the hit to a Level-1 analyst. Create this gate with tolerance:0 (the recommended default): a nonzero auto-gate tolerance widens the band (observedScore <= clearThreshold + tolerance) and would silently auto-clear a hit past human review, re-introducing the dodge this engine gate exists to prevent. The contract type cannot itself forbid tolerance (it is a record-creation parameter, not a schema field), so the orchestrator supplies tolerance:0.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["caseId", "screenRef", "clearThreshold"],
+    "properties": {
+      "caseId": {"type": "string"},
+      "screenRef": {"type": "string", "description": "recordId of the keystone-sanctions-screen-v1 whose score is being banded."},
+      "clearThreshold": {"type": "number", "minimum": 0, "maximum": 1, "description": "Institution-configured auto-clear cutoff (0.0-1.0). Scores at or below clear automatically; scores above require human disposition."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["observedScore", "rationale"],
+    "properties": {
+      "observedScore": {"type": "number", "minimum": 0, "maximum": 1, "description": "The top match score the screening engine returned for this case (keystone-sanctions-screen-v1.topScore)."},
+      "rationale": {"type": "string", "minLength": 10}
+    }
+  },
+  "fieldMappings": [
+    {
+      "ruleId": "number:max-inclusive",
+      "criteriaPath": "clearThreshold",
+      "evidencePath": "observedScore",
+      "valueType": "number"
+    }
+  ]
+}

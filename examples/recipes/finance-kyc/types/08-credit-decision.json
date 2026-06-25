@@ -1,0 +1,25 @@
+{
+  "type": "keystone-credit-decision-v1",
+  "category": "credit",
+  "displayName": "Credit Scoring Decision (scoring engine disposition)",
+  "description": "Credit-ECOA mirror. The scoring/decision engine's rendered disposition for an application. Notarize-only: AGLedger notarizes what the scoring engine rendered (the FICO/VantageScore/custom model plus the lender's policy engine); the engine scores. disposition is approve/decline/refer: approve and decline can be fully automated; refer routes to a human underwriter. The bureau (CRA) is an upstream data input, not the renderer — FCRA §615(a) requires the eventual notice to state the CRA did not make the decision. reasonCodes are the candidate principal-reason codes the model emitted; the adverse-action notice carries the ones that actually drove this decision. The scoring disposition here is a placeholder for your own scoring and policy engine: wire your real model the same way the sanctions screen wires the external screening engine, so the load-bearing value on this leg is the notice it feeds.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["applicationId", "applicationRef", "disposition", "scoreModel", "score", "scoreRange"],
+    "properties": {
+      "applicationId": {"type": "string"},
+      "applicationRef": {"type": "string", "description": "recordId of the keystone-credit-application-v1."},
+      "disposition": {"type": "string", "enum": ["approve", "decline", "refer"], "description": "approve/decline can auto-finalize; refer routes to a human underwriter."},
+      "scoreModel": {"type": "string", "description": "The model that produced the score, e.g. 'FICO 9', 'VantageScore 4.0', 'keystone-ml-v3'."},
+      "score": {"type": "integer", "description": "The numeric score used (FCRA §615 requires this be disclosed when a score is used)."},
+      "scoreRange": {
+        "type": "object", "additionalProperties": false, "required": ["min", "max"],
+        "properties": {"min": {"type": "integer"}, "max": {"type": "integer"}},
+        "description": "The model's possible-score range (FCRA disclosure)."
+      },
+      "reasonCodes": {"type": "array", "items": {"type": "string"}, "maxItems": 5, "description": "Candidate key-factor/reason codes the model emitted (FCRA up-to-4, +1 for inquiries)."},
+      "craName": {"type": "string", "description": "The credit reporting agency that supplied the report/score (FCRA §615(a) — the upstream data source, not the decision-maker)."}
+    }
+  }
+}

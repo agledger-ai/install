@@ -1,0 +1,44 @@
+{
+  "type": "halcyon-pa-appeal-v1",
+  "category": "appeal",
+  "defaultGateMode": "principal",
+  "displayName": "PA Appeal / Peer-to-Peer Re-determination",
+  "description": "An appeal of an upheld determination — peer-to-peer, internal appeal, or external independent review (IRO). Records a fresh human re-determination that supersedes the appealed determination via appealOfRef; the original chain stays intact, since the appeal appends rather than rewrites history. The principal here is the re-determining authority — a different medical director for an internal appeal, or an external IRO reviewer for independent review, attributed through the verdict. This covers the appeals and peer-to-peer arc of the PA lifecycle. AGLedger notarizes the re-determination verdict; it does not render it.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["claimId", "appealOfRef", "appealLevel", "filedBy"],
+    "properties": {
+      "claimId": {"type": "string"},
+      "appealOfRef": {"type": "string", "description": "recordId of the halcyon-pa-determination-v1 (or a prior appeal) being appealed."},
+      "appealLevel": {
+        "type": "string",
+        "enum": ["peer-to-peer", "internal-appeal", "external-review"],
+        "description": "peer-to-peer = ordering MD vs payer MD; internal-appeal = payer's formal appeal; external-review = independent IRO."
+      },
+      "filedBy": {"type": "string", "description": "Who filed (provider / member / representative)."},
+      "urgency": {"type": "string", "enum": ["expedited", "standard"]}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["newRecommendation", "appealBasis", "reviewerRole"],
+    "properties": {
+      "newRecommendation": {
+        "type": "string",
+        "enum": ["uphold", "overturn", "partial"],
+        "description": "The appeal outcome. overturn = reverses the denial; uphold = sustains it; partial = modified."
+      },
+      "appealBasis": {"type": "string", "minLength": 10},
+      "reviewerRole": {
+        "type": "string",
+        "enum": ["payer-medical-director", "external-iro-physician", "specialty-matched-reviewer"],
+        "description": "The re-determining authority's role (external-iro-physician for IRO independence)."
+      },
+      "denialBasis": {"type": "string", "minLength": 10, "description": "Required when the appeal upholds the denial (CMS-0057-F)."}
+    },
+    "if": {"properties": {"newRecommendation": {"const": "uphold"}}},
+    "then": {"required": ["denialBasis"]}
+  }
+}

@@ -10,12 +10,14 @@ bodies, a `register.sh` that POSTs them to your Server in order, and a `notify.y
 describing the webhook subscriptions it expects. You administer your own Server, so
 running `register.sh` against it *is* the install.
 
-| Recipe | Status | Directory |
-|--------|--------|-----------|
-| Insurance (auto claims) | Validated reference vertical (API v1.0.3) | [`insurance/`](insurance/) |
+| Recipe | What it covers | Directory |
+|--------|----------------|-----------|
+| Insurance — auto claims | First notice of loss through coverage, property and bodily-injury assessment, fraud and SIU review, an engine-decided authority gate, and the human settlement decision. | [`insurance/`](insurance/) |
+| Healthcare — prior authorization | A PA decision rendered by the payer's utilization-management system (HL7 Da Vinci PAS); contested cases routed to a medical director. | [`healthcare-prior-auth/`](healthcare-prior-auth/) |
+| Finance — KYC / sanctions adverse action | Sanctions and PEP screening (built against OpenSanctions), an engine-decided score-band gate, two-tier review, and the regulator-facing no-tip-off notice. | [`finance-kyc/`](finance-kyc/) |
 
-More verticals are in development with design partners. If you need one that is not
-here yet, contact sales@agledger.ai.
+We add and exercise new verticals over time. If you need one that is not here yet,
+contact sales@agledger.ai.
 
 See the **Define Custom Types** and **Webhooks** guides in the documentation for the
 per-call mechanics behind `register.sh` and `notify.yaml`.

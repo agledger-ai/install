@@ -1,0 +1,29 @@
+{
+  "type": "halcyon-pa-request-v1",
+  "category": "intake",
+  "displayName": "Prior Authorization Request",
+  "description": "The prior-authorization request as submitted to the payer (provider side). Notarize-only: it records WHAT was asked for and WHEN, so the provider has a signed 'this is what we submitted' artifact and the 72h-expedited / 7-day-standard CMS-0057-F decision clock has a tamper-evident start. AGLedger does not adjudicate it — the payer's Da Vinci PAS / X12 278 system does (see halcyon-pa-disposition-v1). Correlate every downstream record by claimId.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["claimId", "memberRef", "serviceCode", "orderingProvider", "urgency", "submittedVia"],
+    "properties": {
+      "claimId": {
+        "type": "string",
+        "description": "Business key correlating all records for this PA across the request -> disposition -> determination -> appeal chain."
+      },
+      "memberRef": {"type": "string", "description": "De-identified member reference (e.g. member/MRN-hash). Do NOT put PHI in the clear."},
+      "serviceCode": {"type": "string", "description": "Requested HCPCS/CPT code."},
+      "serviceDescription": {"type": "string"},
+      "orderingProvider": {"type": "string"},
+      "placeOfService": {"type": "string"},
+      "urgency": {
+        "type": "string",
+        "enum": ["expedited", "standard"],
+        "description": "expedited = 72h decision clock; standard = 7-day. Drives the CMS-0057-F timeliness obligation the disposition is measured against."
+      },
+      "submittedVia": {"type": "string", "description": "e.g. 'Da Vinci PAS' / 'X12 278' / payer portal."},
+      "clinicalDocRef": {"type": "string", "description": "Optional reference to the DTR QuestionnaireResponse / clinical evidence packet supporting medical necessity."}
+    }
+  }
+}
