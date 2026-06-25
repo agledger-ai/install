@@ -50,23 +50,91 @@ Outbound network access is required only for:
 
 For restricted-network deployments, pull images into an internal registry and pass `--image` to `install.sh`. See [air-gap/README.md](air-gap/README.md). Disable telemetry as described above.
 
+## What we build and scan
+
+Every release is built by GitHub Actions — **no signing key exists on any build
+machine.** Trust flows from GitHub's OIDC identity → Sigstore Fulcio (an ephemeral
+certificate) → the **public Rekor** transparency log. A valid signature proves the
+artifact was produced by *our* release workflow at a tagged commit, and it is
+verifiable against the public Sigstore trust root with **no access to the source
+repository**.
+
+Before an image is published, the release pipeline runs two **blocking** gates
+against the exact bytes being shipped — a failure on either stops the release, so a
+flagged image never reaches the registry:
+
+- **CVE scan** (Trivy, CRITICAL/HIGH, fixable) — known-vulnerable OS and
+  dependency versions. Reviewed exceptions for unfixable upstream CVEs are tracked
+  in an attested OpenVEX document.
+- **Known-malware scan** (ClamAV) — signature scan of the image's shipping
+  filesystem, with a built-in positive control that fails the build if the signature
+  database is missing or stale (so a "clean" result can never be a no-op). This is
+  the layer CVE scanning is blind to: a compromised or typosquatted dependency that
+  injects a payload has no CVE.
+
+Source code is additionally checked by Semgrep (SAST) before each release and by
+Dependabot (dependency updates) continuously.
+
+> **What we claim, precisely.** The malware scan certifies *"no known-malware
+> signatures detected"* — it does **not**, and cannot, prove the absence of a novel
+> backdoor (no scanner can). The strong, honest guarantee is the chain below: the
+> image is the unmodified output of our isolated, non-falsifiable (SLSA Build L3)
+> pipeline from an identified commit, scanned against known CVEs and malware
+> signatures, signed to our workflow identity — all verifiable by you, offline,
+> without trusting us.
+
 ## Release Verification
 
-All Docker images and Helm charts are **keyless-signed** with [cosign](https://github.com/sigstore/cosign): GitHub Actions OIDC → Sigstore Fulcio → the **public Rekor** transparency log. There is no static signing key — a valid signature binds to the GitHub Actions workflow that built the release, verifiable against the public Sigstore trust root with no source-repository access. **Requires cosign 3.0 or later.** SBOM (CycloneDX) + OpenVEX attestations and **SLSA Build L3** provenance ship with every release.
+**Requires cosign 3.0 or later** (and `slsa-verifier`, `crane`, and `jq` for the
+provenance and malware-scan steps). Every command below verifies against the public
+Sigstore trust root — no AGLedger-hosted key or endpoint, no repository access.
 
 ```bash
 IDENTITY='^https://github\.com/agledger-ai/agledger-api/\.github/workflows/.+@refs/tags/v.+$'
 ISSUER='https://token.actions.githubusercontent.com'
 
-# Image (and chart: registry-1.docker.io/agledger/agledger-chart:<version>)
-cosign verify --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" agledger/agledger:<version>
+# 1. Image signature (signing the digest covers :<version> and :latest)
+cosign verify --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
+  agledger/agledger:<version>
 
-# Attestations
+# 2. Helm chart signature
+cosign verify --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
+  registry-1.docker.io/agledger/agledger-chart:<version>
+
+# 3. Attestations bound to the image: SBOM (CycloneDX), OpenVEX, malware-scan
 cosign verify-attestation --type cyclonedx --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" agledger/agledger:<version>
 cosign verify-attestation --type openvex   --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" agledger/agledger:<version>
 
-# SLSA Build L3 provenance (slsa-verifier; pin by digest)
-slsa-verifier verify-image "agledger/agledger@$(crane digest agledger/agledger:<version>)" --source-uri github.com/agledger-ai/agledger-api
+# 3a. Malware-scan result. IMPORTANT: verify-attestation checks the signature and
+#     the predicate TYPE — not the field values. Assert the result yourself:
+cosign verify-attestation --type https://agledger.ai/attestations/malware-scan/v1 \
+  --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
+  agledger/agledger:<version> \
+  | jq -e '.payload | @base64d | fromjson | .predicate.result == "no-detections"' >/dev/null \
+  && echo "malware scan: no detections"
+
+# 4. SLSA Build L3 provenance (non-falsifiable; isolated builder, posted to public Rekor)
+slsa-verifier verify-image "agledger/agledger@$(crane digest agledger/agledger:<version>)" \
+  --source-uri github.com/agledger-ai/agledger-api \
+  --builder-id 'https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@refs/tags/v2.1.0'
+
+# 5. Verifier conformance corpus (a release asset). The .sha256 proves integrity;
+#    the Sigstore bundle proves it is genuinely FROM AGLedger and unchanged:
+cosign verify-blob \
+  --bundle agledger-<version>-conformance-corpus.tar.gz.sigstore.json \
+  --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
+  agledger-<version>-conformance-corpus.tar.gz
 ```
 
-Verification is fully against the public Sigstore trust root — no AGLedger-hosted key or endpoint. The full recipe and per-surface assurance levels (container image = SLSA L3) are in the top-level [README](README.md#verifying-the-release). The signing-key rotation procedure and historical vault keys (the separate audit-chain signing keys) are documented at <https://agledger.ai/trust>.
+**Per-surface assurance (no over- or under-claiming):** the container image is
+**SLSA Build L3**. The public packages — npm (`@agledger/*`, `npm --provenance`) —
+are **SLSA Build L2**; PyPI (`agledger`, Trusted Publishing / PEP 740) ships
+**signed publish attestations** (not a numbered SLSA level). All share the same
+GitHub-OIDC → Sigstore trust root. We deliberately do not pursue SLSA L4
+(hermetic/reproducible builds): it would not change what you can verify here.
+
+The CycloneDX SBOM and OpenVEX document are also attached to every
+[GitHub Release](https://github.com/agledger-ai/install/releases) as
+`agledger-<version>-sbom.cdx.json` and `agledger-<version>-vex.openvex.json` for
+direct download. The signing-key rotation procedure and the separate audit-chain
+(vault) signing keys are documented at <https://agledger.ai/trust>.
