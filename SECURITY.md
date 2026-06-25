@@ -137,3 +137,32 @@ for direct download (`agledger-<version>-sbom.cdx.json`,
 <https://agledger.ai/docs>; the separate audit-chain (vault) signing keys are
 published live at `GET /.well-known/agledger-vault-keys.json` and
 `GET /v1/verification-keys`.
+
+## Mirrored registries (AWS Marketplace / ECR)
+
+`agledger/agledger` on Docker Hub is the authoritative artifact — it carries the
+Sigstore signature and the SBOM / OpenVEX / malware-scan / SLSA L3 attestations, and
+it's where every command above runs. The **AWS Marketplace** delivery (and any other
+ECR mirror) is a **byte-identical copy of that image — the same digest** — but the
+Sigstore artifacts are intentionally **not** carried into ECR, because AWS
+Marketplace requires a plain image manifest and rejects attestation artifacts.
+
+So provenance for a Marketplace pull is established by **digest equality**: verify the
+authoritative Docker Hub image, then confirm the Marketplace image is the same bytes.
+
+```bash
+# 1. Verify the authoritative public image (signature + SLSA L3, as above) and note
+#    its digest — this is the artifact that carries the full provenance.
+DH_DIGEST=$(crane digest agledger/agledger:<version>)
+echo "$DH_DIGEST"
+
+# 2. Confirm the AWS Marketplace image is the identical digest.
+aws ecr describe-images \
+  --registry-id 709825985650 --repository-name ag-ledger/agledger \
+  --image-ids imageTag=<version> --region us-east-1 \
+  --query 'imageDetails[0].imageDigest' --output text
+# → must equal $DH_DIGEST
+```
+
+If the two digests match, the Marketplace image is the same bytes as the
+cryptographically verified public image, and inherits its full provenance.
