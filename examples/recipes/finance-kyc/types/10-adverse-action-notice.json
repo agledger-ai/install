@@ -1,0 +1,40 @@
+{
+  "type": "keystone-adverse-action-notice-v1",
+  "category": "credit",
+  "displayName": "Adverse Action Notice (ECOA + FCRA, to the subject)",
+  "description": "Credit-ECOA mirror. The combined ECOA §1002.9 + FCRA §615(a) adverse-action notice issued to the applicant on a credit decline. This is the mirror of the KYC inverted notice: where keystone-regulatory-report-v1 withholds from the subject and notifies the regulator, this notice is required to the subject with specific reasons. Notarize-only, and the recipe's Notify subscriptions deliver this type to a customer endpoint. principalReasons are unconditionally required and capped at 4 (Reg B: more than 4 'is not likely to be helpful'; boilerplate like 'failed to achieve a qualifying score' does not satisfy the rule). When a score was used, the FCRA score block (creditScore/scoreRange/keyFactors/scoreDate plus CRA contact) is required so the disclosure is complete. Issued within 30 days of a completed application (deployment timing obligation).",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["applicationId", "verdictRef", "creditorName", "principalReasons", "ecoaStatement", "federalAgency", "scoreUsed"],
+    "properties": {
+      "applicationId": {"type": "string"},
+      "verdictRef": {"type": "string", "description": "recordId of the keystone-underwriting-verdict-v1 (or auto keystone-credit-decision-v1) the notice reports."},
+      "creditorName": {"type": "string", "minLength": 2, "description": "Name (and address, in deployment) of the creditor — ECOA §1002.9(a)(2)."},
+      "principalReasons": {
+        "type": "array",
+        "items": {"type": "string", "minLength": 3},
+        "minItems": 1, "maxItems": 4,
+        "description": "Specific principal reasons for the decline (ECOA §1002.9(b)(2)); 1-4, specific not boilerplate."
+      },
+      "ecoaStatement": {"type": "boolean", "const": true, "description": "Affirms the ECOA anti-discrimination statement and federal-agency disclosure are included (§1002.9(a)(2)). const:true: an issued adverse-action notice that records the ECOA statement was not included is not a valid notice, and the schema refuses it (the federalAgency disclosure it affirms is then required, below)."},
+      "federalAgency": {"type": "string", "minLength": 2, "description": "The federal agency that administers ECOA compliance for this creditor (§1002.9(b)(1)). Required — ecoaStatement affirms this disclosure is present."},
+      "scoreUsed": {"type": "boolean", "description": "true if a credit score was used — triggers the FCRA §615 score-disclosure block."},
+      "creditScore": {"type": "integer", "description": "FCRA: the numerical score used (required when scoreUsed)."},
+      "scoreRange": {
+        "type": "object", "additionalProperties": false, "required": ["min", "max"],
+        "properties": {"min": {"type": "integer"}, "max": {"type": "integer"}}
+      },
+      "keyFactors": {"type": "array", "items": {"type": "string"}, "maxItems": 5, "description": "FCRA: up to 4 key factors (+1 for inquiries) that adversely affected the score, in order of effect."},
+      "craName": {"type": "string", "description": "FCRA §615(a): CRA name (and that it did not make the decision; consumer's free-report + dispute rights — affirmed in deployment)."},
+      "craContact": {"type": "string", "description": "FCRA: CRA address/phone for the consumer to obtain the free report / dispute."},
+      "scoreDate": {"type": "string", "format": "date", "description": "FCRA: the date the score was created."}
+    },
+    "allOf": [
+      {
+        "if": {"properties": {"scoreUsed": {"const": true}}},
+        "then": {"required": ["creditScore", "scoreRange", "keyFactors", "craName", "craContact", "scoreDate"]}
+      }
+    ]
+  }
+}

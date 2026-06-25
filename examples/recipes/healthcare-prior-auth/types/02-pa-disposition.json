@@ -1,0 +1,25 @@
+{
+  "type": "halcyon-pa-disposition-v1",
+  "category": "decision",
+  "displayName": "Payer System Disposition (Da Vinci PAS / X12 278)",
+  "description": "The payer Utilization-Management system's auto-adjudication disposition, as rendered by the external system of record (Da Vinci PAS $submit -> ClaimResponse, carrying the X12 005010/306 review action code). Notarize-only: AGLedger NOTARIZES the disposition the SoR rendered; it does not render it. This is the SoR-seam capture — the immutable record of what the payer system decided, when, and on what basis. A1 (certified) and A3 (not-required) are terminal here (clean auto-adjudication, no human gate). A2 (denied) and A4 (pended) are contested and escalate to a medical director via halcyon-pa-determination-v1 — because no compliant payer lets AI render an autonomous denial.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["claimId", "paRequestRef", "payerDisposition", "x12System", "claimResponseId", "autoAdjudicated"],
+    "properties": {
+      "claimId": {"type": "string"},
+      "paRequestRef": {"type": "string", "description": "recordId of the halcyon-pa-request-v1 this disposition answers."},
+      "payerDisposition": {
+        "type": "string",
+        "enum": ["A1", "A2", "A3", "A4", "A6"],
+        "description": "X12 005010/306 review action: A1 certified in total | A2 not certified (denied) | A3 not required | A4 pended (more info) | A6 modified."
+      },
+      "reviewActionDisplay": {"type": "string", "description": "Human-readable display from the ClaimResponse (e.g. 'Not Certified')."},
+      "x12System": {"type": "string", "description": "The code system URI, e.g. https://codesystem.x12.org/005010/306."},
+      "claimResponseId": {"type": "string", "description": "FHIR ClaimResponse.id from the PAS response — the cross-reference into the payer SoR."},
+      "reasonCode": {"type": "string", "description": "Disposition reason / denial reason code where the SoR supplies one."},
+      "autoAdjudicated": {"type": "boolean", "description": "true when the SoR rendered this without a human (the auto-adjudication layer); the contested path then routes to a medical director."}
+    }
+  }
+}

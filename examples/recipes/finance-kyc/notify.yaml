@@ -1,0 +1,51 @@
+# Finance / KYC vertical recipe — Notify (webhook) subscriptions.
+# A declarative list of the webhook subscriptions this recipe expects. Create each
+# one against your Server with POST /v1/webhooks (see the Webhooks guide). The
+# signing secret is returned ONCE at create time — capture it then; it is null on
+# every subsequent read.
+#
+# The two notice legs are DELIBERATELY routed to different audiences — this is the
+# structural point of the vertical:
+#   - the regulator channel carries the SAR / OFAC blocking report (the inverted KYC notice),
+#   - the customer channel carries the ECOA+FCRA adverse-action notice (the credit mirror).
+#
+# IMPORTANT — route SAR events away from the subject. AGLedger Notify subscriptions
+# filter by EVENT TYPE (record.created, record.fulfilled, …), not by the record's
+# contract type. A subscription to record.created therefore receives record.created
+# for every type — including the SAR. So a regulator channel and a customer channel
+# both subscribed to record.created both receive a SAR's record.created. The
+# customer/applicant receiver MUST filter out keystone-regulatory-report-v1 (and any
+# SAR-bearing type) before it forwards anything to the subject: forwarding a SAR
+# record.created to the subject is "tipping off" (31 U.S.C. 5318(g)(2), a federal
+# crime). Point each subscription at a receiver that filters by record type before
+# fan-out; do not point either at a raw record-event firehose. This routing is a
+# deployment responsibility — wire it explicitly.
+#
+# SSRF: private / link-local / metadata IPs are blocked at connect regardless of
+# DNS; SSRF_ALLOW_CIDRS is the only escape hatch. Point each url at a public HTTPS
+# endpoint you control (or HTTP only on an LB-terminated-TLS install with
+# SSRF_ALLOW_PLAIN_HTTP set). Replace the example.com URLs with your own.
+subscriptions:
+  # Compliance / screening operations — every business-meaningful onboarding moment.
+  - name: compliance-ops
+    url: https://kyc-events.example.com/agledger
+    signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
+    eventTypes:
+      - record.created            # an onboarding/screening step opened
+      - record.gate_complete      # an engine/principal verdict rendered (score band or human decision)
+      - record.fulfilled          # auto-clear, or a sealed L1/L2 verdict
+      - record.failed             # score above the clear threshold -> escalate to a human analyst
+      - signal.emitted            # terminal compliance signal fired
+  # Regulator channel — the INVERTED notice. SAR -> FinCEN / blocking report -> OFAC. Never the subject.
+  - name: regulator-reports
+    url: https://regulator-intake.example.com/agledger
+    signingAlg: ed25519           # durable, offline-verifiable signed proof for the examiner
+    eventTypes:
+      - record.created            # filter receiver-side on type == keystone-regulatory-report-v1
+      - record.reference_added
+  # Customer channel — the credit-mirror ECOA+FCRA adverse-action notice TO the applicant.
+  - name: applicant-notices
+    url: https://applicant-notices.example.com/agledger
+    signingAlg: hmac
+    eventTypes:
+      - record.created            # filter receiver-side on type == keystone-adverse-action-notice-v1

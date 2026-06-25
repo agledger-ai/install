@@ -1,0 +1,39 @@
+{
+  "type": "keystone-onboarding-decision-v1",
+  "category": "onboarding",
+  "defaultGateMode": "principal",
+  "displayName": "Onboarding Decision (L2/MLRO verdict)",
+  "description": "The Level-2 / MLRO business verdict on a customer whose hit was confirmed or whose risk requires escalation. Open this after a keystone-alert-disposition-v1 (typically trueMatch, or an EDD escalation). A senior compliance officer (the principal) renders the binding onboard/decline/exit/block verdict; AGLedger holds it with attribution and never renders it. The notice leg is inverted relative to credit ECOA: under AML the subject is generally not tipped off. So declineReasonCategory is conditional-required on any adverse outcome (decline/exit/block) for the internal/regulator record, and customerNoticeSuppressed is conditional-required-true whenever a SAR is filed (sarFiled) — tipping off a SAR subject is a federal crime (31 U.S.C. 5318(g)(2)), so the schema refuses an inconsistent record that claims a SAR was filed while leaving the customer notice un-suppressed. Separation of duties is a deployment control: the verdict is rendered by a distinct principal identity (the L2/MLRO agent key), separate from the L1 analyst that dispositioned the alert and from the performer. AGLedger records who rendered each verdict, so an identity that both dispositions and decides is attributable on-chain.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["caseId", "alertDispositionRef"],
+    "properties": {
+      "caseId": {"type": "string"},
+      "alertDispositionRef": {"type": "string", "description": "recordId of the keystone-alert-disposition-v1 routing this case to a business decision."},
+      "escalationReason": {"type": "string", "enum": ["confirmed-match", "EDD", "adverse-media", "ongoing-review"], "description": "Why this reached an L2/MLRO verdict."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["decision", "rationale"],
+    "properties": {
+      "decision": {"type": "string", "enum": ["onboard", "decline", "exit", "block"], "description": "onboard = accept | decline = refuse onboarding | exit = off-board an existing relationship | block = freeze (confirmed SDN, OFAC-reportable)."},
+      "rationale": {"type": "string", "minLength": 10},
+      "declineReasonCategory": {"type": "string", "enum": ["sanctions-match", "pep-risk", "adverse-media", "cdd-incomplete", "risk-appetite"], "description": "Conditional-required on any adverse decision (decline/exit/block): the internal/regulator reason, not necessarily disclosed to the subject."},
+      "sarFiled": {"type": "boolean", "description": "true if a SAR/STR is being filed for this subject. When true, customerNoticeSuppressed must be true (no-tipping-off, 31 U.S.C. 5318(g)(2))."},
+      "customerNoticeSuppressed": {"type": "boolean", "description": "true when the customer-facing notice is reason-redacted/withheld. Conditional-required-true whenever sarFiled is true."}
+    },
+    "allOf": [
+      {
+        "if": {"required": ["decision"], "properties": {"decision": {"enum": ["decline", "exit", "block"]}}},
+        "then": {"required": ["declineReasonCategory"]}
+      },
+      {
+        "if": {"required": ["sarFiled"], "properties": {"sarFiled": {"const": true}}},
+        "then": {"required": ["customerNoticeSuppressed"], "properties": {"customerNoticeSuppressed": {"const": true}}}
+      }
+    ]
+  }
+}

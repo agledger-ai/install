@@ -1,0 +1,20 @@
+{
+  "type": "keystone-onboarding-case-v1",
+  "category": "onboarding",
+  "displayName": "Customer Onboarding Case (CDD/CIP)",
+  "description": "Root record for a customer onboarding case under the Customer Identification Program (USA PATRIOT §326 / 31 CFR 1020.220) and Customer Due Diligence (FATF Rec 10). Orchestrator-emitted — every downstream screening/disposition/decision record references this case by caseId. riskRating selects the diligence band (SDD simplified / CDD standard / EDD enhanced); EDD cases carry heightened scrutiny. Notarize-only: binds who is being onboarded, for what product, in what jurisdiction.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["caseId", "customerType", "customerRef", "riskRating", "product", "jurisdiction"],
+    "properties": {
+      "caseId": {"type": "string", "minLength": 3},
+      "customerType": {"type": "string", "enum": ["person", "business"]},
+      "customerRef": {"type": "string", "description": "Internal identifier for the prospective customer (no PII on-chain — a reference into the KYC system of record)."},
+      "riskRating": {"type": "string", "enum": ["SDD", "CDD", "EDD"], "description": "Diligence band: SDD simplified | CDD standard | EDD enhanced."},
+      "product": {"type": "string", "minLength": 2, "description": "Product being onboarded to (e.g. 'checking', 'correspondent', 'merchant-acquiring')."},
+      "jurisdiction": {"type": "string", "minLength": 2, "description": "Booking jurisdiction (ISO country or regulator scope)."},
+      "beneficialOwnerOf": {"type": "string", "description": "Optional. caseId of the parent legal-entity case when this is a beneficial-owner sub-case (CDD beneficial-ownership rule)."}
+    }
+  }
+}
