@@ -86,4 +86,4 @@ docker tag "agledger/agledger@$(cat agledger-${VERSION}.digest)" registry.intern
 docker push registry.internal.example.com/agledger:${VERSION}
 ```
 
-> **Note:** fully *offline* re-verification of the keyless signature inside a disconnected enclave (no Rekor reachability) requires staging the Sigstore trust root out of band and is not part of the supported flow — verify on the connected side and carry the digest, as above. Track <https://agledger.ai/trust> for changes.
+> **Note:** fully *offline* re-verification of the keyless signature inside a disconnected enclave (no Rekor reachability) requires staging the Sigstore trust root out of band and is not part of the supported flow — verify on the connected side and carry the digest, as above. Track <https://agledger.ai/docs> for changes.
