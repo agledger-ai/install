@@ -52,6 +52,10 @@ For restricted-network deployments, pull images into an internal registry and pa
 
 ## What we build and scan
 
+**OpenSSF-aligned supply chain** — SLSA Build L3 provenance, Sigstore keyless
+signing, and SBOM + OpenVEX + malware-scan attestations, all verifiable offline
+with no repository access.
+
 Every release is built by GitHub Actions — **no signing key exists on any build
 machine.** Trust flows from GitHub's OIDC identity → Sigstore Fulcio (an ephemeral
 certificate) → the **public Rekor** transparency log. A valid signature proves the
