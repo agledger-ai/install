@@ -130,16 +130,18 @@ cosign verify-blob \
   agledger-<version>-conformance-corpus.tar.gz
 ```
 
-**Per-surface assurance (no over- or under-claiming):** the container image is
-**SLSA Build L3**. The public packages — npm (`@agledger/*`, `npm --provenance`) —
-are **SLSA Build L2**; PyPI (`agledger`, Trusted Publishing / PEP 740) ships
-**signed publish attestations** (not a numbered SLSA level). All share the same
-GitHub-OIDC → Sigstore trust root. L3 is the level at which build provenance
-becomes non-falsifiable — the assurance the image carries, and the property every
-command above verifies.
+**Per-surface assurance:** the container image is **SLSA Build L3**. The public
+packages — npm (`@agledger/*`, `npm --provenance`) — are **SLSA Build L2**; PyPI
+(`agledger`, Trusted Publishing / PEP 740) ships **signed publish attestations**
+(not a numbered SLSA level). All share the same GitHub-OIDC → Sigstore trust root.
+L3 is the level at which build provenance becomes non-falsifiable — the assurance
+the image carries, and the property every command above verifies.
 
-The CycloneDX SBOM and OpenVEX document are also attached to every
-[GitHub Release](https://github.com/agledger-ai/install/releases) as
-`agledger-<version>-sbom.cdx.json` and `agledger-<version>-vex.openvex.json` for
-direct download. The signing-key rotation procedure and the separate audit-chain
-(vault) signing keys are documented at <https://agledger.ai/trust>.
+The SBOM, OpenVEX document, and the signed conformance corpus are attached to every
+[GitHub Release on this public repo](https://github.com/agledger-ai/install/releases)
+for direct download (`agledger-<version>-sbom.cdx.json`,
+`agledger-<version>-vex.openvex.json`, `agledger-<version>-conformance-corpus.tar.gz`
++ `.sha256` + `.sigstore.json`). The signing-key rotation procedure is documented at
+<https://agledger.ai/docs>; the separate audit-chain (vault) signing keys are
+published live at `GET /.well-known/agledger-vault-keys.json` and
+`GET /v1/verification-keys`.
