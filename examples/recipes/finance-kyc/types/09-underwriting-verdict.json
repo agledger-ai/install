@@ -1,0 +1,34 @@
+{
+  "type": "keystone-underwriting-verdict-v1",
+  "category": "credit",
+  "defaultGateMode": "principal",
+  "displayName": "Underwriting Verdict (human, on refer/contest)",
+  "description": "Credit-ECOA mirror. The human underwriter's verdict on a referred or contested application. Open this after keystone-credit-decision-v1 returned refer, or when a declined applicant contests (reconsideration). A credit analyst (the performer) assembles the recommendation; an underwriter principal renders the binding approve/decline verdict. The ECOA §1002.9(b)(2) principal-reasons obligation attaches to whatever party actually makes the decision, so on a manual decline the underwriter's principalReasons are load-bearing and are carried into the adverse-action notice. principalReasons are conditional-required on a decline and must be specific ('failed to achieve a qualifying score' is explicitly insufficient under Reg B). Separation of duties is a deployment control: the verdict is rendered by a distinct principal identity (the underwriter agent key), separate from the performer.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["applicationId", "decisionRef"],
+    "properties": {
+      "applicationId": {"type": "string"},
+      "decisionRef": {"type": "string", "description": "recordId of the keystone-credit-decision-v1 (disposition=refer) or the contested decision."},
+      "reviewTrigger": {"type": "string", "enum": ["refer", "reconsideration"], "description": "Why a human is deciding."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["verdict", "rationale"],
+    "properties": {
+      "verdict": {"type": "string", "enum": ["approve", "decline"]},
+      "rationale": {"type": "string", "minLength": 10},
+      "principalReasons": {
+        "type": "array",
+        "items": {"type": "string", "minLength": 3},
+        "maxItems": 4,
+        "description": "The specific principal reason(s) for a decline (ECOA §1002.9(b)(2)); ≤4. Conditional-required when verdict=decline."
+      }
+    },
+    "if": {"properties": {"verdict": {"const": "decline"}}},
+    "then": {"required": ["principalReasons"], "properties": {"principalReasons": {"minItems": 1}}}
+  }
+}

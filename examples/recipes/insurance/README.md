@@ -11,9 +11,10 @@ hash-chained, and tamper-evident — and holds the verdict on the settlement. It
 notary, not an adjudicator: it does not judge whether a fraud score, damage estimate,
 or payout is *correct*; it records what was decided, by whom, and when.
 
-Validated end-to-end against API v1.0.3 on live cloud infrastructure (cold
-blind-agent drivability, multiple agent models, scale, live notify, and offline
-chain verification) before publication.
+This recipe was shaped by running the full pipeline cold across multiple agent
+models, at scale, on live cloud infrastructure — with live Notify delivery and
+offline chain verification — so the authority gate and the settlement hand-off hold
+up under real agent behavior.
 
 ## What you get
 

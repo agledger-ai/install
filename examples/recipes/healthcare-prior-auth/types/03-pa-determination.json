@@ -1,0 +1,46 @@
+{
+  "type": "halcyon-pa-determination-v1",
+  "category": "determination",
+  "defaultGateMode": "principal",
+  "displayName": "Medical-Necessity Determination (medical-director verdict)",
+  "description": "The human medical-necessity determination on a contested payer disposition (A2 denied or A4 pended). You open this only after halcyon-pa-disposition-v1 returned A2/A4 — clean A1/A3 auto-adjudications are terminal and never reach here. A clinical reviewer (the performer) assembles the recommendation and basis; the medical director (the principal) renders the binding accept/reject verdict. AGLedger holds the verdict and notarizes it with the director's attribution — it does not render the medical decision. | denialBasis is conditional-required: when the determination upholds a denial, a basis must be supplied (CMS-0057-F specific-denial-reason obligation). | Separation of duties is a deployment requirement: AGLedger records who rendered each verdict, so provision a distinct medical-director key separate from the clinical-reviewer performer that submitted the recommendation, and the reviewer and director stay different identities on the chain. For attribution of the named physician, bind the verdict via AGLedger-On-Behalf-Of against your org IdP.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["claimId", "paRequestRef", "dispositionRef", "systemDisposition", "reviewType"],
+    "properties": {
+      "claimId": {"type": "string"},
+      "paRequestRef": {"type": "string"},
+      "dispositionRef": {"type": "string", "description": "recordId of the contested halcyon-pa-disposition-v1 (A2/A4) routing this to a human."},
+      "systemDisposition": {
+        "type": "string",
+        "enum": ["A2", "A4"],
+        "description": "The payer-system disposition that triggered human review. A1/A3 do not reach this type."
+      },
+      "reviewType": {
+        "type": "string",
+        "enum": ["medical-necessity", "utilization", "experimental-investigational"],
+        "description": "Basis of the human review."
+      },
+      "urgency": {"type": "string", "enum": ["expedited", "standard"]}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["recommendation", "determinationBasis", "criteriaSource"],
+    "properties": {
+      "recommendation": {
+        "type": "string",
+        "enum": ["uphold", "overturn", "approve", "partial"],
+        "description": "The clinical reviewer's recommendation to the medical director. uphold = sustain the denial; overturn/approve = authorize; partial = approve with modification."
+      },
+      "determinationBasis": {"type": "string", "minLength": 10, "description": "Clinical rationale tied to medical-necessity criteria."},
+      "criteriaSource": {"type": "string", "description": "The applied criteria set, e.g. 'MCG 26th ed.', 'InterQual', or the plan's medical-policy ref."},
+      "denialReasonCode": {"type": "string"},
+      "denialBasis": {"type": "string", "minLength": 10, "description": "Specific denial reason required when a denial is upheld (CMS-0057-F)."}
+    },
+    "if": {"properties": {"recommendation": {"const": "uphold"}}},
+    "then": {"required": ["denialBasis", "denialReasonCode"]}
+  }
+}

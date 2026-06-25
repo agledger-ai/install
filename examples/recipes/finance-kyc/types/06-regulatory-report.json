@@ -1,0 +1,26 @@
+{
+  "type": "keystone-regulatory-report-v1",
+  "category": "reporting",
+  "displayName": "Regulatory Report (SAR / OFAC block — the inverted notice)",
+  "description": "The substantive, regulator-facing notice leg of a KYC adverse action, and the inversion of credit ECOA. Where a credit decline notifies the subject with reasons, a KYC adverse action notifies the regulator (SAR to FinCEN, blocking report to OFAC) and is confidential by law from the subject. Notarize-only, and the recipe's Notify subscriptions deliver this type to a regulator endpoint, never to the customer. tippingOffProhibited is conditional-required-true for a SAR (31 U.S.C. 5318(g)(2) makes informing the SAR subject a federal crime). It records that the report was made, on what basis, and to whom: a signed record routed to the regulator and withheld from the subject.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["caseId", "decisionRef", "reportType", "filedWith"],
+    "properties": {
+      "caseId": {"type": "string"},
+      "decisionRef": {"type": "string", "description": "recordId of the keystone-onboarding-decision-v1 that triggered the report."},
+      "reportType": {"type": "string", "enum": ["SAR", "OFAC-block"], "description": "SAR = Suspicious Activity Report to FinCEN | OFAC-block = blocking report on a confirmed SDN match."},
+      "filedWith": {"type": "string", "enum": ["FinCEN", "OFAC"], "description": "The receiving regulator."},
+      "filingReference": {"type": "string", "description": "The regulator's filing acknowledgment id where available."},
+      "tippingOffProhibited": {"type": "boolean", "description": "Conditional-required-true for a SAR — affirms the no-tipping-off bar (31 U.S.C. 5318(g)(2))."},
+      "basisSummary": {"type": "string", "minLength": 10, "description": "Internal basis for the report (the 'why', for the examiner — not for the subject)."}
+    },
+    "allOf": [
+      {
+        "if": {"properties": {"reportType": {"const": "SAR"}}},
+        "then": {"required": ["tippingOffProhibited"], "properties": {"tippingOffProhibited": {"const": true}}}
+      }
+    ]
+  }
+}

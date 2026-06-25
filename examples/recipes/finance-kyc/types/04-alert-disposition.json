@@ -1,0 +1,30 @@
+{
+  "type": "keystone-alert-disposition-v1",
+  "category": "screening",
+  "defaultGateMode": "principal",
+  "displayName": "Alert Disposition (L1 analyst verdict)",
+  "description": "The Level-1 analyst's human disposition of a screening hit that the engine gate routed for review. Open this only after keystone-screening-gate-v1 returned FAILED (score above the clear threshold); auto-cleared screens are terminal and never reach here. A screening analyst (the performer) assembles the comparison; a Level-1 analyst principal renders the binding trueMatch/falsePositive verdict. AGLedger holds the verdict and notarizes it with the analyst's attribution against the list version; the analyst decides whether the hit is real. False positives are expected, and each is dispositioned with a rationale so the record shows which analyst dismissed which alert, against which list version, on what basis. Separation of duties is a deployment control: the verdict is rendered by a distinct principal identity (the L1-analyst agent key), separate from the orchestrator/performer that ran the screen. For production attribution of the named analyst, bind the verdict via AGLedger-On-Behalf-Of (org IdP).",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["caseId", "screenRef", "screeningGateRef", "listVersion"],
+    "properties": {
+      "caseId": {"type": "string"},
+      "screenRef": {"type": "string", "description": "recordId of the keystone-sanctions-screen-v1 being dispositioned."},
+      "screeningGateRef": {"type": "string", "description": "recordId of the FAILED keystone-screening-gate-v1 that routed this hit to a human."},
+      "listVersion": {"type": "string", "description": "The dataset/list snapshot the disposition is rendered against (must match the screen's datasetVersion)."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["disposition", "rationale"],
+    "properties": {
+      "disposition": {"type": "string", "enum": ["trueMatch", "falsePositive"], "description": "trueMatch = the subject is the designated/listed party; falsePositive = the screen hit a different person/entity."},
+      "rationale": {"type": "string", "minLength": 10, "description": "Why this is a true match or false positive (e.g. DOB/nationality discriminators)."},
+      "matchedDatasets": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "Which list(s) drove the disposition. Conditional-required (non-empty) on a trueMatch: a confirmed sanctions match records which list it matched (the load-bearing audit fact and the input the OFAC-block report needs)."}
+    },
+    "if": {"properties": {"disposition": {"const": "trueMatch"}}},
+    "then": {"required": ["matchedDatasets"]}
+  }
+}
