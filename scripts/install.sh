@@ -639,6 +639,20 @@ sleep 5
 API_PORT=3001
 API_URL="http://localhost:${API_PORT}"
 
+# Read the configured signed issuer (iss) from the generated .env. AGLEDGER_EXTERNAL_URL
+# is baked into every signed record/receipt/cert and CANNOT be changed retroactively for
+# records already written, so the operator must see it — and be warned if it's still the
+# localhost eval default — before notarizing records they intend to keep (cross-repo #813:
+# a fresh Compose install signs the chain under iss: http://localhost:3001 by default).
+CONFIGURED_ISSUER="$(grep -E '^AGLEDGER_EXTERNAL_URL=' "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+CONFIGURED_ISSUER="${CONFIGURED_ISSUER:-$API_URL}"
+ISSUER_IS_LOCALHOST=false
+case "$CONFIGURED_ISSUER" in
+  http://localhost*|https://localhost*|http://127.0.0.1*|https://127.0.0.1*)
+    ISSUER_IS_LOCALHOST=true
+    ;;
+esac
+
 echo ""
 echo -e "${GREEN}=============================================================================${NC}"
 echo -e "${GREEN}  AGLedger — Installation Complete${NC}"
@@ -646,6 +660,7 @@ echo -e "${GREEN}===============================================================
 echo ""
 echo -e "  ${BOLD}Version:${NC}       ${AGLEDGER_VERSION}"
 echo -e "  ${BOLD}API URL:${NC}       ${API_URL}"
+echo -e "  ${BOLD}Signed issuer:${NC} ${CONFIGURED_ISSUER}  (iss baked into every record)"
 echo -e "  ${BOLD}Health:${NC}        ${API_URL}/health"
 echo -e "  ${BOLD}Conformance:${NC}   ${API_URL}/v1/conformance"
 echo -e "  ${BOLD}OpenAPI spec:${NC}  ${API_URL}/openapi.json"
@@ -687,6 +702,15 @@ if [[ "${USES_BUNDLED_PG}" == "true" ]] || [[ -z "${AGLEDGER_LICENSE_KEY:-}" ]];
   echo -e "    Anonymous usage telemetry is OFF by default."
   echo -e "    Opt in to help development: set AGLEDGER_TELEMETRY=true in .env"
   echo -e "    (Anonymous heartbeat every 48h; never sent on an Enterprise license.)"
+fi
+
+if [[ "$ISSUER_IS_LOCALHOST" == true ]]; then
+  echo ""
+  echo -e "  ${YELLOW}${BOLD}⚠ Signed issuer is a localhost default${NC}"
+  echo -e "    AGLEDGER_EXTERNAL_URL=${CONFIGURED_ISSUER} is the iss signed into every record,"
+  echo -e "    receipt, and cert — and it cannot be changed for records already written."
+  echo -e "    Fine for evaluation. Before notarizing records you intend to keep, set"
+  echo -e "    AGLEDGER_EXTERNAL_URL to your real https:// domain in ${ENV_FILE} and restart."
 fi
 
 echo ""

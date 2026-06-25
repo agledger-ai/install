@@ -152,7 +152,7 @@ verify_image() {
 # Same policy as verify_image. The chart ref is the OCI image form
 # (registry-1.docker.io/agledger/agledger-chart:<version>).
 verify_chart() {
-  local chart_ref="$1"   # e.g. registry-1.docker.io/agledger/agledger-chart:0.27.2
+  local chart_ref="$1"   # e.g. registry-1.docker.io/agledger/agledger-chart:1.0.3
 
   step "Verifying Helm chart signature"
 
