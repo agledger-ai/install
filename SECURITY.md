@@ -130,8 +130,9 @@ cosign verify-blob \
 **SLSA Build L3**. The public packages — npm (`@agledger/*`, `npm --provenance`) —
 are **SLSA Build L2**; PyPI (`agledger`, Trusted Publishing / PEP 740) ships
 **signed publish attestations** (not a numbered SLSA level). All share the same
-GitHub-OIDC → Sigstore trust root. We deliberately do not pursue SLSA L4
-(hermetic/reproducible builds): it would not change what you can verify here.
+GitHub-OIDC → Sigstore trust root. L3 is the level at which build provenance
+becomes non-falsifiable — the assurance the image carries, and the property every
+command above verifies.
 
 The CycloneDX SBOM and OpenVEX document are also attached to every
 [GitHub Release](https://github.com/agledger-ai/install/releases) as
