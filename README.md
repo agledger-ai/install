@@ -122,33 +122,18 @@ Developer Edition installs can send an anonymous heartbeat (version, uptime, dep
 
 ## Verifying the Release
 
-The Docker image and Helm chart are **keyless-signed** with [cosign](https://github.com/sigstore/cosign): GitHub Actions OIDC → Sigstore Fulcio → the **public Rekor** transparency log. There is **no static public key** — a valid signature binds to the GitHub Actions workflow that built the release, and verification runs against the public Sigstore trust root with **no access to the source repository required**. **Requires cosign 3.0 or later** (and [`slsa-verifier`](https://github.com/slsa-framework/slsa-verifier) for the L3 provenance).
+**OpenSSF-aligned supply chain** — SLSA Build L3 provenance, Sigstore keyless signing, and SBOM + OpenVEX + malware-scan attestations, all verifiable offline with no repository access. Releases are **keyless-signed** with [cosign](https://github.com/sigstore/cosign): GitHub Actions OIDC → Sigstore Fulcio → the **public Rekor** transparency log — a valid signature binds to the workflow that built the release, with no static key. **Requires cosign 3.0 or later.**
 
 ```bash
-# These two values identify a genuine AGLedger release signature:
 IDENTITY='^https://github\.com/agledger-ai/agledger-api/\.github/workflows/.+@refs/tags/v.+$'
 ISSUER='https://token.actions.githubusercontent.com'
 
 # Image signature — proves the image is a genuine, untampered release
 cosign verify --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
   agledger/agledger:<version>
-
-# Helm chart signature (bare OCI reference, no oci:// prefix)
-cosign verify --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
-  registry-1.docker.io/agledger/agledger-chart:<version>
-
-# CycloneDX SBOM + OpenVEX — cryptographically bound to the image
-cosign verify-attestation --type cyclonedx --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" agledger/agledger:<version>
-cosign verify-attestation --type openvex   --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" agledger/agledger:<version>
-
-# SLSA Build L3 provenance — proves the image was built by the isolated trusted
-# builder from the claimed source (no repo access needed). Pin by digest:
-DIGEST=$(crane digest agledger/agledger:<version>)   # or: docker buildx imagetools inspect agledger/agledger:<version> --format '{{.Manifest.Digest}}'
-slsa-verifier verify-image "agledger/agledger@${DIGEST}" \
-  --source-uri github.com/agledger-ai/agledger-api
 ```
 
-The CycloneDX SBOM and OpenVEX documents are also attached to each release on this repo for direct download.
+The complete recipe — Helm chart signature, SBOM/OpenVEX/malware-scan attestations, SLSA Build L3 provenance, and the signed conformance corpus — is in [SECURITY.md](SECURITY.md). The CycloneDX SBOM and OpenVEX documents are also attached to each release for direct download.
 
 ## Licensing
 
