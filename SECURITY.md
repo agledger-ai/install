@@ -79,14 +79,6 @@ flagged image never reaches the registry:
 Source code is additionally checked by Semgrep (SAST) before each release and by
 Dependabot (dependency updates) continuously.
 
-> **What we claim, precisely.** The malware scan certifies *"no known-malware
-> signatures detected"* — it does **not**, and cannot, prove the absence of a novel
-> backdoor (no scanner can). The strong, honest guarantee is the chain below: the
-> image is the unmodified output of our isolated, non-falsifiable (SLSA Build L3)
-> pipeline from an identified commit, scanned against known CVEs and malware
-> signatures, signed to our workflow identity — all verifiable by you, offline,
-> without trusting us.
-
 ## Release Verification
 
 **Requires cosign 3.0 or later** (and `slsa-verifier`, `crane`, and `jq` for the
