@@ -145,5 +145,5 @@ The [LICENSE](LICENSE) in this repository is the **Installer License** — it go
 
 - [agledger.ai](https://agledger.ai) — product site
 - [agledger.ai/docs](https://agledger.ai/docs) — documentation
-- [agledger.ai/trust](https://agledger.ai/trust) — security, SBOM, provenance
+- [SECURITY.md](SECURITY.md) — release verification, SBOM, provenance
 - [Docker Hub](https://hub.docker.com/r/agledger/agledger) — server image
