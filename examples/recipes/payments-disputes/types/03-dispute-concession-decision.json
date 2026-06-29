@@ -1,0 +1,31 @@
+{
+  "type": "dispute-concession-decision-v1",
+  "category": "dispute-decision",
+  "defaultGateMode": "principal",
+  "displayName": "Dispute Concession Decision (human-gated, one-shot)",
+  "description": "Sibling of evidence-submission-decision-v1 for the OTHER irreversible terminal action: conceding the dispute via Stripe's `POST /v1/disputes/{id}/close` (accept liability, funds stay withdrawn). Closing is final and cannot be reopened, so the decision to concede is gated the same way — a human principal authorizes it before the recipe calls /close. Kept as a distinct type (not a reject-branch of the submission decision) so the audit reads cleanly: 'authorized to CONCEDE' and 'authorized to CONTEST' are different acts with different liability and should not share a record. | The performer (analyst) records why concession is the right call; the principal (lead) renders the verdict. SEPARATION OF DUTIES IS ORCHESTRATOR-ENFORCED, NOT TYPE-ENFORCED (see evidence-submission-decision-v1): the engine only blocks a performer-who-isn't-the-principal from rendering the verdict; it does NOT reject principal == performer self-commitment. The orchestrator must provision distinct analyst and lead identities and must not self-commit. | Same F-787 deployment note as the submission decision: defaultGateMode:principal, but the type cannot forbid a gateMode:auto override — the orchestrator must route concessions through the human gate at the recipe layer.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["disputeId", "disputeRef", "amount", "currency", "concessionBasis"],
+    "properties": {
+      "disputeId": {"type": "string", "minLength": 1, "description": "Stripe Dispute id (du_...; older docs show dp_) being conceded."},
+      "disputeRef": {"type": "string", "minLength": 1, "description": "recordId of the chargeback-dispute-filed-v1 this concession descends from."},
+      "amount": {"type": "number", "minimum": 0, "description": "Amount being written off (stays withdrawn) on concession, major units."},
+      "currency": {"type": "string", "minLength": 3, "maxLength": 3},
+      "concessionBasis": {"type": "string", "enum": ["no_defensible_evidence", "cost_exceeds_recovery", "fraud_confirmed", "policy_noncompliant", "customer_goodwill", "other"], "description": "Why concession is chosen over contesting. fraud_confirmed = the merchant agrees the charge was fraudulent."},
+      "evidenceDueBy": {"type": "string", "format": "date-time", "description": "Carried from the filing for deadline visibility."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["concessionBasis", "rationale", "acknowledgedIrreversible"],
+    "properties": {
+      "concessionBasis": {"type": "string", "enum": ["no_defensible_evidence", "cost_exceeds_recovery", "fraud_confirmed", "policy_noncompliant", "customer_goodwill", "other"], "description": "Must match the record's criteria.concessionBasis."},
+      "rationale": {"type": "string", "minLength": 10, "description": "Analyst's substantiation for conceding rather than contesting."},
+      "acknowledgedIrreversible": {"type": "boolean", "const": true, "description": "Explicit acknowledgement that /close is terminal and the funds stay withdrawn. Must be true."},
+      "writeOffAmount": {"type": "number", "minimum": 0, "description": "Optional booked write-off amount if it differs from the disputed amount (e.g. partial recovery elsewhere)."}
+    }
+  }
+}

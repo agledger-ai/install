@@ -1,0 +1,20 @@
+{
+  "type": "statement-of-reasons-issued-v1",
+  "category": "moderation-disclosure",
+  "displayName": "Statement of Reasons Issued to User (notarized, Art.17)",
+  "description": "Notarize-only record that the platform delivered a DSA Art.17 statement of reasons to the affected recipient — and WHAT it said. Binds the exact statement text to the enforcement decision: `statementHash` is sha256 of the canonicalized statement-of-reasons document actually delivered, so 'did the user get the same reasons the platform decided on (and later submitted to the regulator)?' is cryptographically answerable. Pairs with dsa-transparency-submission-v1 — the user-facing statement and the regulator submission should carry the SAME reasons; divergence between this record's statementHash and the submission's payload is detectable on-chain. Pure notarization: terminal RECORDED in one round-trip. AGLedger attests delivery + content as asserted by the platform; it does not inspect the statement's adequacy.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["contentRef", "enforcementRef", "statementHash", "deliveryChannel"],
+    "properties": {
+      "contentRef": {"type": "string", "minLength": 1, "description": "Platform identifier of the content/account the statement concerns."},
+      "enforcementRef": {"type": "string", "minLength": 1, "description": "recordId of the enforcement-decision-v1 this statement explains (chain lineage)."},
+      "statementHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "sha256:<hex> of the exact, canonicalized statement-of-reasons document delivered to the user. Binds the disclosure to specific bytes."},
+      "deliveryChannel": {"type": "string", "enum": ["in_app_notification", "email", "account_dashboard", "api", "not_deliverable"], "description": "How the statement was delivered. not_deliverable records a justified inability to reach the recipient (e.g. account already removed by the user) — DSA Art.17 applies 'where the relevant electronic contact details are known'."},
+      "recipientRef": {"type": "string", "description": "Optional platform identifier of the recipient (pseudonymous). Kept opaque; PII stays off-chain."},
+      "redressInformationIncluded": {"type": "boolean", "description": "Optional attestation that the statement included the required redress-possibility information (Art.17(3): internal complaint, out-of-court settlement, judicial remedy)."},
+      "deliveredAt": {"type": "string", "format": "date-time", "description": "Optional: when the statement was delivered to the recipient."}
+    }
+  }
+}

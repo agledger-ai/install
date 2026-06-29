@@ -1,0 +1,33 @@
+# Payments-disputes vertical recipe — Notify (webhook) subscriptions.
+# A declarative list of the webhook subscriptions this recipe expects. Create each
+# one against your Server with POST /v1/webhooks (see the Webhooks guide). The
+# signing secret is returned ONCE at create time — capture it then; it is null on
+# every subsequent read.
+#
+# SSRF: private / link-local / metadata IPs are blocked at connect regardless of
+# DNS; SSRF_ALLOW_CIDRS is the only escape hatch. Point each url at a public HTTPS
+# endpoint you control (or HTTP only on an LB-terminated-TLS install with
+# SSRF_ALLOW_PLAIN_HTTP set). Replace the example.com URLs with your own.
+subscriptions:
+  # The dispute operations channel — every business-meaningful moment in the
+  # chargeback lifecycle, from filing through the authorized terminal action.
+  - name: disputes-ops
+    url: https://dispute-events.example.com/agledger
+    signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
+    eventTypes:
+      - record.created               # a dispute filed, or a decision opened
+      - record.completion_submitted  # the analyst assembled an evidence package
+      - record.gate_complete         # the lead rendered accept/reject on a decision
+      - record.fulfilled             # contest-with-evidence or concede authorized
+      - record.failed                # an incomplete package or rejected decision
+      - signal.emitted               # terminal disposition signal fired
+  # Fraud / high-value channel — route the consequential decisions to the queue a
+  # human lead works. Filter receiver-side on type and amount: send fraudulent or
+  # high-value disputes (evidence-submission-decision-v1, ce3-evidence-submission-decision-v1)
+  # to the principal who must authorize before the one-shot Stripe call fires.
+  - name: fraud-review
+    url: https://fraud-queue.example.com/agledger
+    signingAlg: hmac
+    eventTypes:
+      - record.created               # filter receiver-side on the decision types + amount
+      - record.gate_complete

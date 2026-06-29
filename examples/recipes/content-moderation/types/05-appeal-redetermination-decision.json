@@ -1,0 +1,47 @@
+{
+  "type": "appeal-redetermination-decision-v1",
+  "category": "moderation-appeal",
+  "defaultGateMode": "principal",
+  "displayName": "Appeal Re-determination (human-gated, Art.20)",
+  "description": "Gated re-determination of an enforcement decision under DSA Art.20 internal complaint-handling — the user contests, the platform reviews and either UPHOLDS or REVERSES (fully or partially). Art.20(6) requires these be taken under the supervision of appropriately qualified staff and NOT solely by automated means, so this type defaults to the human (principal) gate. A case handler (performer) submits the re-determination as the completion; an independent reviewer (principal) renders the accept/reject Verdict. The engine enforces conditional-required fields: outcome=REVERSED/PARTIALLY_REVERSED => reinstatementAction; outcome=UPHELD => upholdBasis. `appealNotAutomated` attests Art.20(6) compliance (self-attested). SoD — the appeal reviewer MUST be a different identity from the original enforcement moderator — is ORCHESTRATOR-ENFORCED, not type-enforced (F-758/api#759): the engine's 403 guard only blocks a principal from rendering a verdict on their own performed record, not cross-record role separation. The orchestrator MUST provision an independent reviewer and MUST NOT set gateMode:auto on this type. A reversal should be followed by a new enforcement-decision-v1 (reinstatement) and a corrected dsa-transparency-submission-v1.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["appealId", "enforcementRef", "contentRef"],
+    "properties": {
+      "appealId": {"type": "string", "minLength": 1, "description": "Platform's identifier for the internal complaint/appeal."},
+      "enforcementRef": {"type": "string", "minLength": 1, "description": "recordId of the enforcement-decision-v1 being appealed (chain lineage)."},
+      "contentRef": {"type": "string", "minLength": 1, "description": "Platform identifier of the content/account at issue."},
+      "appellantStatementRef": {"type": "string", "description": "Optional reference to the appellant's submitted grounds (held off-chain)."},
+      "appealReceivedAt": {"type": "string", "format": "date-time", "description": "Optional: when the appeal was lodged — starts the Art.20 handling clock."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["outcome", "appealNotAutomated", "redeterminationFacts"],
+    "properties": {
+      "outcome": {"type": "string", "enum": ["UPHELD", "REVERSED", "PARTIALLY_REVERSED"], "description": "The re-determination. UPHELD: original decision stands. REVERSED: original decision fully overturned (content/account reinstated). PARTIALLY_REVERSED: a lesser restriction substituted (e.g. takedown downgraded to label)."},
+      "appealNotAutomated": {"type": "boolean", "description": "DSA Art.20(6) attestation: the re-determination was NOT taken solely by automated means and was supervised by qualified staff. Self-attested; AGLedger binds the claim to the reviewer identity."},
+      "redeterminationFacts": {"type": "string", "minLength": 1, "maxLength": 5000, "description": "The facts and reasoning of the re-determination — communicated to the appellant."},
+      "upholdBasis": {"type": "string", "maxLength": 2000, "description": "Why the original decision is confirmed. Required when outcome=UPHELD."},
+      "reinstatementAction": {"type": "string", "enum": ["content_reinstated", "account_reinstated", "restriction_downgraded", "monetization_restored", "no_action_possible"], "description": "What was restored/changed. Required when outcome=REVERSED or PARTIALLY_REVERSED."},
+      "substitutedDecisionRef": {"type": "string", "description": "Optional recordId of the new enforcement-decision-v1 issued to effect a partial reversal (the substituted lesser restriction)."},
+      "redeterminedAt": {"type": "string", "format": "date-time", "description": "Optional: when the re-determination was rendered."}
+    },
+    "allOf": [
+      {
+        "if": {"required": ["outcome"], "properties": {"outcome": {"const": "UPHELD"}}},
+        "then": {"required": ["upholdBasis"]}
+      },
+      {
+        "if": {"required": ["outcome"], "properties": {"outcome": {"const": "REVERSED"}}},
+        "then": {"required": ["reinstatementAction"]}
+      },
+      {
+        "if": {"required": ["outcome"], "properties": {"outcome": {"const": "PARTIALLY_REVERSED"}}},
+        "then": {"required": ["reinstatementAction"]}
+      }
+    ]
+  }
+}

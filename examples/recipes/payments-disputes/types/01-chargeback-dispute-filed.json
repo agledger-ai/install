@@ -1,0 +1,26 @@
+{
+  "type": "chargeback-dispute-filed-v1",
+  "category": "dispute-intake",
+  "displayName": "Chargeback / Dispute Filed (notarized assertion)",
+  "description": "Notarize-only record of an inbound dispute as the Stripe/issuer System of Record reported it. AGLedger does NOT adjudicate the dispute (the issuer/Visa network renders won/lost upstream; Stripe relays it) — this record attests, signed and hash-chained, what was asserted and when the response clock started. Mirrors the fields on Stripe's `charge.dispute.created` webhook. | `evidenceDueBy` is the real, externally-imposed deadline (Stripe `evidence_details.due_by`); downstream gated decisions should carry it so a missed window is observable on-chain. | `reason` is Stripe's raw network reason; `category` is the evidence-guidance bucket the merchant maps it to (kept separate because the two enums are not 1:1 and the merchant's mapping is itself an attestable choice). Pure notarization: reaches terminal RECORDED in one round-trip.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["disputeId", "chargeRef", "reason", "disputeCategory", "amount", "currency", "evidenceDueBy", "network"],
+    "properties": {
+      "disputeId": {"type": "string", "minLength": 1, "description": "Stripe Dispute id (du_...; older docs show dp_). The SoR's primary key for this dispute."},
+      "chargeRef": {"type": "string", "minLength": 1, "description": "The disputed charge (ch_...) or PaymentIntent (pi_...) the dispute is attached to."},
+      "reason": {"type": "string", "enum": ["fraudulent", "product_not_received", "duplicate", "subscription_canceled", "credit_not_processed", "product_unacceptable", "unrecognized", "general", "bank_cannot_process", "check_returned", "customer_initiated", "debit_not_authorized", "incorrect_account_details", "insufficient_funds", "noncompliant"], "description": "Stripe's raw network dispute reason (Dispute.reason), verbatim enum."},
+      "disputeCategory": {"type": "string", "enum": ["fraudulent", "product_not_received", "product_unacceptable", "duplicate", "credit_not_processed", "subscription_canceled", "unrecognized", "general"], "description": "Evidence-guidance category the merchant maps the raw reason to; drives which evidence fields the submission decision requires. (Named disputeCategory, not category — `category` is a reserved record-metadata field name.)"},
+      "amount": {"type": "number", "minimum": 0, "description": "Disputed amount in major currency units (e.g. 249.99). Funds are pulled from balance immediately and held for the dispute's duration."},
+      "currency": {"type": "string", "minLength": 3, "maxLength": 3, "description": "ISO 4217 currency code, lowercase (Stripe convention), e.g. usd."},
+      "evidenceDueBy": {"type": "string", "format": "date-time", "description": "Hard external deadline to submit evidence (Stripe evidence_details.due_by). due_by absent / in the past means no response is accepted."},
+      "network": {"type": "string", "enum": ["visa", "mastercard", "amex", "discover", "other"], "description": "Card network the dispute rides on (payment_method_details.card.brand). Inquiries (warning_*) arise on multiple networks — Amex/Discover inquiries and Visa pre-dispute (RDR) among them; don't assume a network from the inquiry flow (the Stripe test harness produces a Visa inquiry)."},
+      "networkReasonCode": {"type": "string", "description": "Network reason code where surfaced, from payment_method_details.card.network_reason_code, e.g. Visa 10.4 (fraud) or 13.1 (merchandise not received)."},
+      "vcrClass": {"type": "string", "enum": ["allocation", "collaboration", "unknown"], "description": "Visa Claims Resolution workflow class derived from the reason code: allocation (fraud 10.x / authorization 11.x — liability auto-assigned by the network) vs collaboration (processing 12.x / consumer 13.x — evidence exchange). Stripe ABSTRACTS the VCR workflow (no distinct merchant action per class; no pre-arbitration/arbitration — unsupported), so this is a captured classification for audit/routing, not a Stripe-driven state. `unknown` when no Visa code is surfaced."},
+      "disputeFlow": {"type": "string", "enum": ["inquiry", "chargeback"], "description": "Whether this filing is an inquiry (Stripe warning_* status — softer, pre-chargeback, resolvable by refund with no dispute fee) or a formal chargeback (needs_response). Determines which gate shape applies: inquiry-resolution-decision-v1 vs evidence-submission-decision-v1."},
+      "isChargeRefundable": {"type": "boolean", "description": "Whether the underlying charge can still be refunded (false once a formal chargeback is open; true for an inquiry or early-fraud-warning pre-dispute signal — the refund-to-prevent path)."},
+      "stripeStatus": {"type": "string", "enum": ["warning_needs_response", "warning_under_review", "warning_closed", "needs_response", "under_review", "won", "lost", "prevented"], "description": "Stripe Dispute.status at the time of notarization."}
+    }
+  }
+}
