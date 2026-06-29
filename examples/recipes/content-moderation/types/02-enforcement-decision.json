@@ -1,0 +1,67 @@
+{
+  "type": "enforcement-decision-v1",
+  "category": "moderation-decision",
+  "defaultGateMode": "principal",
+  "displayName": "Enforcement Decision (human-gated own-decision)",
+  "description": "Headline OWN-DECISION gate: the platform's enforcement determination on flagged content. Unlike the payer/screening/dispute SoR-seam verticals, NO external party renders this — the platform decides, so the gate holds the platform's own signed verdict (the insurance pattern). A moderator (performer) submits the determination as the completion; a reviewer/lead (principal) accepts/rejects via /verdict BEFORE the action is applied. The engine enforces, at structural validation: at least one decision type present (visibility/monetary/provision/account) and DSA conditional-required reasons (ground=illegal => legal-ground+explanation; ground=incompatible => its ground+explanation; visibility=OTHER => the free-text other). `automatedDecision` (DSA automated_detection's sibling) records whether THIS decision was made by automated means — the agent-native field; it is self-attested (notary fidelity, not prevention). GATE + SoD ARE ORCHESTRATOR-ENFORCED, NOT TYPE-ENFORCED (see README Lessons): gateMode:auto can override defaultGateMode:principal (F-791/api#838) and principal==performer self-commitment is not rejected (F-758/api#759). The orchestrator MUST route account-termination, illegal-content grounds, repeat-offender strikes, and low-confidence calls through the principal gate, MUST NOT set gateMode:auto on those, and MUST provision a moderator identity distinct from the appeal reviewer.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["contentRef", "noticeRef", "statementCategory", "contentType"],
+    "properties": {
+      "contentRef": {"type": "string", "minLength": 1, "description": "Platform identifier of the content/account being decided. Same value as on the originating flag notice."},
+      "noticeRef": {"type": "string", "minLength": 1, "description": "recordId of the content-flag-notice-v1 this decision descends from (chain lineage)."},
+      "statementCategory": {"type": "string", "enum": ["STATEMENT_CATEGORY_ANIMAL_WELFARE", "STATEMENT_CATEGORY_DATA_PROTECTION_AND_PRIVACY_VIOLATIONS", "STATEMENT_CATEGORY_ILLEGAL_OR_HARMFUL_SPEECH", "STATEMENT_CATEGORY_INTELLECTUAL_PROPERTY_INFRINGEMENTS", "STATEMENT_CATEGORY_NEGATIVE_EFFECTS_ON_CIVIC_DISCOURSE_OR_ELECTIONS", "STATEMENT_CATEGORY_NON_CONSENSUAL_BEHAVIOUR", "STATEMENT_CATEGORY_PORNOGRAPHY_OR_SEXUALIZED_CONTENT", "STATEMENT_CATEGORY_PROTECTION_OF_MINORS", "STATEMENT_CATEGORY_RISK_FOR_PUBLIC_SECURITY", "STATEMENT_CATEGORY_SCAMS_AND_FRAUD", "STATEMENT_CATEGORY_SCOPE_OF_PLATFORM_SERVICE", "STATEMENT_CATEGORY_SELF_HARM", "STATEMENT_CATEGORY_UNSAFE_AND_ILLEGAL_PRODUCTS", "STATEMENT_CATEGORY_VIOLENCE"], "description": "DSA STATEMENT_CATEGORY the decision is grounded in (may revise the flag's category)."},
+      "contentType": {"type": "array", "minItems": 1, "items": {"type": "string", "enum": ["APP", "AUDIO", "IMAGE", "PRODUCT", "SYNTHETIC_MEDIA", "TEXT", "VIDEO", "OTHER"]}, "description": "DSA content_type of the content being acted on."},
+      "moderationConfidence": {"type": "number", "minimum": 0, "maximum": 1, "description": "Optional classifier/reviewer confidence (0..1). The orchestrator's routing input: low confidence forces the human gate. Carried for audit; not engine-enforced."},
+      "territorialScope": {"type": "array", "items": {"type": "string", "minLength": 2, "maxLength": 2}, "description": "Optional ISO country codes the restriction applies to (DSA territorial_scope), e.g. geo-blocking limited to certain member states."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["decisionGround", "automatedDecision", "decisionFacts"],
+    "properties": {
+      "decisionVisibility": {"type": "string", "enum": ["REMOVED", "DISABLED", "DEMOTED", "AGE_RESTRICTED", "INTERACTION_RESTRICTED", "LABELLED", "OTHER"], "description": "DSA visibility restriction applied to the content, if any. REMOVED/DISABLED are takedowns; DEMOTED/INTERACTION_RESTRICTED/LABELLED are softer."},
+      "decisionVisibilityOther": {"type": "string", "maxLength": 500, "description": "Free-text description when decisionVisibility=OTHER (DSA decision_visibility_other)."},
+      "decisionMonetary": {"type": "string", "enum": ["SUSPENSION", "TERMINATION", "OTHER"], "description": "DSA monetary restriction (e.g. demonetization) applied, if any."},
+      "decisionMonetaryOther": {"type": "string", "maxLength": 500, "description": "Free-text when decisionMonetary=OTHER (DSA decision_monetary_other)."},
+      "decisionProvision": {"type": "string", "enum": ["PARTIAL_SUSPENSION", "TOTAL_SUSPENSION", "PARTIAL_TERMINATION", "TOTAL_TERMINATION"], "description": "DSA restriction on the provision of the service to the recipient, if any."},
+      "decisionAccount": {"type": "string", "enum": ["SUSPENDED", "TERMINATED"], "description": "DSA account-level restriction, if any. TERMINATED is the most severe enforcement and MUST go through the human gate."},
+      "decisionGround": {"type": "string", "enum": ["ILLEGAL_CONTENT", "INCOMPATIBLE_CONTENT"], "description": "DSA decision_ground: ILLEGAL_CONTENT (contrary to law) vs INCOMPATIBLE_CONTENT (contrary to the platform's terms). Selects which explanation fields are required."},
+      "automatedDecision": {"type": "string", "enum": ["AUTOMATED_DECISION_FULLY", "AUTOMATED_DECISION_PARTIALLY", "AUTOMATED_DECISION_NOT_AUTOMATED"], "description": "DSA automated_decision — whether THIS enforcement decision was taken by fully automated means, partially, or not at all. Self-attested: AGLedger notarizes the claim and binds it to the deciding identity; it does not verify the claim's truth."},
+      "decisionFacts": {"type": "string", "minLength": 1, "maxLength": 5000, "description": "DSA decision_facts — the human-readable facts and circumstances the decision relied on. This is the substance of the Art.17 statement of reasons."},
+      "illegalContentLegalGround": {"type": "string", "maxLength": 500, "description": "DSA illegal_content_legal_ground — the legal provision relied on. Required when decisionGround=ILLEGAL_CONTENT."},
+      "illegalContentExplanation": {"type": "string", "maxLength": 2000, "description": "DSA illegal_content_explanation — why the content is illegal. Required when decisionGround=ILLEGAL_CONTENT."},
+      "incompatibleContentGround": {"type": "string", "maxLength": 500, "description": "DSA incompatible_content_ground — the term/policy relied on. Required when decisionGround=INCOMPATIBLE_CONTENT."},
+      "incompatibleContentExplanation": {"type": "string", "maxLength": 2000, "description": "DSA incompatible_content_explanation — why the content breaches the term. Required when decisionGround=INCOMPATIBLE_CONTENT."},
+      "redressMechanism": {"type": "string", "enum": ["internal_complaint", "out_of_court", "judicial", "none_available"], "description": "Optional: the redress route disclosed to the user (DSA Art.17(3)). internal_complaint is the Art.20 appeal this recipe gates."},
+      "endDateVisibilityRestriction": {"type": "string", "format": "date", "description": "Optional: when a time-limited visibility restriction ends (DSA end_date_visibility_restriction)."},
+      "endDateAccountRestriction": {"type": "string", "format": "date", "description": "Optional: when a time-limited account restriction ends (DSA end_date_account_restriction)."}
+    },
+    "anyOf": [
+      {"required": ["decisionVisibility"]},
+      {"required": ["decisionMonetary"]},
+      {"required": ["decisionProvision"]},
+      {"required": ["decisionAccount"]}
+    ],
+    "allOf": [
+      {
+        "if": {"required": ["decisionGround"], "properties": {"decisionGround": {"const": "ILLEGAL_CONTENT"}}},
+        "then": {"required": ["illegalContentLegalGround", "illegalContentExplanation"]}
+      },
+      {
+        "if": {"required": ["decisionGround"], "properties": {"decisionGround": {"const": "INCOMPATIBLE_CONTENT"}}},
+        "then": {"required": ["incompatibleContentGround", "incompatibleContentExplanation"]}
+      },
+      {
+        "if": {"required": ["decisionVisibility"], "properties": {"decisionVisibility": {"const": "OTHER"}}},
+        "then": {"required": ["decisionVisibilityOther"]}
+      },
+      {
+        "if": {"required": ["decisionMonetary"], "properties": {"decisionMonetary": {"const": "OTHER"}}},
+        "then": {"required": ["decisionMonetaryOther"]}
+      }
+    ]
+  }
+}

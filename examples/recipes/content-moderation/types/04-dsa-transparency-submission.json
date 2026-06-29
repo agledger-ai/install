@@ -1,0 +1,33 @@
+{
+  "type": "dsa-transparency-submission-v1",
+  "category": "moderation-regulatory",
+  "displayName": "DSA Transparency DB Submission (notarized + receipt-bound)",
+  "description": "Notarize-only record of the platform's DSA Art.24(5) submission of a statement of reasons to the EU DSA Transparency Database — THE DOWNSTREAM REGULATORY SEAM. This is the inverse of the upstream SoR-seam (payer/screening/dispute): instead of reading a verdict FROM an external system, AGLedger notarizes a submission TO a real external regulator and BINDS its returned receipt. `submissionPayloadHash` is sha256 of the exact canonicalized JSON POSTed to the DSA DB (POST /api/v1/statement); `dsaUuid` + `dsaPermalink` are the regulator's 201-response receipt. Together they make 'did the platform actually report this decision to the regulator, with these exact reasons, and here is the regulator's proof of receipt' offline-verifiable. `puid` is the platform's own unique id correlating the submission to the enforcement decision. The recipe submits the REAL DSA schema, whose authoritative enums + payload shape are public at the DSA DB's own API docs (https://transparency.dsa.ec.europa.eu/page/api-documentation); the enum KEYS are fully prefixed (e.g. DECISION_GROUND_ILLEGAL_CONTENT, DECISION_VISIBILITY_CONTENT_REMOVED, CONTENT_TYPE_TEXT, SOURCE_ARTICLE_16) and automated_detection is the literal Yes/No. Whether the 201 comes from a live self-hosted DSA instance or the endpoint is doc-grounded + env-configurable is a deployment choice — the receipt fields are bound either way (left empty when not driven live, with submissionStatus=pending). AGLedger does not re-validate the DSA schema server-side; the DSA DB remains the authority on acceptance.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["enforcementRef", "puid", "submissionPayloadHash", "submissionStatus"],
+    "properties": {
+      "enforcementRef": {"type": "string", "minLength": 1, "description": "recordId of the enforcement-decision-v1 being reported (chain lineage)."},
+      "statementRef": {"type": "string", "description": "Optional recordId of the statement-of-reasons-issued-v1 — the user-facing statement whose reasons should match this submission."},
+      "puid": {"type": "string", "minLength": 1, "maxLength": 500, "pattern": "^[A-Za-z0-9_-]+$", "description": "DSA puid (platform unique id) for this decision — alphanumeric/hyphen/underscore, the platform's own correlation key in the Transparency DB."},
+      "submissionPayloadHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "sha256:<hex> of the exact canonicalized JSON body POSTed to the DSA Transparency DB. Binds the on-chain record to the precise bytes the regulator received."},
+      "submissionStatus": {"type": "string", "enum": ["pending", "submitted", "rejected"], "description": "pending: prepared, not yet sent (or endpoint doc-grounded). submitted: the DSA DB returned 201 (dsaUuid/dsaPermalink present). rejected: the DSA DB rejected the payload (rejectionDetail present)."},
+      "submissionMode": {"type": "string", "enum": ["single", "bulk"], "description": "Optional: DSA single (/api/v1/statement) vs bulk (/api/v1/statements) submission endpoint used."},
+      "dsaUuid": {"type": "string", "description": "The DSA Transparency DB's returned statement uuid (the receipt). Present when submissionStatus=submitted."},
+      "dsaPermalink": {"type": "string", "description": "The DSA Transparency DB's returned public permalink to the statement. Present when submissionStatus=submitted."},
+      "rejectionDetail": {"type": "string", "description": "The DSA DB's rejection reason, verbatim, when submissionStatus=rejected."},
+      "submittedAt": {"type": "string", "format": "date-time", "description": "Optional: when the submission was POSTed to the DSA DB."}
+    },
+    "allOf": [
+      {
+        "if": {"required": ["submissionStatus"], "properties": {"submissionStatus": {"const": "submitted"}}},
+        "then": {"required": ["dsaUuid", "dsaPermalink"]}
+      },
+      {
+        "if": {"required": ["submissionStatus"], "properties": {"submissionStatus": {"const": "rejected"}}},
+        "then": {"required": ["rejectionDetail"]}
+      }
+    ]
+  }
+}

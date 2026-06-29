@@ -1,0 +1,163 @@
+{
+  "type": "ce3-evidence-submission-decision-v1",
+  "category": "dispute-decision",
+  "defaultGateMode": "principal",
+  "displayName": "Visa CE3.0 Evidence-Submission Decision (human-gated, one-shot)",
+  "description": "CE3.0 sibling of evidence-submission-decision-v1, for Visa fraud reason 10.4 disputes Stripe flags CE3.0-eligible (enhanced_eligibility_types contains visa_compelling_evidence_3). Compelling Evidence 3.0 is a STRUCTURED signed assertion: a disputed transaction plus >=2 prior undisputed transactions whose customer signals (purchase IP / device / shipping / email / account) match, qualifying the merchant for a liability shift to the issuer. The recipe stages the exact visa_compelling_evidence_3 object (submit=false), reads the SoR-rendered qualification (evidence_details.enhanced_eligibility.visa_compelling_evidence_3.status: requires_action -> qualified | not_qualified), and a human principal authorizes a QUALIFIED package BEFORE the irreversible submit=true. Two facts are notarized the flat evidence type can't express: (1) ce3EligibilityStatus - the qualification is rendered by the SoR (Stripe, proxying Visa), is a STRUCTURAL gate INDEPENDENT of the won/lost outcome, and is held as the network's word, not adjudicated by us; (2) evidencePackageHash binds the EXACT visa_compelling_evidence_3 bytes submitted - so 'what did the merchant assert, and did they alter it after sign-off?' is cryptographically answerable. The engine enforces structural completeness at validation: >=2 priors each with charge + product_description, and the disputed transaction must carry product_description + merchandiseOrServices plus a valid matching combination (two main, or one main + one secondary); Stripe enforces the cross-transaction qualification. GATE + SoD ARE ORCHESTRATOR-ENFORCED, NOT TYPE-ENFORCED (see README): gateMode:auto can override defaultGateMode:principal (F-791) and principal==performer self-commitment is not rejected (F-758). The orchestrator MUST route through the principal gate, MUST NOT set gateMode:auto, MUST provision distinct performer+principal identities, and SHOULD only propose a package whose staged status == qualified.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "disputeId",
+      "disputeRef",
+      "amount",
+      "currency",
+      "reason",
+      "network",
+      "evidenceDueBy",
+      "ce3EligibilityStatus",
+      "evidencePackageHash"
+    ],
+    "properties": {
+      "disputeId": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Stripe Dispute id (du_...) this CE3.0 decision authorizes a response to."
+      },
+      "disputeRef": {
+        "type": "string",
+        "minLength": 1,
+        "description": "recordId of the chargeback-dispute-filed-v1 this decision descends from (chain lineage)."
+      },
+      "amount": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Disputed amount in major units."
+      },
+      "currency": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 3
+      },
+      "reason": {
+        "type": "string",
+        "const": "fraudulent",
+        "description": "CE3.0 applies only to Visa fraud reason 10.4 — Stripe reports this as reason=fraudulent. Pinned: a non-fraud dispute is not CE3.0-eligible."
+      },
+      "network": {
+        "type": "string",
+        "const": "visa",
+        "description": "CE3.0 is a Visa program. Pinned to visa."
+      },
+      "evidenceDueBy": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Carried from the filing so a decision rendered after the deadline is observable on-chain."
+      },
+      "ce3EligibilityStatus": {
+        "type": "string",
+        "enum": [
+          "qualified",
+          "not_qualified",
+          "requires_action"
+        ],
+        "description": "The SoR-rendered CE3.0 qualification for the EXACT staged payload, read from Stripe's evidence_details.enhanced_eligibility.visa_compelling_evidence_3.status after staging (submit=false). This is the NETWORK's structural verdict on the package, INDEPENDENT of the eventual won/lost outcome — AGLedger holds it, does not compute it. Recipe convention: only propose/authorize when == qualified."
+      },
+      "evidencePackageHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256:<hex> of the exact, canonicalized visa_compelling_evidence_3 object the recipe will submit. Binds the authorization to specific structured bytes."
+      }
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ce3EligibilityStatus",
+      "evidencePackageHash",
+      "disputedTransaction",
+      "priorUndisputedTransactions"
+    ],
+    "properties": {
+      "ce3EligibilityStatus": {
+        "type": "string",
+        "enum": [
+          "qualified",
+          "not_qualified",
+          "requires_action"
+        ],
+        "description": "Must equal the record's criteria.ce3EligibilityStatus — the SoR qualification the principal is authorizing."
+      },
+      "evidencePackageHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "Must equal the record's criteria.evidencePackageHash — sha256 of the exact visa_compelling_evidence_3 object submitted to Stripe."
+      },
+      "disputedTransaction": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "productDescription",
+          "merchandiseOrServices"
+        ],
+        "description": "Stripe evidence.enhanced_evidence.visa_compelling_evidence_3.disputed_transaction. Must carry product_description + merchandise_or_services AND satisfy Visa's evidence-matching rule (two main elements, or one main + one secondary). Main = customer_purchase_ip, customer_device_fingerprint, customer_device_id (fingerprint+id cannot be paired). Secondary = shipping_address, customer_email_address, customer_account_id.",
+        "properties": {
+          "customerEmailAddress": { "type": "string" },
+          "customerPurchaseIp": { "type": "string" },
+          "customerDeviceFingerprint": { "type": "string" },
+          "customerDeviceId": { "type": "string" },
+          "shippingAddress": { "type": "string" },
+          "customerAccountId": { "type": "string" },
+          "merchandiseOrServices": {
+            "type": "string",
+            "enum": ["merchandise", "services"]
+          },
+          "productDescription": { "type": "string", "minLength": 1 }
+        },
+        "anyOf": [
+          { "required": ["customerPurchaseIp", "customerDeviceFingerprint"] },
+          { "required": ["customerPurchaseIp", "customerDeviceId"] },
+          {
+            "allOf": [
+              { "anyOf": [
+                { "required": ["customerPurchaseIp"] },
+                { "required": ["customerDeviceFingerprint"] },
+                { "required": ["customerDeviceId"] }
+              ] },
+              { "anyOf": [
+                { "required": ["shippingAddress"] },
+                { "required": ["customerEmailAddress"] },
+                { "required": ["customerAccountId"] }
+              ] }
+            ]
+          }
+        ]
+      },
+      "priorUndisputedTransactions": {
+        "type": "array",
+        "minItems": 2,
+        "description": "Stripe evidence.enhanced_evidence.visa_compelling_evidence_3.prior_undisputed_transactions — >=2 prior undisputed charges whose signals match the disputed transaction. Each must carry a charge id + product_description.",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["charge", "productDescription"],
+          "properties": {
+            "charge": { "type": "string", "minLength": 1 },
+            "customerEmailAddress": { "type": "string" },
+            "customerPurchaseIp": { "type": "string" },
+            "customerDeviceFingerprint": { "type": "string" },
+            "customerDeviceId": { "type": "string" },
+            "shippingAddress": { "type": "string" },
+            "customerAccountId": { "type": "string" },
+            "productDescription": { "type": "string", "minLength": 1 }
+          }
+        }
+      },
+      "uncategorizedText": {
+        "type": "string",
+        "description": "Stripe evidence.uncategorized_text — optional free narrative submitted alongside. In test mode the strings winning_evidence / losing_evidence force the outcome."
+      }
+    }
+  }
+}

@@ -1,0 +1,39 @@
+# Content-moderation vertical recipe — Notify (webhook) subscriptions.
+# A declarative list of the webhook subscriptions this recipe expects. Create each
+# one against your Server with POST /v1/webhooks (see the Webhooks guide). The
+# signing secret is returned ONCE at create time — capture it then; it is null on
+# every subsequent read.
+#
+# SSRF: private / link-local / metadata IPs are blocked at connect regardless of
+# DNS; SSRF_ALLOW_CIDRS is the only escape hatch. Point each url at a public HTTPS
+# endpoint you control (or HTTP only on an LB-terminated-TLS install with
+# SSRF_ALLOW_PLAIN_HTTP set). Replace the example.com URLs with your own.
+#
+# Notify subscriptions filter by EVENT type, not record type — two channels both
+# subscribed to record.created both receive every record's record.created. The
+# deployment must filter receiver-side on record type before fan-out, so the
+# transparency / appeal channel only sees the regulator-facing records.
+subscriptions:
+  # The moderation operations channel — the enforcement lifecycle: inbound flag,
+  # the gated enforcement decision, the statement issued to the user.
+  - name: moderation-ops
+    url: https://moderation-events.example.com/agledger
+    signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
+    eventTypes:
+      - record.created               # a flag received, or an enforcement decision opened
+      - record.completion_submitted  # a moderator submitted a determination
+      - record.gate_complete         # a lead/reviewer rendered accept/reject
+      - record.fulfilled             # an enforcement decision or appeal authorized
+      - record.failed                # an incomplete determination rejected
+      - signal.emitted               # terminal signal fired
+  # Transparency / appeal channel — route the regulator-facing and appeal records
+  # to the compliance queue. Filter receiver-side on record type:
+  # dsa-transparency-submission-v1 (the Art.24(5) submission + receipt) and
+  # appeal-redetermination-decision-v1 (the Art.20 verdict, decided independently).
+  - name: transparency-and-appeals
+    url: https://compliance-queue.example.com/agledger
+    signingAlg: ed25519       # vault-signed, offline-verifiable — regulator-facing audit trail
+    eventTypes:
+      - record.created               # filter receiver-side on the two regulator-facing types
+      - record.gate_complete
+      - record.fulfilled
