@@ -1,0 +1,22 @@
+{
+  "type": "content-flag-notice-v1",
+  "category": "moderation-intake",
+  "displayName": "Content Flag / Notice (notarized assertion)",
+  "description": "Notarize-only record of the inbound trigger that put a content item into the moderation queue: a DSA Art.16 notice, a trusted-flagger report (Art.22), an automated-detection hit, or own-initiative review. AGLedger does NOT decide anything here — this attests, signed and hash-chained, WHAT was flagged, by WHOM/what, and WHEN the clock started. Fields mirror the inputs the platform must later reflect in its DSA statement of reasons. `automatedDetection` records whether the content was DETECTED by automated means (DSA automated_detection) — distinct from whether the DECISION is automated (that lives on enforcement-decision-v1). `statementCategory` carries the real DSA STATEMENT_CATEGORY the flag asserts (named statementCategory, not category — `category` is a reserved record-metadata field). Pure notarization: reaches terminal RECORDED in one round-trip.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["contentRef", "contentType", "sourceType", "automatedDetection", "statementCategory"],
+    "properties": {
+      "contentRef": {"type": "string", "minLength": 1, "description": "Platform's stable identifier for the flagged content item or account (the moderation subject). Opaque to AGLedger."},
+      "contentType": {"type": "array", "minItems": 1, "items": {"type": "string", "enum": ["APP", "AUDIO", "IMAGE", "PRODUCT", "SYNTHETIC_MEDIA", "TEXT", "VIDEO", "OTHER"]}, "description": "DSA content_type — one or more media types of the flagged content. SYNTHETIC_MEDIA covers AI-generated / deepfake content."},
+      "sourceType": {"type": "string", "enum": ["ARTICLE_16_NOTICE", "TRUSTED_FLAGGER", "OTHER_NOTIFICATION", "VOLUNTARY_OWN_INITIATIVE"], "description": "DSA source_type — how the platform learned of the content. ARTICLE_16_NOTICE: a user notice-and-action submission. TRUSTED_FLAGGER: an Art.22 trusted flagger (notices given priority). VOLUNTARY_OWN_INITIATIVE: the platform's own proactive detection/review."},
+      "automatedDetection": {"type": "boolean", "description": "DSA automated_detection — whether the content was DETECTED by automated means (e.g. a classifier surfaced it). Distinct from automatedDecision (whether the enforcement DECISION was automated)."},
+      "statementCategory": {"type": "string", "enum": ["STATEMENT_CATEGORY_ANIMAL_WELFARE", "STATEMENT_CATEGORY_DATA_PROTECTION_AND_PRIVACY_VIOLATIONS", "STATEMENT_CATEGORY_ILLEGAL_OR_HARMFUL_SPEECH", "STATEMENT_CATEGORY_INTELLECTUAL_PROPERTY_INFRINGEMENTS", "STATEMENT_CATEGORY_NEGATIVE_EFFECTS_ON_CIVIC_DISCOURSE_OR_ELECTIONS", "STATEMENT_CATEGORY_NON_CONSENSUAL_BEHAVIOUR", "STATEMENT_CATEGORY_PORNOGRAPHY_OR_SEXUALIZED_CONTENT", "STATEMENT_CATEGORY_PROTECTION_OF_MINORS", "STATEMENT_CATEGORY_RISK_FOR_PUBLIC_SECURITY", "STATEMENT_CATEGORY_SCAMS_AND_FRAUD", "STATEMENT_CATEGORY_SCOPE_OF_PLATFORM_SERVICE", "STATEMENT_CATEGORY_SELF_HARM", "STATEMENT_CATEGORY_UNSAFE_AND_ILLEGAL_PRODUCTS", "STATEMENT_CATEGORY_VIOLENCE"], "description": "DSA STATEMENT_CATEGORY (14-value enum) the flag asserts as the type of illegality/incompatibility. The platform's mapping of the notice to a category is itself an attestable choice and may be revised at the enforcement decision."},
+      "submitterType": {"type": "string", "enum": ["individual", "entity", "trusted_flagger", "authority", "platform"], "description": "Optional: the kind of party who submitted the notice (for Art.16 notices). authority = a government/court order channel (Art.9/10) routed to moderation."},
+      "noticeRef": {"type": "string", "description": "Optional: platform reference to the full notice text/payload held off-chain (a URL or document id). The notarized record binds the metadata; the notice body itself need not be on-chain."},
+      "contentLanguage": {"type": "string", "minLength": 2, "maxLength": 2, "description": "Optional ISO 639-1 language code of the content (DSA content_language)."},
+      "noticeReceivedAt": {"type": "string", "format": "date-time", "description": "Optional: when the notice was received / the content was detected — the start of the response clock."}
+    }
+  }
+}

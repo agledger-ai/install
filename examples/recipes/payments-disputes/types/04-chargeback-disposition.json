@@ -1,0 +1,24 @@
+{
+  "type": "chargeback-disposition-v1",
+  "category": "dispute-outcome",
+  "displayName": "Chargeback Disposition (notarized outcome)",
+  "description": "Notarize-only record of the dispute's final outcome as the network/issuer rendered it and Stripe relayed it (`charge.dispute.closed`). AGLedger attests the verdict AS RELAYED — it does not claim to be the adjudicator (the issuer/Visa network decided; Stripe reported). Captures won/lost plus the funds movement from balance_transactions so the financial impact is on-chain. | `isLateWin` flags the rare reversal where a lost dispute is later won (Stripe keeps status=won; late_win is a label, not a separate status). | Closes the chain that began at chargeback-dispute-filed-v1 and was authorized through the gated decision: filing -> authorized decision -> network verdict, all hash-linked and offline-verifiable. Reaches terminal RECORDED in one round-trip.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["disputeId", "disputeRef", "finalStatus", "currency"],
+    "properties": {
+      "disputeId": {"type": "string", "minLength": 1, "description": "Stripe Dispute id (du_...; older docs show dp_) that closed."},
+      "disputeRef": {"type": "string", "minLength": 1, "description": "recordId of the chargeback-dispute-filed-v1 this disposition closes."},
+      "decisionRef": {"type": "string", "description": "Optional recordId of the evidence-submission-decision-v1 / dispute-concession-decision-v1 that drove this outcome."},
+      "finalStatus": {"type": "string", "enum": ["won", "lost", "warning_closed", "prevented"], "description": "Terminal Stripe Dispute.status. won = funds returned; lost = funds stay withdrawn; warning_closed = inquiry resolved without becoming a chargeback; prevented = deflected pre-dispute (RDR/Ethoca/CE3)."},
+      "network": {"type": "string", "enum": ["visa", "mastercard", "amex", "discover", "other"]},
+      "networkReasonCode": {"type": "string"},
+      "fundsWithdrawn": {"type": "number", "minimum": 0, "description": "Amount pulled from balance over the dispute (disputed amount + dispute fee), major units, from balance_transactions."},
+      "fundsReinstated": {"type": "number", "minimum": 0, "description": "Amount returned to balance on a win (amount + fee reversal), major units. 0 on a loss."},
+      "currency": {"type": "string", "minLength": 3, "maxLength": 3},
+      "closedAt": {"type": "string", "format": "date-time", "description": "When the dispute reached its terminal status. Optional: the Stripe Dispute object exposes no close timestamp — derive it from the closing `balance_transaction.created` or the `charge.dispute.closed` event time, or use observation time. Omit if unavailable."},
+      "isLateWin": {"type": "boolean", "description": "True when a previously-lost dispute was subsequently won (status reads won; this disambiguates the reversal)."}
+    }
+  }
+}

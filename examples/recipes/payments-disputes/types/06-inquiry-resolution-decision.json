@@ -1,0 +1,47 @@
+{
+  "type": "inquiry-resolution-decision-v1",
+  "category": "dispute-decision",
+  "defaultGateMode": "principal",
+  "displayName": "Inquiry-Resolution Decision (human-gated)",
+  "description": "The inquiry gate shape — a DIFFERENT decision than the formal-chargeback contest/concede, because an inquiry (Stripe warning_needs_response: a pre-dispute retrieval/inquiry, e.g. Visa RDR / Amex/Discover inquiry) hasn't become a chargeback yet. The merchant's genuinely-distinct discretionary act is `resolutionPath`: (a) refund_to_prevent — issue a refund now, which RESOLVES the inquiry before it escalates, incurs NO dispute fee, and keeps it off the dispute-ratio; the merchant trades the refund amount for avoiding the fee + chargeback risk; or (b) respond_with_evidence — defend the inquiry with an evidence package (no refund), same hash-binding as the chargeback path. This is the VCR-thread realization that IS drivable on the Stripe SoR: Stripe does not expose VCR allocation-vs-collaboration as distinct actions and does not support pre-arbitration/arbitration, but inquiry-vs-chargeback is a real, distinct, drivable workflow. The decision carries networkReasonCode + vcrClass for the captured Visa classification, and feeAtStake so the economic trade-off is on-chain. The engine enforces resolutionPath-conditional evidence at structural validation (refund_to_prevent requires refundAmount + rationale; respond_with_evidence requires evidencePackageHash). GATE + SoD ARE ORCHESTRATOR-ENFORCED, NOT TYPE-ENFORCED (see README): gateMode:auto can override defaultGateMode:principal (F-791) and principal==performer self-commitment is not rejected (F-758). Route through the principal gate, never set gateMode:auto, and provision distinct performer+principal identities.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["disputeId", "disputeRef", "amount", "currency", "resolutionPath"],
+    "properties": {
+      "disputeId": {"type": "string", "minLength": 1, "description": "Stripe Dispute id (du_...) of the INQUIRY this decision resolves (status warning_needs_response)."},
+      "disputeRef": {"type": "string", "minLength": 1, "description": "recordId of the chargeback-dispute-filed-v1 (disputeFlow=inquiry) this descends from."},
+      "amount": {"type": "number", "minimum": 0, "description": "Inquiry amount in major units."},
+      "currency": {"type": "string", "minLength": 3, "maxLength": 3},
+      "networkReasonCode": {"type": "string", "description": "Visa/network reason code where surfaced (payment_method_details.card.network_reason_code)."},
+      "vcrClass": {"type": "string", "enum": ["allocation", "collaboration", "unknown"], "description": "Captured VCR class (see chargeback-dispute-filed-v1.vcrClass). Classification only — Stripe abstracts the workflow."},
+      "inquiryDueBy": {"type": "string", "format": "date-time", "description": "Inquiry response deadline (Stripe evidence_details.due_by), carried so a late decision is observable on-chain."},
+      "feeAtStake": {"type": "number", "minimum": 0, "description": "The dispute fee (and ratio impact) AVOIDED if refund_to_prevent resolves the inquiry before it escalates to a chargeback — the economic input to the decision. The merchant trades min(refund, exposure) against this."},
+      "resolutionPath": {"type": "string", "enum": ["refund_to_prevent", "respond_with_evidence"], "description": "The authorized inquiry-resolution path. refund_to_prevent: refund now to close the inquiry, no fee. respond_with_evidence: defend with an evidence package, no refund."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["resolutionPath"],
+    "properties": {
+      "resolutionPath": {"type": "string", "enum": ["refund_to_prevent", "respond_with_evidence"], "description": "Must equal the record's criteria.resolutionPath — the path the principal authorized."},
+      "refundAmount": {"type": "number", "minimum": 0, "description": "For refund_to_prevent: the amount refunded to resolve the inquiry (major units)."},
+      "rationale": {"type": "string", "minLength": 1, "description": "For refund_to_prevent: why refunding beats defending (e.g. refund < feeAtStake + expected chargeback loss)."},
+      "acknowledgedNoFee": {"type": "boolean", "description": "For refund_to_prevent: attests the operator understands resolving the inquiry by refund avoids the dispute fee and keeps it off the dispute ratio."},
+      "evidencePackageHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "For respond_with_evidence: sha256:<hex> of the exact Stripe evidence object submitted to the inquiry."},
+      "productDescription": {"type": "string", "minLength": 1, "description": "For respond_with_evidence: Stripe evidence.product_description."},
+      "uncategorizedText": {"type": "string", "description": "Optional Stripe evidence.uncategorized_text. Test mode: winning_evidence / losing_evidence force the outcome."}
+    },
+    "allOf": [
+      {
+        "if": {"required": ["resolutionPath"], "properties": {"resolutionPath": {"const": "refund_to_prevent"}}},
+        "then": {"required": ["refundAmount", "rationale"]}
+      },
+      {
+        "if": {"required": ["resolutionPath"], "properties": {"resolutionPath": {"const": "respond_with_evidence"}}},
+        "then": {"required": ["evidencePackageHash", "productDescription"]}
+      }
+    ]
+  }
+}

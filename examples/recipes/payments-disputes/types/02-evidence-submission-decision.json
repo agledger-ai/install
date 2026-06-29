@@ -1,0 +1,326 @@
+{
+  "type": "evidence-submission-decision-v1",
+  "category": "dispute-decision",
+  "defaultGateMode": "principal",
+  "displayName": "Evidence-Submission Decision (human-gated, one-shot)",
+  "description": "Headline gated decision: a human principal (chargeback/fraud-ops lead) authorizes contesting a dispute with a SPECIFIC evidence package BEFORE the recipe fires Stripe's irreversible POST /v1/disputes/{id} (submit=true). Stripe allows one submission, no edits — so a signed record of WHO authorized WHAT evidence WHEN, before the terminal call, is the whole value. Analyst = performer (submits the package as the completion); lead = principal (accept/reject via /verdict). The engine enforces conditional-required evidence by category at structural validation — a package missing the category's required fields gets structuralValidation:INVALID and does not advance. evidencePackageHash binds the exact bytes: criteria carries sha256 of the package submitted to Stripe, the completion echoes it, an auditor recomputes over the actually-submitted evidence. GATE + SoD ARE ORCHESTRATOR-ENFORCED, NOT TYPE-ENFORCED (see README Lessons): gateMode:auto can override defaultGateMode:principal and bypass the human (F-791/api#838), and principal==performer self-commitment is not rejected (F-758/api#759). The orchestrator MUST route every fraud/high-value dispute through the principal gate, MUST NOT set gateMode:auto on this type, and MUST provision distinct analyst + lead identities.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "disputeId",
+      "disputeRef",
+      "amount",
+      "currency",
+      "reason",
+      "disputeCategory",
+      "evidenceDueBy",
+      "evidencePackageHash"
+    ],
+    "properties": {
+      "disputeId": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Stripe Dispute id (du_...; older docs show dp_) this decision authorizes a response to."
+      },
+      "disputeRef": {
+        "type": "string",
+        "minLength": 1,
+        "description": "recordId of the chargeback-dispute-filed-v1 this decision descends from (chain lineage)."
+      },
+      "amount": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Disputed amount in major units. The merchant's review-threshold input: amount >= threshold forces the human gate."
+      },
+      "currency": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 3
+      },
+      "reason": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Stripe raw reason. reason=fraudulent forces the human gate regardless of amount."
+      },
+      "disputeCategory": {
+        "type": "string",
+        "enum": [
+          "fraudulent",
+          "product_not_received",
+          "product_unacceptable",
+          "duplicate",
+          "credit_not_processed",
+          "subscription_canceled",
+          "unrecognized",
+          "general"
+        ],
+        "description": "Evidence-guidance category; must equal the completion evidence package's `category`. (Named disputeCategory in the criteria — `category` is a reserved record-metadata field name.)"
+      },
+      "evidenceDueBy": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Carried from the filing so a decision rendered after the deadline is observable on-chain."
+      },
+      "evidencePackageHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256:<hex> of the exact, canonicalized Stripe evidence object the recipe will submit. Binds the authorization to specific bytes."
+      },
+      "filesContentHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "Optional sha256:<hex> over the concatenated/manifested attached file contents (purpose=dispute_evidence uploads)."
+      }
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "category",
+      "evidencePackageHash",
+      "productDescription"
+    ],
+    "properties": {
+      "category": {
+        "type": "string",
+        "enum": [
+          "fraudulent",
+          "product_not_received",
+          "product_unacceptable",
+          "duplicate",
+          "credit_not_processed",
+          "subscription_canceled",
+          "unrecognized",
+          "general"
+        ],
+        "description": "Category the assembled package addresses; must equal the record's criteria.category."
+      },
+      "deliveryType": {
+        "type": "string",
+        "enum": [
+          "physical",
+          "digital",
+          "na"
+        ],
+        "description": "For product_not_received: whether the product was physically shipped or digitally delivered; selects which proof set is required."
+      },
+      "evidencePackageHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "Must equal the record's criteria.evidencePackageHash — the bytes the principal is authorizing."
+      },
+      "productDescription": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Stripe evidence.product_description — what the customer purchased."
+      },
+      "customerName": {
+        "type": "string"
+      },
+      "customerEmailAddress": {
+        "type": "string"
+      },
+      "billingAddress": {
+        "type": "string"
+      },
+      "customerPurchaseIp": {
+        "type": "string"
+      },
+      "shippingCarrier": {
+        "type": "string"
+      },
+      "shippingTrackingNumber": {
+        "type": "string"
+      },
+      "shippingDate": {
+        "type": "string"
+      },
+      "shippingAddress": {
+        "type": "string"
+      },
+      "customerSignature": {
+        "type": "string",
+        "description": "File id (file_...) of proof-of-delivery signature, purpose=dispute_evidence."
+      },
+      "accessActivityLog": {
+        "type": "string",
+        "description": "Stripe evidence.access_activity_log — server/CDN access records proving digital delivery."
+      },
+      "duplicateChargeId": {
+        "type": "string"
+      },
+      "duplicateChargeExplanation": {
+        "type": "string"
+      },
+      "duplicateChargeDocumentation": {
+        "type": "string",
+        "description": "File id of documentation distinguishing this charge from the alleged duplicate."
+      },
+      "refundPolicy": {
+        "type": "string"
+      },
+      "refundPolicyDisclosure": {
+        "type": "string",
+        "description": "How/when the refund policy was disclosed to the customer."
+      },
+      "refundRefusalExplanation": {
+        "type": "string"
+      },
+      "cancellationPolicy": {
+        "type": "string"
+      },
+      "cancellationPolicyDisclosure": {
+        "type": "string"
+      },
+      "cancellationRebuttal": {
+        "type": "string"
+      },
+      "uncategorizedText": {
+        "type": "string",
+        "description": "Stripe evidence.uncategorized_text — free narrative. In test mode the strings winning_evidence / losing_evidence force the outcome."
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "required": [
+            "category"
+          ],
+          "properties": {
+            "category": {
+              "const": "product_not_received"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "deliveryType"
+          ]
+        }
+      },
+      {
+        "if": {
+          "required": [
+            "category",
+            "deliveryType"
+          ],
+          "properties": {
+            "category": {
+              "const": "product_not_received"
+            },
+            "deliveryType": {
+              "const": "physical"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "shippingCarrier",
+            "shippingTrackingNumber",
+            "shippingDate",
+            "shippingAddress"
+          ]
+        }
+      },
+      {
+        "if": {
+          "required": [
+            "category",
+            "deliveryType"
+          ],
+          "properties": {
+            "category": {
+              "const": "product_not_received"
+            },
+            "deliveryType": {
+              "const": "digital"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "customerPurchaseIp",
+            "customerEmailAddress",
+            "accessActivityLog"
+          ]
+        }
+      },
+      {
+        "if": {
+          "required": [
+            "category"
+          ],
+          "properties": {
+            "category": {
+              "const": "duplicate"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "duplicateChargeId",
+            "duplicateChargeExplanation",
+            "duplicateChargeDocumentation"
+          ]
+        }
+      },
+      {
+        "if": {
+          "required": [
+            "category"
+          ],
+          "properties": {
+            "category": {
+              "const": "credit_not_processed"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "refundPolicyDisclosure",
+            "refundRefusalExplanation"
+          ]
+        }
+      },
+      {
+        "if": {
+          "required": [
+            "category"
+          ],
+          "properties": {
+            "category": {
+              "const": "subscription_canceled"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "cancellationPolicyDisclosure",
+            "cancellationRebuttal"
+          ]
+        }
+      },
+      {
+        "if": {
+          "required": [
+            "category"
+          ],
+          "properties": {
+            "category": {
+              "const": "fraudulent"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "customerPurchaseIp",
+            "customerEmailAddress",
+            "billingAddress"
+          ]
+        }
+      }
+    ]
+  }
+}
