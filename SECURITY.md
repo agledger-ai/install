@@ -8,7 +8,7 @@ Email **security@agledger.ai** with:
 
 - A description of the vulnerability
 - Steps to reproduce
-- Impact assessment — what an attacker could achieve
+- Impact assessment: what an attacker could achieve
 - Affected components (services, endpoints, configurations)
 - Environment details: version, deployment method (Compose or Helm), OS, relevant configuration
 - Proof of concept: screenshots, logs, or code snippets, if available
@@ -38,9 +38,9 @@ AGLedger supports good-faith security research. We will not pursue legal action 
 
 ## Data Sovereignty
 
-AGLedger is self-hosted. All application data — records, receipts, audit logs, API keys — stays within your infrastructure. License validation runs locally with no phone-home.
+AGLedger is self-hosted. All application data (records, receipts, audit logs, API keys) stays within your infrastructure. License validation runs locally with no phone-home.
 
-The Developer Edition (free, unlicensed installs) can send an anonymous heartbeat to `telemetry.agledger.ai` every 48 hours, but it is **opt-in and off by default** — nothing is sent unless you explicitly set `AGLEDGER_TELEMETRY=true` in your `.env` file. When enabled, the heartbeat contains only the running version, uptime, deployment mode, and an anonymous install ID. It contains no application data, no usage metrics, and no identifiers that can be traced to a customer or account. Enterprise licenses never send telemetry.
+The Developer Edition (free, unlicensed installs) can send an anonymous heartbeat to `telemetry.agledger.ai` every 48 hours, but it is **opt-in and off by default**. Nothing is sent unless you explicitly set `AGLEDGER_TELEMETRY=true` in your `.env` file. When enabled, the heartbeat contains only the running version, uptime, deployment mode, and an anonymous install ID. It contains no application data, no usage metrics, and no identifiers that can be traced to a customer or account. Enterprise licenses never send telemetry.
 
 Outbound network access is required only for:
 
@@ -52,11 +52,11 @@ For restricted-network deployments, pull images into an internal registry and pa
 
 ## What we build and scan
 
-**OpenSSF-aligned supply chain** — SLSA Build L3 provenance, Sigstore keyless
+**OpenSSF-aligned supply chain.** SLSA Build L3 provenance, Sigstore keyless
 signing, and SBOM + OpenVEX + malware-scan attestations, all verifiable offline
 with no repository access.
 
-Every release is built by GitHub Actions — **no signing key exists on any build
+Every release is built by GitHub Actions, and **no signing key exists on any build
 machine.** Trust flows from GitHub's OIDC identity → Sigstore Fulcio (an ephemeral
 certificate) → the **public Rekor** transparency log. A valid signature proves the
 artifact was produced by *our* release workflow at a tagged commit, and it is
@@ -64,13 +64,13 @@ verifiable against the public Sigstore trust root with **no access to the source
 repository**.
 
 Before an image is published, the release pipeline runs two **blocking** gates
-against the exact bytes being shipped — a failure on either stops the release, so a
+against the exact bytes being shipped. A failure on either stops the release, so a
 flagged image never reaches the registry:
 
-- **CVE scan** (Trivy, CRITICAL/HIGH, fixable) — known-vulnerable OS and
+- **CVE scan** (Trivy, CRITICAL/HIGH, fixable): known-vulnerable OS and
   dependency versions. Reviewed exceptions for unfixable upstream CVEs are tracked
   in an attested OpenVEX document.
-- **Known-malware scan** (ClamAV) — signature scan of the image's shipping
+- **Known-malware scan** (ClamAV): signature scan of the image's shipping
   filesystem, with a built-in positive control that fails the build if the signature
   database is missing or stale (so a "clean" result can never be a no-op). This is
   the layer CVE scanning is blind to: a compromised or typosquatted dependency that
@@ -83,7 +83,7 @@ Dependabot (dependency updates) continuously.
 
 **Requires cosign 3.0 or later** (and `slsa-verifier`, `crane`, and `jq` for the
 provenance and malware-scan steps). Every command below verifies against the public
-Sigstore trust root — no AGLedger-hosted key or endpoint, no repository access.
+Sigstore trust root, with no AGLedger-hosted key or endpoint and no repository access.
 
 ```bash
 IDENTITY='^https://github\.com/agledger-ai/agledger-api/\.github/workflows/.+@refs/tags/v.+$'
@@ -102,7 +102,7 @@ cosign verify-attestation --type cyclonedx --certificate-identity-regexp "$IDENT
 cosign verify-attestation --type openvex   --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" agledger/agledger:<version>
 
 # 3a. Malware-scan result. IMPORTANT: verify-attestation checks the signature and
-#     the predicate TYPE — not the field values. Assert the result yourself:
+#     the predicate TYPE, not the field values. Assert the result yourself:
 cosign verify-attestation --type https://agledger.ai/attestations/malware-scan/v1 \
   --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
   agledger/agledger:<version> \
@@ -123,10 +123,10 @@ cosign verify-blob \
 ```
 
 **Per-surface assurance:** the container image is **SLSA Build L3**. The public
-packages — npm (`@agledger/*`, `npm --provenance`) — are **SLSA Build L2**; PyPI
+packages, npm (`@agledger/*`, `npm --provenance`), are **SLSA Build L2**; PyPI
 (`agledger`, Trusted Publishing / PEP 740) ships **signed publish attestations**
 (not a numbered SLSA level). All share the same GitHub-OIDC → Sigstore trust root.
-L3 is the level at which build provenance becomes non-falsifiable — the assurance
+L3 is the level at which build provenance becomes non-falsifiable: the assurance
 the image carries, and the property every command above verifies.
 
 The SBOM, OpenVEX document, and the signed conformance corpus are attached to every
@@ -140,10 +140,10 @@ published live at `GET /.well-known/agledger-vault-keys.json` and
 
 ## Mirrored registries (AWS Marketplace / ECR)
 
-`agledger/agledger` on Docker Hub is the authoritative artifact — it carries the
+`agledger/agledger` on Docker Hub is the authoritative artifact. It carries the
 Sigstore signature and the SBOM / OpenVEX / malware-scan / SLSA L3 attestations, and
 it's where every command above runs. The **AWS Marketplace** delivery (and any other
-ECR mirror) is a **byte-identical copy of that image — the same digest** — but the
+ECR mirror) is a **byte-identical copy of that image, the same digest**, but the
 Sigstore artifacts are intentionally **not** carried into ECR, because AWS
 Marketplace requires a plain image manifest and rejects attestation artifacts.
 
@@ -152,7 +152,7 @@ authoritative Docker Hub image, then confirm the Marketplace image is the same b
 
 ```bash
 # 1. Verify the authoritative public image (signature + SLSA L3, as above) and note
-#    its digest — this is the artifact that carries the full provenance.
+#    its digest. This is the artifact that carries the full provenance.
 DH_DIGEST=$(crane digest agledger/agledger:<version>)
 echo "$DH_DIGEST"
 
