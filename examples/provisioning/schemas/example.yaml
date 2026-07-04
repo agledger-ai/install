@@ -60,3 +60,20 @@ schemas:
           format: date-time
           description: Timestamp when the completion was submitted (ISO 8601).
       additionalProperties: false
+    # Gate rules and gate mode sit at the top level of the schema entry,
+    # the same placement POST /v1/schemas uses. Both are optional: omit them
+    # for a notarize-only type. See the README for the full list of supported
+    # keys; anything else fails the entry at load rather than being dropped.
+    fieldMappings:
+      # Records pass a per-record tolerance as `tolerance.totalPct` (keys
+      # ending in Pct apply as percentage; see GET /v1/schemas/meta-schema).
+      - ruleId: "number:exact-match"
+        criteriaPath: expected_total
+        evidencePath: actual_total
+        valueType: number
+        toleranceField: totalPct
+      - ruleId: "string:exact"
+        criteriaPath: currency
+        evidencePath: currency
+        valueType: string
+    defaultGateMode: auto

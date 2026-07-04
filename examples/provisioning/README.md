@@ -99,6 +99,10 @@ provisioning/
   schemas/        # Custom contract type schemas (inline or file references)
 ```
 
+## Schema entries
+
+Each entry under `schemas:` uses the same top-level placement as `POST /v1/schemas` for the keys it supports: `type`, `recordSchema`, `completionSchema`, and optionally `displayName`, `description`, `category`, `fieldMappings`, `commissionSourceField`, and `defaultGateMode`. Gate rules go in `fieldMappings` at the top level, exactly as in a register body (see `schemas/example.yaml`). Register fields outside that list (`compatibilityMode`, `defaultShare`, `coSignRequired`, and the other row-only federation toggles) are not provisioning-configurable; declaring them, or any other unknown key, fails the entry at load time rather than silently dropping it, so misplaced gate config can never provision a type that enforces nothing. Rule wiring is validated at load with the same checks as the register API: malformed mapping elements, duplicate ruleIds, unknown verbs, and criteria/evidence paths that do not resolve against the schemas each fail the entry with a per-type error.
+
 ## Pruning
 
 By default, resources removed from YAML files are left in place (orphaned). To deactivate removed resources on reload:
