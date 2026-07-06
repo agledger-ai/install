@@ -1,0 +1,130 @@
+{
+  "type": "delivery-outcome-v1",
+  "category": "delivery-outcome",
+  "displayName": "Delivery Outcome (notarized terminal disposition)",
+  "description": "Notarize-only record of what actually landed, as the SoR reports it: the merge commit that entered the protected branch, or the deployment's terminal state, plus who executed it (GitHub merged_by / approver login). Closes the chain opened by change-authored-v1 so an auditor can walk intent, SoR disposition, authorization, execution end to end in one offline-verifiable export. The authorizedRef makes the authorized-vs-executed pair explicit: mergeSha is the merge COMMIT (a new commit created by the merge), while the authorization pinned the head being merged, so the auditor's check is that this record's headSha equals the authorized headSha and the SoR confirms mergeSha merged it. | Conditional-required: outcomeKind merged requires mergeSha; deployed requires deploymentId and deploymentState. Pure notarization: reaches terminal RECORDED in one round-trip.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "repo",
+      "outcomeKind",
+      "executedBy",
+      "executedAt",
+      "authorizedRef"
+    ],
+    "properties": {
+      "repo": {
+        "type": "string",
+        "minLength": 3,
+        "pattern": "^[^/]+/[^/]+$",
+        "description": "GitHub owner/name the outcome occurred in."
+      },
+      "outcomeKind": {
+        "type": "string",
+        "enum": [
+          "merged",
+          "deployed",
+          "merge-declined",
+          "deploy-rejected",
+          "abandoned"
+        ],
+        "description": "What terminally happened. Declined/rejected/abandoned close the chain honestly when nothing landed."
+      },
+      "prNumber": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Pull request, for merge outcomes."
+      },
+      "headSha": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$",
+        "description": "The head commit that was merged or deployed. Compare with the authorization's headSha."
+      },
+      "mergeSha": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$",
+        "description": "The merge commit the SoR created (PUT merge response sha). Required when outcomeKind is merged."
+      },
+      "deploymentId": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "GitHub deployment id. Required when outcomeKind is deployed."
+      },
+      "deploymentState": {
+        "type": "string",
+        "enum": [
+          "success",
+          "failure",
+          "error",
+          "inactive"
+        ],
+        "description": "Terminal deployment state as the SoR reports it. Required when outcomeKind is deployed."
+      },
+      "environment": {
+        "type": "string",
+        "description": "Environment, for deploy outcomes."
+      },
+      "executedBy": {
+        "type": "string",
+        "minLength": 1,
+        "description": "GitHub login this record relays as the executor: merged_by for merges. For deploys, GitHub records the approver (the decision) and the deployment creator (the execution) separately; choose which you relay and be consistent \u2014 the walkthrough relays the approver, since the decision is what this chain audits."
+      },
+      "executedAt": {
+        "type": "string",
+        "format": "date-time",
+        "description": "When the SoR reports it happened."
+      },
+      "authorizedRef": {
+        "type": "string",
+        "minLength": 1,
+        "description": "recordId of the authorization this outcome executed: a merge-authorization-v1 / deploy-authorization-v1 (AGLedger-held) or a review-verdict-v1 / deployment-approval-v1 relay (SoR-held)."
+      },
+      "changeRef": {
+        "type": "string",
+        "description": "recordId of the change-authored-v1 this outcome closes (chain lineage), when applicable."
+      },
+      "artifactDigest": {
+        "type": "string",
+        "minLength": 8,
+        "maxLength": 200,
+        "description": "Digest of the released artifact (e.g. sha256:... image digest), pinning what bytes shipped. The provenance chain behind the digest (SLSA/Sigstore) is out of scope by design; this is only the pin."
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "outcomeKind": {
+              "const": "merged"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "mergeSha",
+            "prNumber",
+            "headSha"
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "outcomeKind": {
+              "const": "deployed"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "deploymentId",
+            "deploymentState",
+            "environment",
+            "headSha"
+          ]
+        }
+      }
+    ]
+  }
+}

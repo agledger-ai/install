@@ -1,0 +1,23 @@
+{
+  "type": "deployment-approval-v1",
+  "category": "delivery-intake",
+  "displayName": "Deployment Approval (notarized SoR-held gate outcome)",
+  "description": "Notarize-only relay of an environment-protection approval or rejection as GitHub rendered it. This is the SoR-HELD gate mode for deployments: the human approved or rejected the held run inside GitHub (pending_deployments), GitHub recorded approver, state, and comment, and AGLedger notarizes that rendered decision into the same offline-verifiable chain as the change, the CI conclusion, and the outcome. AGLedger held no gate here and made no decision; do not model this record as an AGLedger Verdict. When the org wants AGLedger to HOLD the deploy decision, use deploy-authorization-v1 instead of this relay, one decision, one holder. Pure notarization: reaches terminal RECORDED in one round-trip.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["repo", "runId", "environment", "approver", "state", "renderedAt"],
+    "properties": {
+      "repo": {"type": "string", "minLength": 3, "pattern": "^[^/]+/[^/]+$", "description": "GitHub owner/name the held run belongs to."},
+      "runId": {"type": "integer", "minimum": 1, "description": "GitHub Actions workflow run id that was held by environment protection. The SoR-side pointer for re-checking the relay."},
+      "environment": {"type": "string", "minLength": 1, "description": "Environment whose protection gate was decided."},
+      "approver": {"type": "string", "minLength": 1, "description": "GitHub login that rendered the decision, as the SoR reports it."},
+      "state": {"type": "string", "enum": ["approved", "rejected"], "description": "GitHub's rendered decision, verbatim."},
+      "comment": {"type": "string", "maxLength": 2000, "description": "The approver's comment as recorded by the SoR, when present."},
+      "renderedAt": {"type": "string", "format": "date-time", "description": "When the SoR recorded the decision."},
+      "headSha": {"type": "string", "pattern": "^[0-9a-f]{40}$", "description": "The commit the held run would deploy, for chain binding."},
+      "changeRef": {"type": "string", "description": "recordId of the change-authored-v1 that produced this deployable (chain lineage), when applicable."},
+      "ciRef": {"type": "string", "description": "recordId of the ci-conclusion-v1 for this commit (chain lineage), when applicable."}
+    }
+  }
+}

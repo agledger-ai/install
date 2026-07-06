@@ -1,0 +1,19 @@
+{
+  "type": "vat-obligation-retrieved-v1",
+  "category": "vat-filing",
+  "displayName": "VAT Obligation Retrieved (SoR's word on the open period)",
+  "description": "Notarize-only record of an open VAT obligation exactly as HMRC states it (GET /organisations/vat/{vrn}/obligations). This is the SoR's word on WHAT is due and by WHEN — it establishes the periodKey the return will be filed against and the dueDate that makes timeliness a signed fact (the later vat-penalty-observation binds HMRC's late-submission verdict against this dueDate). AGLedger does not compute obligations; it notarizes what HMRC returned. periodKey is HMRC's 4-char period identifier (may contain '#'); it is echoed into the validation gate and the filing receipt so the whole chain is provably about ONE obligation period.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["vrn", "periodKey", "periodStart", "periodEnd", "dueDate", "obligationStatus"],
+    "properties": {
+      "vrn": {"type": "string", "pattern": "^[0-9]{9}$", "description": "The 9-digit VAT registration number the obligation belongs to."},
+      "periodKey": {"type": "string", "minLength": 1, "maxLength": 4, "description": "HMRC's period key for the obligation (up to 4 chars, may contain '#'). The join key for the whole filing chain."},
+      "periodStart": {"type": "string", "format": "date", "description": "Obligation period start (HMRC 'start', YYYY-MM-DD)."},
+      "periodEnd": {"type": "string", "format": "date", "description": "Obligation period end (HMRC 'end', YYYY-MM-DD)."},
+      "dueDate": {"type": "string", "format": "date", "description": "Statutory filing due date (HMRC 'due', YYYY-MM-DD). The timeliness baseline: a filing whose receipt processingDate is after this is late (HMRC adjudicates the penalty, not AGLedger)."},
+      "obligationStatus": {"type": "string", "enum": ["O", "F"], "description": "HMRC obligation status: O = open (not yet fulfilled), F = fulfilled. A return should only be filed against an O obligation."}
+    }
+  }
+}
