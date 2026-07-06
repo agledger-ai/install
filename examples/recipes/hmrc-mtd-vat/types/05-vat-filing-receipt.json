@@ -1,0 +1,34 @@
+{
+  "type": "vat-filing-receipt-v1",
+  "category": "vat-filing",
+  "displayName": "VAT Filing Receipt (irreversible one-shot, HMRC receipt bound)",
+  "description": "Notarize-only record of the irreversible statutory filing and HMRC's returned verdict — THE SEAM. submittedReturnHash is sha256 of the EXACT canonicalized nine-box JSON body POSTed to HMRC (POST /organisations/vat/{vrn}/returns), binding the on-chain record to the precise bytes HMRC received. On acceptance, formBundleNumber (HMRC's 12-digit acknowledgement handle) + processingDate are HMRC's receipt — and formBundleNumber is the LEGALLY-OPERATIVE artifact: the taxpayer's proof of having filed, and of when, that is produced in a late-filing penalty dispute. On rejection, rejectionCode captures HMRC's typed statutory refusal (DUPLICATE_SUBMISSION / TAX_PERIOD_NOT_ENDED / VRN_INVALID / NOT_FINALISED / RULE_INSOLVENT_TRADER). The filing is irreversible: there is no amend/delete in VAT (MTD) v1.0; a re-file for the same (vrn, periodKey) is refused DUPLICATE_SUBMISSION and corrections go on a later return. AGLedger notarizes the filing and HOLDS HMRC's verdict; HMRC remains the sole authority on acceptance.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["declarationRef", "vrn", "periodKey", "submittedReturnHash", "submissionStatus"],
+    "properties": {
+      "declarationRef": {"type": "string", "minLength": 1, "description": "recordId of the FULFILLED vat-return-declaration-v1 whose held human declaration authorized this filing (chain lineage)."},
+      "vrn": {"type": "string", "pattern": "^[0-9]{9}$", "description": "The 9-digit VAT registration number filed for."},
+      "periodKey": {"type": "string", "minLength": 1, "maxLength": 4, "description": "HMRC period key filed. With vrn, the irreversible one-shot identity."},
+      "submittedReturnHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "sha256:<hex> of the exact canonicalized nine-box JSON body POSTed to HMRC. Binds the record to the precise bytes HMRC received."},
+      "submissionStatus": {"type": "string", "enum": ["accepted", "rejected", "prepared"], "description": "accepted: HMRC returned 201 (formBundleNumber + processingDate present). rejected: HMRC returned a typed 4xx (rejectionCode present). prepared: the body is hash-bound but not yet POSTed (doc-grounded / no live token) — receipt fields empty."},
+      "formBundleNumber": {"type": "string", "pattern": "^[0-9]{12}$", "description": "HMRC's 12-digit acknowledgement handle. THE legally-operative receipt. Present when submissionStatus=accepted."},
+      "processingDate": {"type": "string", "format": "date-time", "description": "HMRC's processing timestamp from the 201. Present when submissionStatus=accepted. Compared against the obligation dueDate for timeliness."},
+      "paymentIndicator": {"type": "string", "enum": ["DD", "BANK"], "description": "Optional: HMRC's returned payment indicator (direct debit / bank)."},
+      "chargeRefNumber": {"type": "string", "minLength": 1, "maxLength": 16, "description": "Optional: HMRC's charge reference, returned only when netVatDue is a debit."},
+      "rejectionCode": {"type": "string", "enum": ["DUPLICATE_SUBMISSION", "TAX_PERIOD_NOT_ENDED", "VRN_INVALID", "PERIOD_KEY_INVALID", "NOT_FINALISED", "INVALID_REQUEST", "RULE_INSOLVENT_TRADER", "CLIENT_OR_AGENT_NOT_AUTHORISED", "VAT_TOTAL_VALUE", "VAT_NET_VALUE"], "description": "HMRC's typed rejection code. Present when submissionStatus=rejected."},
+      "rejectionMessage": {"type": "string", "description": "HMRC's rejection message, verbatim. Present when submissionStatus=rejected."}
+    },
+    "allOf": [
+      {
+        "if": {"required": ["submissionStatus"], "properties": {"submissionStatus": {"const": "accepted"}}},
+        "then": {"required": ["formBundleNumber", "processingDate"]}
+      },
+      {
+        "if": {"required": ["submissionStatus"], "properties": {"submissionStatus": {"const": "rejected"}}},
+        "then": {"required": ["rejectionCode", "rejectionMessage"]}
+      }
+    ]
+  }
+}

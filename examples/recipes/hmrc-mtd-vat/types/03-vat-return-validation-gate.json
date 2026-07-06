@@ -1,0 +1,42 @@
+{
+  "type": "vat-return-validation-gate-v1",
+  "category": "vat-filing",
+  "defaultGateMode": "auto",
+  "displayName": "VAT Return Validation Gate (engine pre-flight well-formedness)",
+  "description": "The engine-enforced PRE-FLIGHT structural well-formedness gate on the irreversible one-shot. The completion (submitted by the preparer) carries the EXACT nine-box figures that are about to be filed plus the periodKey. A single expression rule settles FULFILLED iff (a) submittedPeriodKey exactly equals the retrieved obligation's periodKey (criteria.obligationPeriodKey) — so the filing provably targets the obligation it was retrieved against — AND (b) the derived boxes are internally consistent to 2dp: totalVatDue == vatDueSales + vatDueAcquisitions (Box3) and netVatDue == |totalVatDue - vatReclaimedCurrPeriod| (Box5). This is a CLIENT-SIDE STRUCTURAL GUARD so a malformed return is caught before the one-shot POST is irreversibly fired — it is NOT HMRC's adjudication. HMRC remains the sole authority: it independently enforces the same arithmetic (VAT_TOTAL_VALUE / VAT_NET_VALUE) and everything else on acceptance. AGLedger enforces structural well-formedness of the submission and holds HMRC's verdict; it does not compute the tax. The <0.005 tolerance absorbs float representation of 2dp money; the gate is derived-field consistency + a cross-record periodKey correlation, not a dodgeable self-attested boolean (anti-F-758). On FULFILLED, open vat-return-declaration-v1 with validationGateRef = this record id.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["vrn", "obligationPeriodKey"],
+    "properties": {
+      "vrn": {"type": "string", "pattern": "^[0-9]{9}$", "description": "The 9-digit VAT registration number."},
+      "obligationPeriodKey": {"type": "string", "minLength": 1, "maxLength": 4, "description": "The periodKey from the retrieved vat-obligation-retrieved-v1. The submitted return must target exactly this period (engine-enforced)."},
+      "obligationRef": {"type": "string", "description": "Optional recordId of the vat-obligation-retrieved-v1 this gate validates against (chain lineage)."},
+      "preparedRef": {"type": "string", "description": "Optional recordId of the vat-return-prepared-v1 whose figures are being validated (chain lineage)."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["submittedPeriodKey", "vatDueSales", "vatDueAcquisitions", "totalVatDue", "vatReclaimedCurrPeriod", "netVatDue", "totalValueSalesExVAT", "totalValuePurchasesExVAT", "totalValueGoodsSuppliedExVAT", "totalAcquisitionsExVAT"],
+    "properties": {
+      "submittedPeriodKey": {"type": "string", "minLength": 1, "maxLength": 4, "description": "The periodKey that will actually be submitted to HMRC. Engine-checked == criteria.obligationPeriodKey."},
+      "vatDueSales": {"type": "number", "description": "Box 1 to be filed (may be negative)."},
+      "vatDueAcquisitions": {"type": "number", "description": "Box 2 to be filed (may be negative)."},
+      "totalVatDue": {"type": "number", "description": "Box 3 to be filed. Engine-checked == Box1 + Box2 (to 2dp)."},
+      "vatReclaimedCurrPeriod": {"type": "number", "description": "Box 4 to be filed (may be negative)."},
+      "netVatDue": {"type": "number", "minimum": 0, "description": "Box 5 to be filed (>= 0). Engine-checked == |Box3 - Box4| (to 2dp)."},
+      "totalValueSalesExVAT": {"type": "number", "description": "Box 6 to be filed (whole pounds)."},
+      "totalValuePurchasesExVAT": {"type": "number", "description": "Box 7 to be filed (whole pounds)."},
+      "totalValueGoodsSuppliedExVAT": {"type": "number", "description": "Box 8 to be filed (whole pounds)."},
+      "totalAcquisitionsExVAT": {"type": "number", "description": "Box 9 to be filed (whole pounds)."}
+    }
+  },
+  "fieldMappings": [
+    {
+      "ruleId": "well-formedness",
+      "valueType": "expression",
+      "expression": "evidence.submittedPeriodKey == criteria.obligationPeriodKey && abs(evidence.totalVatDue - (evidence.vatDueSales + evidence.vatDueAcquisitions)) < 0.005 && abs(evidence.netVatDue - abs(evidence.totalVatDue - evidence.vatReclaimedCurrPeriod)) < 0.005"
+    }
+  ]
+}

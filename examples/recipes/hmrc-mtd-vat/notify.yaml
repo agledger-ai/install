@@ -1,0 +1,56 @@
+# HMRC MTD VAT vertical recipe: Notify (webhook) subscriptions.
+# A declarative list of the webhook subscriptions this recipe expects. Create each
+# one against your Server with POST /v1/webhooks (see the Webhooks guide). The
+# signing secret is returned ONCE at create time; capture it then, it is null on
+# every subsequent read.
+#
+# SSRF: private / link-local / metadata IPs are blocked at connect regardless of
+# DNS; SSRF_ALLOW_CIDRS is the only escape hatch. Point each url at a public HTTPS
+# endpoint you control (or HTTP only on an LB-terminated-TLS install with
+# SSRF_ALLOW_PLAIN_HTTP set). Replace the example.com URLs with your own.
+#
+# recordTypes (API v1.2.0+) narrows record-scoped events to the listed contract
+# types: type-segregated, fail-closed routing done by the Server, so a scoped
+# channel never sees records of another type. Omit it, or use ['*'], to receive
+# every type.
+subscriptions:
+  # The filing operations channel: every business-meaningful moment across the
+  # recipe, from the obligation retrieved through the declared, filed, and
+  # receipted return.
+  - name: vat-filing-ops
+    url: https://vat-filing-events.example.com/agledger
+    signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
+    eventTypes:
+      - record.created               # an obligation, prepared return, receipt, or gate opened
+      - record.completion_submitted  # the preparer submitted figures or the declaration
+      - record.gate_complete         # the engine pre-flight settled, or the officer declared
+      - record.fulfilled             # structurally well-formed, or declared: safe to file
+      - record.failed                # a malformed return or a refused declaration
+      - signal.emitted               # terminal settlement signal fired
+  # The declarations channel: only the statutory gate. Scoped server-side via
+  # recordTypes to vat-return-declaration-v1, this is the queue a responsible
+  # officer works: the record whose accept verdict IS the "true and complete"
+  # legal declaration, rendered before the irreversible POST /returns fires.
+  - name: vat-declarations
+    url: https://declaration-queue.example.com/agledger
+    signingAlg: ed25519       # vault-signed, offline-verifiable: the statutory audit trail
+    eventTypes:
+      - record.created
+      - record.completion_submitted  # a return awaits the officer's declaration
+      - record.gate_complete         # the officer rendered accept/reject
+      - record.fulfilled             # declared: the orchestrator may fire the filing
+      - record.failed                # the officer refused to declare
+    recordTypes:
+      - vat-return-declaration-v1
+  # The receipts and penalties channel: HMRC's word only. Scoped to the bound
+  # filing receipt (formBundleNumber / typed rejection) and the out-of-band
+  # penalty observation; route it to the tax archive or compliance system that
+  # keeps the taxpayer's proof of filing.
+  - name: vat-receipts-penalties
+    url: https://tax-archive.example.com/agledger
+    signingAlg: ed25519       # offline-verifiable deliveries for the legally-operative artifact
+    eventTypes:
+      - record.created               # a receipt or penalty observation notarized
+    recordTypes:
+      - vat-filing-receipt-v1
+      - vat-penalty-observation-v1

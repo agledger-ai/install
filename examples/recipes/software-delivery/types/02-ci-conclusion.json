@@ -1,0 +1,76 @@
+{
+  "type": "ci-conclusion-v1",
+  "category": "delivery-intake",
+  "displayName": "CI Conclusion (notarized SoR disposition, hash-bound)",
+  "description": "Notarize-only relay of the CI verdict as GitHub rendered it. AGLedger does NOT run, inspect, or judge the code; this record attests, signed and hash-chained, what conclusion the SoR computed on exactly which commit, and when. The conclusion is rendered by GitHub, not asserted by the agent, so the agent cannot forge the SoR's word; the relay is independently re-checkable via the runId + headSha pair (GET /repos/{repo}/actions/runs/{runId} and /commits/{headSha}/check-runs). It is NOT adversary-proof by itself: the submitted work includes the check definition (pull_request-triggered workflows run the workflow file from the PR head), so an authoring agent can tamper the check in the same PR unless the check definition is protected (CODEOWNERS on .github/workflows/, or a check computed outside the PR-controlled tree). The conclusion is only as trustworthy as that protection. | conclusion is GitHub's closed conclusion enum, verbatim (startup_failure occurs at the workflow-run level only). | For pre-merge runs, headSha MUST equal the referenced change record's headSha; a mismatch means the relay is reporting a verdict for a commit nobody submitted. Post-merge runs (CI on the merge commit) are also notarizable: keep changeRef pointing at the ancestor change record, set headSha to the merge commit, and rely on the delivery-outcome record's headSha/mergeSha pair for the lineage link between the two commits. Pure notarization: reaches terminal RECORDED in one round-trip.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "repo",
+      "headSha",
+      "runId",
+      "checkName",
+      "conclusion",
+      "completedAt",
+      "changeRef"
+    ],
+    "properties": {
+      "repo": {
+        "type": "string",
+        "minLength": 3,
+        "pattern": "^[^/]+/[^/]+$",
+        "description": "GitHub owner/name the run executed in."
+      },
+      "headSha": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$",
+        "description": "Commit the SoR judged. Equals the referenced change record's headSha for pre-merge runs; equals the merge commit for post-merge runs (see description)."
+      },
+      "runId": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "GitHub Actions workflow run id (or check-run id; state which in checkName). The SoR-side pointer an auditor re-checks the relay against."
+      },
+      "runAttempt": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Run attempt number; re-runs of the same run id increment it."
+      },
+      "checkName": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Name of the check/workflow whose conclusion this record relays (e.g. quality-gate)."
+      },
+      "conclusion": {
+        "type": "string",
+        "enum": [
+          "success",
+          "failure",
+          "neutral",
+          "cancelled",
+          "timed_out",
+          "action_required",
+          "skipped",
+          "stale",
+          "startup_failure"
+        ],
+        "description": "GitHub's conclusion enum, verbatim and closed. stale = marked superseded by GitHub (e.g. on a re-request); only GitHub sets it \u2014 new commits get their own check suites and do not retro-flip old ones. startup_failure is a workflow-run-level conclusion (invalid workflow file)."
+      },
+      "completedAt": {
+        "type": "string",
+        "format": "date-time",
+        "description": "When the SoR reported the run completed."
+      },
+      "changeRef": {
+        "type": "string",
+        "minLength": 1,
+        "description": "recordId of the change-authored-v1 this conclusion judges (chain lineage)."
+      },
+      "supersedesRef": {
+        "type": "string",
+        "description": "recordId of the ci-conclusion-v1 this re-run replaces (same headSha, next runAttempt), so a conclusion-flip history is chain-walkable."
+      }
+    }
+  }
+}

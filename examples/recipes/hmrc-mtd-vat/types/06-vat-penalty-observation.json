@@ -1,0 +1,25 @@
+{
+  "type": "vat-penalty-observation-v1",
+  "category": "vat-filing",
+  "displayName": "VAT Penalty Observation (SoR's timeliness verdict)",
+  "description": "Notarize-only record of HMRC's late-submission/late-payment verdict from the penalties API (GET /organisations/vat/{vrn}/penalties) — the out-of-band timeliness adjudication. This is the INVERSE of the employment-FCRA engine-preventive clock: FCRA makes the wait preventive on AGLedger's side; here HMRC's clock is the SoR's, so the recipe binds the timing as a signed fact (the obligation dueDate vs the filing receipt's processingDate) and HOLDS HMRC's penalty as the SoR's word. Points-based model (FA 2021): one point per late return until the threshold (annual 2 / quarterly 4 / monthly 5), then a 200-pound penalty. AGLedger does not compute or predict the penalty; it notarizes what HMRC reported.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["vrn", "periodKey", "filingReceiptRef", "penaltyCategory"],
+    "properties": {
+      "vrn": {"type": "string", "pattern": "^[0-9]{9}$", "description": "The 9-digit VAT registration number."},
+      "periodKey": {"type": "string", "minLength": 1, "maxLength": 4, "description": "HMRC period key the penalty (if any) relates to."},
+      "filingReceiptRef": {"type": "string", "minLength": 1, "description": "recordId of the vat-filing-receipt-v1 whose timeliness this observes (chain lineage)."},
+      "penaltyCategory": {"type": "string", "enum": ["none", "late-submission", "late-payment"], "description": "HMRC's penalty category. none = filed on time / no penalty reported."},
+      "pointsAccrued": {"type": "integer", "minimum": 0, "description": "Late-submission points accrued (FA 2021 points model). Present for late-submission."},
+      "penaltyAmount": {"type": "number", "minimum": 0, "description": "Penalty amount HMRC assessed (e.g. 200 at threshold), in pounds. Present for late-submission."}
+    },
+    "allOf": [
+      {
+        "if": {"required": ["penaltyCategory"], "properties": {"penaltyCategory": {"const": "late-submission"}}},
+        "then": {"required": ["pointsAccrued"]}
+      }
+    ]
+  }
+}

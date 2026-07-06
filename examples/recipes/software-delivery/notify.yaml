@@ -1,0 +1,43 @@
+# Software-delivery vertical recipe: Notify (webhook) subscriptions.
+# A declarative list of the webhook subscriptions this recipe expects. Create each
+# one against your Server with POST /v1/webhooks (see the Webhooks guide). The
+# signing secret is returned ONCE at create time; capture it then; it is null on
+# every subsequent read.
+#
+# SSRF: private / link-local / metadata IPs are blocked at connect regardless of
+# DNS; SSRF_ALLOW_CIDRS is the only escape hatch. Point each url at a public HTTPS
+# endpoint you control (or HTTP only on an LB-terminated-TLS install with
+# SSRF_ALLOW_PLAIN_HTTP set). Replace the example.com URLs with your own.
+#
+# recordTypes (API v1.2.0+) narrows record-scoped events to the listed contract
+# types, server-side and fail-closed: a typed subscription never receives a record
+# event whose type it does not list. Omit it, or use ['*'], to receive every type.
+subscriptions:
+  # The delivery operations channel: every business-meaningful moment in the
+  # delivery lifecycle, across all seven types, from the agent's authored change
+  # through CI, authorization, and the outcome that landed.
+  - name: delivery-ops
+    url: https://delivery-events.example.com/agledger
+    signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
+    eventTypes:
+      - record.created               # a change authored, a CI conclusion relayed, or a gate opened
+      - record.completion_submitted  # the release agent submitted a merge/release proposal
+      - record.gate_complete         # the release manager rendered accept/reject
+      - record.fulfilled             # a merge or deploy authorized, or an outcome notarized
+      - record.failed                # a rejected proposal or failed echo under auto mode
+      - signal.emitted               # terminal settlement signal fired
+  # Release-authorization channel: the queue the release manager works. Scoped
+  # server-side via recordTypes to the two AGLedger-held gates, so this channel
+  # only ever sees merge and deploy authorizations; the notarize-only relays
+  # never reach it.
+  - name: release-authorization
+    url: https://release-queue.example.com/agledger
+    signingAlg: ed25519       # vault-signed, offline-verifiable: the authorization trail
+    eventTypes:
+      - record.created               # a gate opened; the principal's queue entry
+      - record.completion_submitted  # a proposal awaiting the verdict
+      - record.gate_complete
+      - record.fulfilled
+    recordTypes:
+      - merge-authorization-v1
+      - deploy-authorization-v1

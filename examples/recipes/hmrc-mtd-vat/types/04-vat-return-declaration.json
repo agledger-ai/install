@@ -1,0 +1,29 @@
+{
+  "type": "vat-return-declaration-v1",
+  "category": "vat-filing",
+  "defaultGateMode": "principal",
+  "displayName": "VAT Return Declaration (human-gated statutory declaration)",
+  "description": "THE HERO HUMAN GATE. Filing a VAT return is a statutory act made under a legal declaration that the information is true and complete (a false declaration can result in prosecution). This gate HOLDS that declaration before the irreversible POST. The preparer (performer) submits the return for declaration as the completion, carrying finalised (const true — engine-enforced, so a 'declaration' can never record finalised:false) plus the acknowledged declaration wording and the declarant's role. A DISTINCT named officer/director/authorised-agent (principal) renders /verdict accept — that signed acceptance IS the legal declaration. Only on FULFILLED does the orchestrator fire POST /organisations/vat/{vrn}/returns and notarize the receipt (vat-filing-receipt-v1). This is NOT a business 'approve this action' gate — it is a personal legal declaration under penalty, the statutory analog of signing a tax return. GATE + SoD ARE ORCHESTRATOR-ENFORCED, NOT TYPE-ENFORCED (see README Lessons): gateMode:auto can override defaultGateMode:principal (F-791/api#838), and principal==performer self-declaration is NOT rejected (F-758/api#759 — the 403 guard is only performer!=principal-who-renders). The orchestrator MUST route every filing through the principal gate, MUST NOT set gateMode:auto, and MUST provision the declaring officer as an identity distinct from the preparer.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["vrn", "periodKey", "preparedRef", "validationGateRef"],
+    "properties": {
+      "vrn": {"type": "string", "pattern": "^[0-9]{9}$", "description": "The 9-digit VAT registration number being declared for."},
+      "periodKey": {"type": "string", "minLength": 1, "maxLength": 4, "description": "HMRC period key being declared. Matches the validated return."},
+      "preparedRef": {"type": "string", "minLength": 1, "description": "recordId of the vat-return-prepared-v1 whose figures are declared (chain lineage)."},
+      "validationGateRef": {"type": "string", "minLength": 1, "description": "recordId of the FULFILLED vat-return-validation-gate-v1 (well-formedness cleared before the declaration)."},
+      "obligationRef": {"type": "string", "description": "Optional recordId of the vat-obligation-retrieved-v1 (chain lineage)."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["finalised", "declarationText", "declarantRole"],
+    "properties": {
+      "finalised": {"type": "boolean", "const": true, "description": "The MTD finalised flag: the return is declared true and complete. Engine-enforced const true — a declaration record cannot carry finalised:false. This is the exact flag sent as `finalised:true` in the HMRC submit body."},
+      "declarationText": {"type": "string", "minLength": 20, "description": "The statutory declaration wording acknowledged, e.g. 'When you submit this VAT information you are making a legal declaration that the information is true and complete. A false declaration can result in prosecution.'"},
+      "declarantRole": {"type": "string", "enum": ["director", "officer", "sole-trader", "partner", "authorised-agent"], "description": "The capacity in which the declaration is made (the principal officer's role)."}
+    }
+  }
+}
