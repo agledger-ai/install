@@ -1,0 +1,89 @@
+{
+  "type": "change-authored-v1",
+  "category": "delivery-intake",
+  "displayName": "Change Authored (notarized assertion, the agent's own word)",
+  "description": "Notarize-only record of a code change at the moment the authoring agent submits it for review. This is the agent's OWN account: the intent, the claimed change class, what it says it tested, and its risk assessment. None of these are verified by AGLedger or by GitHub; they are notarized so the approver's reliance on them is auditable and so a later divergence (agent claimed testsRun=passed, CI concluded failure on the same headSha) is provable from the chain. The SoR-computed truth arrives separately in ci-conclusion-v1, bound to the same headSha. | diffHash is sha256 over the unified diff (git diff base...head) so the reviewed content is pinned. A force-push after review always moves headSha; diffHash additionally tells you whether the reviewed CONTENT changed or only the commit identity (a tree-preserving rebase/amend moves headSha but not diffHash). | changeClass is an agent-attested claim, not a computed fact; a CI-side path check is the cross-check for misclassification (an application change claimed as docs to reach a lighter review lane). Pure notarization: reaches terminal RECORDED in one round-trip. | This record is FIRST-PERSON: provision the coding agent its own AGLedger identity so it notarizes its own account (in a CI-authored setup, a notarize step in the authoring workflow). If an operator must relay a change authored by an identity-less process, say so in intent and set testsRun to not-run rather than repeating the author's unverifiable claim; the record then reads as a relay, which is what it is.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "repo",
+      "prNumber",
+      "branch",
+      "headSha",
+      "diffHash",
+      "intent",
+      "changeClass",
+      "testsRun",
+      "riskAssessment"
+    ],
+    "properties": {
+      "repo": {
+        "type": "string",
+        "minLength": 3,
+        "pattern": "^[^/]+/[^/]+$",
+        "description": "GitHub owner/name of the repository the change targets."
+      },
+      "prNumber": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Pull request number in the SoR."
+      },
+      "branch": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Head branch name of the change."
+      },
+      "headSha": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$",
+        "description": "Full 40-char commit SHA of the change head at submission. Every downstream record (CI conclusion, authorization, outcome) binds to this."
+      },
+      "baseSha": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$",
+        "description": "Commit SHA of the base the diff was computed against."
+      },
+      "diffHash": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$",
+        "description": "sha256 over the unified diff (git diff base...head). Pins the reviewed content independently of the SoR."
+      },
+      "intent": {
+        "type": "string",
+        "minLength": 10,
+        "maxLength": 2000,
+        "description": "Why this change exists, in the agent's words. What the approver reads first."
+      },
+      "changeClass": {
+        "type": "string",
+        "enum": [
+          "docs",
+          "test",
+          "application",
+          "infrastructure"
+        ],
+        "description": "Agent-attested classification of what the change touches. Drives review routing downstream; NOT verified by the engine. A CI path check is the SoR-side cross-check."
+      },
+      "testsRun": {
+        "type": "string",
+        "enum": [
+          "passed",
+          "failed",
+          "not-run"
+        ],
+        "description": "The agent's claim about local/pre-submit testing. Deliberately distinct from the CI conclusion: the claim is notarized here, the SoR's computed result lands in ci-conclusion-v1, and the pair (same headSha) is the divergence check."
+      },
+      "riskAssessment": {
+        "type": "string",
+        "minLength": 10,
+        "maxLength": 2000,
+        "description": "The agent's stated blast-radius/rollback assessment for this change."
+      },
+      "revertOfRef": {
+        "type": "string",
+        "description": "recordId of the delivery-outcome-v1 this change backs out, when the change is a revert. Types the what-undid-what edge instead of leaving it in prose."
+      }
+    }
+  }
+}

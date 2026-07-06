@@ -1,0 +1,154 @@
+{
+  "type": "merge-authorization-v1",
+  "category": "delivery-decision",
+  "defaultGateMode": "principal",
+  "displayName": "Merge Authorization (human-gated, one-shot)",
+  "description": "The AGLedger-HELD gate: a human principal (release manager) authorizes merging pull request {prNumber} at exactly {headSha}, given the CI conclusion the gate was opened on, BEFORE the seam fires GitHub's PUT /pulls/{n}/merge. The merge into a protected default branch is the irreversible act; the signed record of WHO authorized WHAT commit WHEN, with the CI verdict they saw, is what this type holds. Use this mode when the org needs the authorization record to be system-independent proof; when the human decides inside GitHub (PR review), use the notarize-only review-verdict-v1 relay instead of this gate: one decision, one holder. | Release agent = performer (submits the merge proposal as the completion); release manager = principal (accept/reject via /verdict). | ENGINE RULES (fieldMappings): headsha-echo and ciconclusion-echo require the proposal to exactly echo the authorized headSha and the conclusion the gate was opened on, so a new push or a re-run flip after gate-open forces a fresh gate. Each rule carries a DISTINCT free-form ruleId (dispatching to the string default verb, exact) because two mappings sharing a verb-form ruleId like string:exact silently collapse to one (F-794). In principal mode the engine result is advisory; the principal still decides. The seam's SoR-side twin is the sha pin on PUT merge (409 on drift). | Conditional-required: a proposal whose ciConclusion is not success must carry overrideJustification, so a merge-on-red decision states its reason on-chain. | GATE + SoD ARE ORCHESTRATOR-ENFORCED, NOT TYPE-ENFORCED (see README): gateMode:auto on create can override defaultGateMode:principal (F-791), and principal==performer self-commitment is not rejected (F-758). Do NOT set gateMode:auto on this type; provision the authoring/release agents and the release-manager principal as distinct identities. GitHub's author-cannot-self-approve is an independent second SoD line on the SoR side.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "repo",
+      "prNumber",
+      "headSha",
+      "ciConclusion",
+      "changeClass",
+      "changeRef",
+      "ciRef"
+    ],
+    "properties": {
+      "repo": {
+        "type": "string",
+        "minLength": 3,
+        "pattern": "^[^/]+/[^/]+$",
+        "description": "GitHub owner/name of the repository the merge targets."
+      },
+      "prNumber": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Pull request to be merged."
+      },
+      "headSha": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$",
+        "description": "The exact commit being authorized. The engine requires the completion to echo this value; the seam passes it as the sha pin on PUT merge."
+      },
+      "ciConclusion": {
+        "type": "string",
+        "enum": [
+          "success",
+          "failure",
+          "neutral",
+          "cancelled",
+          "timed_out",
+          "action_required",
+          "skipped",
+          "stale"
+        ],
+        "description": "The CI conclusion this gate is being opened on (from the ci-conclusion-v1 record at ciRef). The engine requires the completion to echo it."
+      },
+      "changeClass": {
+        "type": "string",
+        "enum": [
+          "docs",
+          "test",
+          "application",
+          "infrastructure"
+        ],
+        "description": "Change class as authored (agent-attested in change-authored-v1; carried here for review routing and audit)."
+      },
+      "changeRef": {
+        "type": "string",
+        "minLength": 1,
+        "description": "recordId of the change-authored-v1 being merged (chain lineage)."
+      },
+      "ciRef": {
+        "type": "string",
+        "minLength": 1,
+        "description": "recordId of the ci-conclusion-v1 this authorization relies on (chain lineage)."
+      },
+      "reviewRef": {
+        "type": "string",
+        "description": "Optional recordId of a review-verdict-v1 relay if a SoR-side review also occurred."
+      }
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "headSha",
+      "ciConclusion",
+      "mergeMethod",
+      "rationale"
+    ],
+    "properties": {
+      "headSha": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$",
+        "description": "The commit the performer proposes to merge. Engine-checked (exact string equality) against the authorized headSha."
+      },
+      "ciConclusion": {
+        "type": "string",
+        "enum": [
+          "success",
+          "failure",
+          "neutral",
+          "cancelled",
+          "timed_out",
+          "action_required",
+          "skipped",
+          "stale"
+        ],
+        "description": "The CI conclusion the performer observes at proposal time. Engine-checked (exact string equality) against the gate's ciConclusion."
+      },
+      "mergeMethod": {
+        "type": "string",
+        "enum": [
+          "merge",
+          "squash",
+          "rebase"
+        ],
+        "description": "Merge method the seam will use."
+      },
+      "rationale": {
+        "type": "string",
+        "minLength": 10,
+        "maxLength": 2000,
+        "description": "Why this merge should proceed now, in the performer's words. What the principal reads before deciding."
+      },
+      "overrideJustification": {
+        "type": "string",
+        "minLength": 20,
+        "maxLength": 2000,
+        "description": "Required when ciConclusion is not success: the stated reason for proposing a merge without a green CI verdict."
+      }
+    },
+    "if": {
+      "properties": {
+        "ciConclusion": {
+          "const": "success"
+        }
+      }
+    },
+    "else": {
+      "required": [
+        "overrideJustification"
+      ]
+    }
+  },
+  "fieldMappings": [
+    {
+      "ruleId": "headsha-echo",
+      "criteriaPath": "headSha",
+      "evidencePath": "headSha",
+      "valueType": "string"
+    },
+    {
+      "ruleId": "ciconclusion-echo",
+      "criteriaPath": "ciConclusion",
+      "evidencePath": "ciConclusion",
+      "valueType": "string"
+    }
+  ]
+}

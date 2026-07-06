@@ -1,0 +1,21 @@
+{
+  "type": "review-verdict-v1",
+  "category": "delivery-intake",
+  "displayName": "Code-Review Verdict (notarized SoR-held gate outcome)",
+  "description": "Notarize-only relay of a pull-request review decision as GitHub rendered it. This is the SoR-HELD gate mode of the two-gate composition: the human decided inside GitHub (where they already work), GitHub enforced its own separation of duties (a PR author cannot approve their own PR; the API returns 422 on the attempt), and AGLedger notarizes that rendered decision so it survives outside the SoR and can sit in the same offline-verifiable chain as the agent's intent and the CI conclusion. AGLedger held no gate here and made no decision; do not model this record as an AGLedger Verdict. When the org wants AGLedger to HOLD the decision instead, use merge-authorization-v1 (the AGLedger-held mode) rather than both at once: one decision, one holder. | commitId pins which head the reviewer actually looked at; a later force-push moves headSha away from commitId and the drift is visible on-chain. Pure notarization: reaches terminal RECORDED in one round-trip.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["repo", "prNumber", "reviewer", "state", "commitId", "submittedAt", "changeRef"],
+    "properties": {
+      "repo": {"type": "string", "minLength": 3, "pattern": "^[^/]+/[^/]+$", "description": "GitHub owner/name of the reviewed repository."},
+      "prNumber": {"type": "integer", "minimum": 1, "description": "Pull request number the review was rendered on."},
+      "reviewer": {"type": "string", "minLength": 1, "description": "GitHub login that rendered the review. Distinct from the PR author by SoR enforcement."},
+      "state": {"type": "string", "enum": ["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"], "description": "GitHub review state, verbatim."},
+      "commitId": {"type": "string", "pattern": "^[0-9a-f]{40}$", "description": "The head commit the review was submitted against (GitHub review commit_id). The reviewed-content pin."},
+      "submittedAt": {"type": "string", "format": "date-time", "description": "When the SoR recorded the review."},
+      "reviewId": {"type": "integer", "minimum": 1, "description": "GitHub review id; the SoR-side pointer for re-checking the relay."},
+      "changeRef": {"type": "string", "minLength": 1, "description": "recordId of the change-authored-v1 this review judges (chain lineage)."}
+    }
+  }
+}

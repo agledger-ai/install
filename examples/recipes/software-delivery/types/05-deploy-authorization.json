@@ -1,0 +1,109 @@
+{
+  "type": "deploy-authorization-v1",
+  "category": "delivery-decision",
+  "defaultGateMode": "principal",
+  "displayName": "Deploy Authorization (human-gated, AGLedger-held)",
+  "description": "The AGLedger-HELD gate for releasing a deployment that GitHub environment protection is holding in status:waiting. The principal renders the Verdict here FIRST; only after the record settles does the seam POST {state:approved} to GitHub's pending_deployments endpoint (or {state:rejected} on a reject verdict). The AGLedger record is the authorization; GitHub's approval log then reflects its execution. This composes the two gates WITHOUT duplicating the decision: when the org prefers the human to decide inside GitHub's own approval UI, skip this type and notarize the rendered outcome with deployment-approval-v1 instead, one decision, one holder. | Release agent = performer (submits the release proposal as the completion); release manager = principal (accept/reject via /verdict). | ENGINE RULES (fieldMappings, one per rule below): headsha-echo and environment-echo require the proposal to echo the authorized headSha and environment exactly, so what was approved is provably what was released to where. Both are string-typed exact-equality rules; each carries a DISTINCT free-form ruleId (dispatching to the string default verb, exact) because the engine keys rules by ruleId and two mappings sharing a verb-form ruleId silently collapse to one (F-794). In principal mode the engine result is advisory; the principal still decides. | GATE + SoD ARE ORCHESTRATOR-ENFORCED, NOT TYPE-ENFORCED (see README): gateMode:auto on create can override defaultGateMode:principal (F-791/api#838), and principal==performer self-commitment is not rejected (F-758/api#759). The orchestrator MUST NOT set gateMode:auto on this type and MUST provision distinct agent and principal identities. GitHub's own environment required-reviewers (optionally with prevent_self_review) is an independent second control line on the SoR side.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "repo",
+      "runId",
+      "environment",
+      "headSha",
+      "ciRef"
+    ],
+    "properties": {
+      "repo": {
+        "type": "string",
+        "minLength": 3,
+        "pattern": "^[^/]+/[^/]+$",
+        "description": "GitHub owner/name the deployment runs in."
+      },
+      "runId": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "GitHub Actions workflow run id currently held in status:waiting by environment protection."
+      },
+      "environment": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Target environment name (e.g. production). Engine requires the completion to echo it."
+      },
+      "headSha": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$",
+        "description": "The commit the held run would deploy. Engine requires the completion to echo it."
+      },
+      "changeRef": {
+        "type": "string",
+        "description": "recordId of the change-authored-v1 that produced this deployable (chain lineage), when the deploy follows a tracked change."
+      },
+      "ciRef": {
+        "type": "string",
+        "minLength": 1,
+        "description": "recordId of the ci-conclusion-v1 for this commit (chain lineage)."
+      },
+      "mergeAuthorizationRef": {
+        "type": "string",
+        "description": "recordId of the merge-authorization-v1 (or review-verdict-v1 relay) whose merge produced the commit being deployed, so the deploy decision's lineage to the merge decision is a typed edge rather than free text."
+      },
+      "rollbackOfRef": {
+        "type": "string",
+        "description": "recordId of the delivery-outcome-v1 (deployed) being rolled back, when this authorization redeploys a previous commit."
+      },
+      "changeRefs": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "minItems": 1,
+        "maxItems": 50,
+        "description": "recordIds of every change-authored-v1 this deploy releases, for train/batch deploys. Use changeRef for the single-change case."
+      }
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "headSha",
+      "environment",
+      "rationale"
+    ],
+    "properties": {
+      "headSha": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$",
+        "description": "The commit the performer proposes to release. Engine-checked (exact string equality) against the authorized headSha."
+      },
+      "environment": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The environment the performer proposes to release to. Engine-checked (exact string equality) against the gate's environment."
+      },
+      "rationale": {
+        "type": "string",
+        "minLength": 10,
+        "maxLength": 2000,
+        "description": "Why this release should proceed now. What the principal reads before deciding."
+      }
+    }
+  },
+  "fieldMappings": [
+    {
+      "ruleId": "headsha-echo",
+      "criteriaPath": "headSha",
+      "evidencePath": "headSha",
+      "valueType": "string"
+    },
+    {
+      "ruleId": "environment-echo",
+      "criteriaPath": "environment",
+      "evidencePath": "environment",
+      "valueType": "string"
+    }
+  ]
+}

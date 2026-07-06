@@ -1,0 +1,28 @@
+{
+  "type": "vat-return-prepared-v1",
+  "category": "vat-filing",
+  "displayName": "VAT Return Prepared (the agent's computed 9-box figures)",
+  "description": "Notarize-only record of a prepared VAT return: the nine HMRC boxes as computed from the accounting ledger, before any human declaration or filing. Field names mirror the HMRC submit body verbatim (vatDueSales..totalAcquisitionsExVAT) so the on-chain figures ARE the numbers that will be filed. sourceLedgerHash binds the figures to the exact accounting extract they were derived from (the MTD 'digital journey' link) — it is self-attested (AGLedger notarizes the claim, it does not recompute the tax or check the figures against reality). This is the performer/agent's work product; a distinct officer declares it true-and-complete in vat-return-declaration-v1 before it is irreversibly filed.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["vrn", "periodKey", "vatDueSales", "vatDueAcquisitions", "totalVatDue", "vatReclaimedCurrPeriod", "netVatDue", "totalValueSalesExVAT", "totalValuePurchasesExVAT", "totalValueGoodsSuppliedExVAT", "totalAcquisitionsExVAT"],
+    "properties": {
+      "vrn": {"type": "string", "pattern": "^[0-9]{9}$", "description": "The 9-digit VAT registration number."},
+      "periodKey": {"type": "string", "minLength": 1, "maxLength": 4, "description": "HMRC period key this return is for (matches the retrieved obligation)."},
+      "obligationRef": {"type": "string", "description": "Optional recordId of the vat-obligation-retrieved-v1 this return answers (chain lineage)."},
+      "vatDueSales": {"type": "number", "description": "Box 1: VAT due on sales and other outputs. May be negative in a period where credit notes exceed sales (HMRC permits negative Boxes 1-4)."},
+      "vatDueAcquisitions": {"type": "number", "description": "Box 2: VAT due on acquisitions of goods made in Northern Ireland from EU member states."},
+      "totalVatDue": {"type": "number", "description": "Box 3: total VAT due = Box 1 + Box 2. HMRC rejects VAT_TOTAL_VALUE if this is inconsistent; the validation gate checks it pre-flight."},
+      "vatReclaimedCurrPeriod": {"type": "number", "description": "Box 4: VAT reclaimed on purchases and other inputs."},
+      "netVatDue": {"type": "number", "minimum": 0, "description": "Box 5: net VAT to pay or reclaim = |Box 3 - Box 4|, always >= 0 (the only box HMRC floors non-negative). HMRC rejects VAT_NET_VALUE if inconsistent."},
+      "totalValueSalesExVAT": {"type": "number", "description": "Box 6: total value of sales excluding VAT (whole pounds)."},
+      "totalValuePurchasesExVAT": {"type": "number", "description": "Box 7: total value of purchases excluding VAT (whole pounds)."},
+      "totalValueGoodsSuppliedExVAT": {"type": "number", "description": "Box 8: total value of goods dispatched from Northern Ireland to EU member states, ex VAT (whole pounds)."},
+      "totalAcquisitionsExVAT": {"type": "number", "description": "Box 9: total value of goods acquired in Northern Ireland from EU member states, ex VAT (whole pounds)."},
+      "sourceLedgerHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "sha256:<hex> of the accounting extract these figures were computed from (the MTD digital-journey link). Self-attested provenance; not recomputed by AGLedger."},
+      "preparedBy": {"type": "string", "minLength": 1, "description": "Identifier of the software/agent that prepared the figures."},
+      "basis": {"type": "string", "enum": ["accrual", "cash", "flat-rate"], "description": "Optional VAT accounting basis used."}
+    }
+  }
+}
