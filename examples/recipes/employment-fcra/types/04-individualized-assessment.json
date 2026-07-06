@@ -1,0 +1,41 @@
+{
+  "type": "ironvale-individualized-assessment-v1",
+  "category": "employment",
+  "defaultGateMode": "principal",
+  "displayName": "Individualized Assessment (EEOC Green factors)",
+  "description": "The human reviewer's individualized assessment of a candidate whose CRA adjudication was adverse-capable (needs-review or fail at the gate). This is a TITLE VII / EEOC control, NOT an FCRA one: EEOC Enforcement Guidance 915.002 (2012) says a criminal-record screen is more defensible against a disparate-impact challenge when the employer performs an individualized assessment using the Green factors (Green v. Missouri Pacific RR) BEFORE screening a candidate out. A senior reviewer (the principal) renders the assessment; AGLedger holds it with attribution and never renders it. | The three Green factors are recorded as booleans (whether each was considered); on any decision to initiate adverse action they are conditional-required TRUE — the schema refuses an 'initiate-adverse' assessment that records a factor was NOT considered, because an assessment that skipped a Green factor is not an individualized assessment. federally this assessment is RECOMMENDED, not a per-se mandate; several jurisdictions (CA Fair Chance Act, NYC Fair Chance Act) make it a hard requirement (state overlay — deployment concern). | Separation of duties (deployment requirement): the reviewer here (the principal) SHOULD be a separate identity from whoever authorizes the final adverse action (ironvale-final-adverse-action-v1) where policy separates them, and both are separate from the orchestrator that performed the screening. Cross-record SoD is not type-enforced beyond the within-record principal!=performer guard (F-758 class).",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["candidateId", "reportRef"],
+    "properties": {
+      "candidateId": {"type": "string", "minLength": 1},
+      "reportRef": {"type": "string", "minLength": 1, "description": "recordId of the ironvale-consumer-report-v1 under assessment."},
+      "gateRef": {"type": "string", "description": "recordId of the ironvale-adjudication-gate-v1 that FAILED and routed this candidate to a human (the routing anchor)."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["outcome", "assessmentSummary", "offenseNatureConsidered", "timeElapsedConsidered", "jobRelatednessConsidered"],
+    "properties": {
+      "outcome": {"type": "string", "enum": ["proceed-to-hire", "initiate-adverse"], "description": "proceed-to-hire = the individualized assessment clears the candidate despite the record; initiate-adverse = the record is disqualifying, open the FCRA pre-adverse notice."},
+      "assessmentSummary": {"type": "string", "minLength": 10, "description": "The reviewer's written reasoning tying the Green factors to the role."},
+      "offenseNatureConsidered": {"type": "boolean", "description": "Green factor 1: nature and gravity of the offense/conduct was considered."},
+      "timeElapsedConsidered": {"type": "boolean", "description": "Green factor 2: time elapsed since the offense/conduct and/or completion of the sentence was considered."},
+      "jobRelatednessConsidered": {"type": "boolean", "description": "Green factor 3: the nature of the job held or sought was considered."}
+    },
+    "allOf": [
+      {
+        "if": {"required": ["outcome"], "properties": {"outcome": {"const": "initiate-adverse"}}},
+        "then": {
+          "properties": {
+            "offenseNatureConsidered": {"const": true},
+            "timeElapsedConsidered": {"const": true},
+            "jobRelatednessConsidered": {"const": true}
+          }
+        }
+      }
+    ]
+  }
+}

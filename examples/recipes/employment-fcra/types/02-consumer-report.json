@@ -1,0 +1,22 @@
+{
+  "type": "ironvale-consumer-report-v1",
+  "category": "employment",
+  "displayName": "Consumer Report Adjudication (external CRA SoR-seam)",
+  "description": "The background-check adjudication the CRA rendered for an order, as produced by the external system of record (e.g. Accurate Background's Scoring engine: candidate lastName PASS -> 'MEETS REQUIREMENTS', REVIEW -> 'NEEDS REVIEW'). Notarize-only: AGLedger NOTARIZES what the CRA rendered; it does NOT render the adjudication. The SoR-seam capture: which order, which CRA report, the verbatim customer-facing result label, AND the normalized engine outcome (the label is client-customizable, so the normalized enum is what the gate bands on). engineOutcome=pass can terminate clean (auto-clear at the adjudication gate); needs-review or fail is the adverse-capable input the gate routes to a human individualized assessment. reportHash binds the exact report bytes the candidate has a right to a copy of (FCRA 615(a)) so 'the report we adjudicated == the report we disclosed' is provable.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["orderId", "orderRef", "cra", "reportId", "orderResult", "engineOutcome", "assessedAt"],
+    "properties": {
+      "orderId": {"type": "string", "minLength": 1},
+      "orderRef": {"type": "string", "minLength": 1, "description": "recordId of the ironvale-screening-order-v1 this adjudication belongs to."},
+      "cra": {"type": "string", "minLength": 2, "description": "The CRA that rendered the adjudication."},
+      "reportId": {"type": "string", "minLength": 1, "description": "The CRA-side report identifier (cross-reference into the SoR)."},
+      "orderResult": {"type": "string", "minLength": 1, "description": "The customer-facing result label the CRA returned, captured VERBATIM (e.g. 'MEETS REQUIREMENTS', 'NEEDS REVIEW'). Client-customizable labels -> free-form so a faithful disposition is never rejected."},
+      "engineOutcome": {"type": "string", "enum": ["pass", "needs-review", "fail"], "description": "The CRA Scoring engine's NORMALIZED outcome, mapped from the verbatim label to a closed enum. pass = cleared; needs-review = inconclusive, human review; fail = disqualifying record found. This is what the adjudication gate bands on (the label is customizable and cannot be banded reliably). Mapping the label -> enum is the SoR-seam adapter's job and is on-chain as this record."},
+      "assessedAt": {"type": "string", "format": "date-time", "description": "When the CRA rendered the adjudication (from the CRA order/report)."},
+      "reportHash": {"type": "string", "description": "Hex digest of the exact consumer-report bytes the CRA produced — binds 'the report adjudicated' to 'the report disclosed to the candidate' (FCRA 615(a) copy)."},
+      "packageType": {"type": "string", "description": "The package the report covers (echo of the order)."}
+    }
+  }
+}
