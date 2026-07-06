@@ -1,0 +1,20 @@
+{
+  "type": "ironvale-screening-order-v1",
+  "category": "employment",
+  "displayName": "Employment Screening Order (to the CRA)",
+  "description": "The background-screening order an employer submits to a consumer reporting agency (CRA) for a candidate, under an FCRA permissible purpose. Notarize-only: this records that the order was placed, against which candidate, package, and CRA, with the candidate's prior disclosure+authorization on file (FCRA 604(b)(2): a standalone disclosure and the candidate's written authorization are a precondition to ordering an employment report). The CRA renders the adjudication downstream (ironvale-consumer-report-v1, the SoR-seam). permissiblePurpose is the FCRA basis for pulling the report; disclosureConsentRef points at the retained disclosure+authorization artifact (the recipe does not hold the signed consent itself, only a reference/hash to it).",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["orderId", "candidateId", "cra", "packageType", "permissiblePurpose"],
+    "properties": {
+      "orderId": {"type": "string", "minLength": 1, "description": "Employer/ATS-side order identifier."},
+      "candidateId": {"type": "string", "minLength": 1, "description": "Employer-side candidate identifier (never the SSN)."},
+      "cra": {"type": "string", "minLength": 2, "description": "The consumer reporting agency the order was placed with, e.g. 'Accurate Background'."},
+      "packageType": {"type": "string", "minLength": 1, "description": "The screening package ordered, captured verbatim from the CRA (e.g. Accurate PKG_BASIC/PKG_STANDARD/PKG_PRO). Free-form: a closed enum would reject a package this recipe didn't anticipate on a different CRA."},
+      "permissiblePurpose": {"type": "string", "enum": ["employment"], "description": "The FCRA permissible purpose for the pull. This vertical is employment screening (FCRA 604(a)(3)(B)); the enum is single-valued on purpose to refuse a mis-scoped non-employment pull under this recipe."},
+      "jobLocation": {"type": "string", "description": "Work location for the role (drives state/local overlay obligations — CA/NYC etc.). Optional; load-bearing when a state overlay applies."},
+      "disclosureConsentRef": {"type": "string", "description": "Reference/hash to the retained FCRA 604(b)(2) standalone disclosure + candidate written authorization (held out-of-band; this is the audit pointer, not the signed document)."}
+    }
+  }
+}

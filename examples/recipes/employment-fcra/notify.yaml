@@ -1,0 +1,47 @@
+# Employment/FCRA vertical recipe: Notify (webhook) subscriptions.
+# A declarative list of the webhook subscriptions this recipe expects. Create each
+# one against your Server with POST /v1/webhooks (see the Webhooks guide). The
+# signing secret is returned ONCE at create time; capture it then; it is null on
+# every subsequent read.
+#
+# SSRF: private / link-local / metadata IPs are blocked at connect regardless of
+# DNS; SSRF_ALLOW_CIDRS is the only escape hatch. Point each url at a public HTTPS
+# endpoint you control (or HTTP only on an LB-terminated-TLS install with
+# SSRF_ALLOW_PLAIN_HTTP set). Replace the example.com URLs with your own.
+#
+# recordTypes (API v1.2.0+) narrows record-scoped events to the listed contract
+# types, server-side and fail-closed: a typed subscription never receives a record
+# event whose type it does not list. In this recipe that scoping is load-bearing,
+# not a convenience: the FCRA notices are REQUIRED to the candidate, while the
+# individualized assessment (the reviewer's privileged reasoning) and the raw CRA
+# report record must never reach the candidate. Scope the candidate channel to the
+# two notice types and over-disclosure is refused server-side instead of depending
+# on receiver discipline.
+subscriptions:
+  # Screening operations: every business-meaningful screening moment, across all
+  # seven types, for the employer's own audit trail. Unscoped on purpose.
+  - name: screening-ops
+    url: https://screening-events.example.com/agledger
+    signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
+    eventTypes:
+      - record.created               # an order, report, assessment, notice, or gate opened
+      - record.completion_submitted  # gate evidence submitted (adjudication outcome, wait clock, assessment)
+      - record.gate_complete         # an engine or human verdict rendered
+      - record.fulfilled             # auto-clear, wait elapsed, or a sealed human decision
+      - record.failed                # adverse-capable disposition or a too-early final action refused
+      - signal.emitted               # terminal screening signal fired
+  # Candidate channel: the FCRA notices REQUIRED to the subject (the mirror of the
+  # finance/KYC no-tip-off inversion). Scoped server-side via recordTypes to the
+  # two notice types, so the internal assessment and the CRA report record can
+  # never reach this endpoint. The receiver still owns actual delivery to the
+  # candidate (and the CRA or a managed service owns the physical letter).
+  - name: candidate-notices
+    url: https://candidate-notices.example.com/agledger
+    signingAlg: ed25519       # durable, offline-verifiable proof the notice was issued and when
+    eventTypes:
+      - record.created               # pre-adverse notice issued (T0), or the final-action record opened
+      - record.gate_complete         # the final adverse-action verdict rendered
+      - record.fulfilled             # the sealed final decision
+    recordTypes:
+      - ironvale-pre-adverse-notice-v1
+      - ironvale-final-adverse-action-v1
