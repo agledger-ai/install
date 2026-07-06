@@ -1,0 +1,35 @@
+{
+  "type": "ironvale-wait-window-gate-v1",
+  "category": "employment",
+  "defaultGateMode": "auto",
+  "displayName": "Pre-Adverse Wait-Window Gate (engine-enforced clock)",
+  "description": "The engine-enforced FCRA pre-adverse waiting period. This is the vertical's defining mechanic: the gate is a CLOCK. The criteria carry earliestFinalActionAt (the not-before instant: the pre-adverse notice's issuance time T0 plus the employer's committedWaitDays); the performer submits finalActionAt (when the final adverse action is actually taken) as completion evidence. The rules engine settles FULFILLED only when finalActionAt >= earliestFinalActionAt (datetime:min-inclusive, on-or-after) and FAILED otherwise — so the engine REFUSES to open the final-adverse-action window before the wait elapses. This converts the Tyus v. USPS problem (a too-short window is an actionable FCRA claim) from a detective after-the-fact dispute into a preventive gate. | THE DEPLOYMENT CROSS-CHECK (mandatory, F-787 class): earliestFinalActionAt MUST be computed as the referenced ironvale-pre-adverse-notice-v1's SIGNED timestamp (T0) plus committedWaitDays. The engine compares two supplied datetimes; it cannot itself reach into the referenced record's signed time, so an orchestrator that sets earliestFinalActionAt too early would pass the engine while understating the wait. The e2e wait-interval-check asserts earliestFinalActionAt == preAdverse.signedAt + committedWaitDays and finalActionAt <= this record's own signed time (no future-dating) — the same 'engine band + on-chain cross-check' posture as the finance screening gate (screen-vs-gate). | TOLERANCE MUST BE 0 (grace seconds default): a positive grace on datetime:min-inclusive WIDENS THE FLOOR EARLIER, silently allowing a final action before the window elapses — re-introducing the very short-window violation this gate prevents. The type cannot forbid a record-creation tolerance param; the orchestrator must never set it. | On FULFILLED, open the ironvale-final-adverse-action-v1 (the human authorization) and set waitGateRef to THIS record id.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["candidateId", "preAdverseRef", "committedWaitDays", "earliestFinalActionAt"],
+    "properties": {
+      "candidateId": {"type": "string", "minLength": 1},
+      "preAdverseRef": {"type": "string", "minLength": 1, "description": "recordId of the ironvale-pre-adverse-notice-v1 that started the clock (T0)."},
+      "committedWaitDays": {"type": "integer", "minimum": 1, "description": "The waiting period the employer committed to in the pre-adverse notice (operator policy, not statutory). Echoed here for the cross-check."},
+      "earliestFinalActionAt": {"type": "string", "format": "date-time", "description": "The not-before instant = the pre-adverse notice's SIGNED timestamp (T0) + committedWaitDays. Cross-checked by the wait-interval-check against the referenced record's signed time; the engine gate refuses to settle unless the actual finalActionAt is on or after this."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["finalActionAt", "rationale"],
+    "properties": {
+      "finalActionAt": {"type": "string", "format": "date-time", "description": "When the final adverse action is actually taken. Must be on or after earliestFinalActionAt (engine-enforced) and no later than this record's own signed time (cross-checked)."},
+      "rationale": {"type": "string", "minLength": 10}
+    }
+  },
+  "fieldMappings": [
+    {
+      "ruleId": "datetime:min-inclusive",
+      "criteriaPath": "earliestFinalActionAt",
+      "evidencePath": "finalActionAt",
+      "valueType": "datetime"
+    }
+  ]
+}

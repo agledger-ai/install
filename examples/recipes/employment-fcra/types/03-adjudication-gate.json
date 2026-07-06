@@ -1,0 +1,34 @@
+{
+  "type": "ironvale-adjudication-gate-v1",
+  "category": "employment",
+  "defaultGateMode": "auto",
+  "displayName": "Adjudication Gate (engine-decided auto-clear vs human review)",
+  "description": "Engine-evaluated gate on the CRA's rendered adjudication. The criteria carry the operator's auto-clear policy (autoClearOutcome, the single engineOutcome value that proceeds to hire with NO human review — for employment this is 'pass'/MEETS REQUIREMENTS); the performer submits the observedOutcome the CRA returned (ironvale-consumer-report-v1.engineOutcome) as completion evidence. The rules engine settles FULFILLED when observedOutcome == autoClearOutcome (auto-clear, hire proceeds) and FAILED otherwise (needs-review or fail -> a human MUST run an individualized assessment via ironvale-individualized-assessment-v1). The ENGINE decides review-required from the CRA's rendered outcome; this deliberately replaces an agent-asserted `adverseCapable`/`needsReview` boolean an agent could set false-ly to launder an adverse-capable report past human review (the F-758 self-attested-control anti-pattern). | autoClearOutcome is OPERATOR POLICY: the employer configures which outcome clears without review and must keep that policy documented. On FAILED, open an ironvale-individualized-assessment-v1 and set gateRef to THIS record id to route the candidate to a human reviewer. | The gate uses the engine's string:exact verb (case-sensitive equality) on the normalized engineOutcome; string verbs have no widening tolerance, so there is no F-787-style band-widening dodge here.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["candidateId", "reportRef", "autoClearOutcome"],
+    "properties": {
+      "candidateId": {"type": "string", "minLength": 1},
+      "reportRef": {"type": "string", "minLength": 1, "description": "recordId of the ironvale-consumer-report-v1 whose outcome is being banded."},
+      "autoClearOutcome": {"type": "string", "enum": ["pass"], "description": "The engineOutcome that auto-clears with no human review (operator policy). Single-valued for employment: only a clean 'pass' proceeds without an individualized assessment; needs-review and fail both require a human."}
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["observedOutcome", "rationale"],
+    "properties": {
+      "observedOutcome": {"type": "string", "enum": ["pass", "needs-review", "fail"], "description": "The engineOutcome the CRA returned for this candidate (ironvale-consumer-report-v1.engineOutcome)."},
+      "rationale": {"type": "string", "minLength": 10}
+    }
+  },
+  "fieldMappings": [
+    {
+      "ruleId": "string:exact",
+      "criteriaPath": "autoClearOutcome",
+      "evidencePath": "observedOutcome",
+      "valueType": "string"
+    }
+  ]
+}
