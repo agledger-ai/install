@@ -33,6 +33,9 @@ webhooks:
   # on a Server that has a VAULT_SIGNING_KEY defaults to ed25519 (RFC 9421): the
   # receiver verifies against /v1/verification-keys with no shared secret
   # (non-repudiation, same key that signs the chain). Pin it explicitly here.
+  # `recordTypes` narrows record-scoped events to the listed contract types
+  # (type-segregated routing); here the ERP only sees invoice records. Omit
+  # it, or use ['*'], to receive every type.
   - ownerName: Acme Corp
     ownerType: org
     url: https://erp.acme-corp.example.com/agledger/settlement
@@ -40,6 +43,8 @@ webhooks:
     eventTypes:
       - signal.emitted
       - signal.received
+    recordTypes:
+      - CUSTOM-INVOICE-v1
 
   # Agent-owned webhook — all events (no eventTypes filter) for the monitoring
   # agent. `ownerOrgName` disambiguates the agent's displayName within its org.
