@@ -53,10 +53,6 @@ helm install agledger agledger-chart-${VERSION}.tgz \
   --values your-values.yaml
 ```
 
-## Telemetry
-
-Developer Edition can send an anonymous heartbeat to `telemetry.agledger.ai` every 48 hours, but it is **opt-in and off by default** — in an air-gapped install it sends nothing unless you set `AGLEDGER_TELEMETRY=true` in `.env`. If you do opt in within a restricted network, the call simply fails and logs a warning with no effect on runtime behavior. Enterprise licenses never send telemetry.
-
 ## License Activation
 
 Enterprise license files can be delivered out of band. Place the `.pem` at the configured path (default `/etc/agledger/license.pem`) or set `AGLEDGER_LICENSE_KEY_FILE` to its location. No network access is required for validation.
