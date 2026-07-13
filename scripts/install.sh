@@ -695,15 +695,6 @@ echo -e "    Self-hosted install guide:  https://agledger.ai/docs/guides/self-ho
 echo -e "    API reference (hosted):     https://agledger.ai/api"
 echo -e "    Container status:           docker compose ps"
 
-# Telemetry notice for Developer Edition installs
-if [[ "${USES_BUNDLED_PG}" == "true" ]] || [[ -z "${AGLEDGER_LICENSE_KEY:-}" ]]; then
-  echo ""
-  echo -e "  ${BOLD}Telemetry:${NC}"
-  echo -e "    Anonymous usage telemetry is OFF by default."
-  echo -e "    Opt in to help development: set AGLEDGER_TELEMETRY=true in .env"
-  echo -e "    (Anonymous heartbeat every 48h; never sent on an Enterprise license.)"
-fi
-
 if [[ "$ISSUER_IS_LOCALHOST" == true ]]; then
   echo ""
   echo -e "  ${YELLOW}${BOLD}⚠ Signed issuer is a localhost default${NC}"
