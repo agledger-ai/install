@@ -116,10 +116,6 @@ Stops all containers and removes volumes. `compose/.env` is kept by default; pas
 
 Collects container logs, resource usage, redacted configuration, and database health checks into a single archive. No application data or secrets are included. Send the archive to support@agledger.ai.
 
-## Telemetry
-
-Developer Edition installs can send an anonymous heartbeat (version, uptime, deployment mode, with no usage data and no identifiers) every 48 hours, but it is **opt-in and off by default**: enable it by setting `AGLEDGER_TELEMETRY=true` in `compose/.env`. Enterprise licenses never send telemetry.
-
 ## Verifying the Release
 
 **OpenSSF-aligned supply chain.** SLSA Build L3 provenance, Sigstore keyless signing, and SBOM + OpenVEX + malware-scan attestations, all verifiable offline with no repository access. Releases are **keyless-signed** with [cosign](https://github.com/sigstore/cosign): GitHub Actions OIDC → Sigstore Fulcio → the **public Rekor** transparency log. A valid signature binds to the workflow that built the release, with no static key. **Requires cosign 3.0 or later.**

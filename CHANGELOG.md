@@ -6,6 +6,8 @@ Releases here are tagged to match the AGLedger server version they ship against.
 
 ## Unreleased
 
+- Removed the telemetry-heartbeat references from the installer text (`install.sh` banner, `SECURITY.md`, `air-gap/README.md`, `README.md`, `compose/.env.example`). There is no telemetry and no phone-home; the earlier text described placeholder scaffolding that has been removed from the server. Ships in the binary with the next server release.
+
 ## v1.3.2 — 2026-07-13
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.3.2.

@@ -38,17 +38,14 @@ AGLedger supports good-faith security research. We will not pursue legal action 
 
 ## Data Sovereignty
 
-AGLedger is self-hosted. All application data (records, receipts, audit logs, API keys) stays within your infrastructure. License validation runs locally with no phone-home.
-
-The Developer Edition (free, unlicensed installs) can send an anonymous heartbeat to `telemetry.agledger.ai` every 48 hours, but it is **opt-in and off by default**. Nothing is sent unless you explicitly set `AGLEDGER_TELEMETRY=true` in your `.env` file. When enabled, the heartbeat contains only the running version, uptime, deployment mode, and an anonymous install ID. It contains no application data, no usage metrics, and no identifiers that can be traced to a customer or account. Enterprise licenses never send telemetry.
+AGLedger is self-hosted. All application data (records, receipts, audit logs, API keys) stays within your infrastructure. There is no telemetry and no phone-home of any kind: license validation runs locally, and the Server never reports back to AGLedger at runtime.
 
 Outbound network access is required only for:
 
 - Pulling Docker images during install and upgrade
-- Sending the opt-out telemetry heartbeat described above
 - Sending support bundles to `support.agledger.ai` when you explicitly run `support-bundle.sh --submit`
 
-For restricted-network deployments, pull images into an internal registry and pass `--image` to `install.sh`. See [air-gap/README.md](air-gap/README.md). Disable telemetry as described above.
+For restricted-network deployments, pull images into an internal registry and pass `--image` to `install.sh`. See [air-gap/README.md](air-gap/README.md).
 
 ## What we build and scan
 
