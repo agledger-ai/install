@@ -6,6 +6,11 @@ Releases here are tagged to match the AGLedger server version they ship against.
 
 ## Unreleased
 
+## v1.3.2 — 2026-07-13
+
+Scripts, Compose files, and Helm chart synced to AGLedger server v1.3.2.
+
+
 ## v1.2.0 — 2026-07-04
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.2.0.
