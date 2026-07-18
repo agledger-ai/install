@@ -7,6 +7,13 @@ set -euo pipefail
 # Stops all containers and removes Docker volumes. By default .env is kept so
 # you can reinstall without regenerating secrets; pass --purge to remove it.
 #
+# --purge does NOT delete .env outright: .env holds VAULT_SIGNING_KEY, the
+# Ed25519 key every record signature chains to, so purge writes a timestamped
+# backup of .env before removing it. Destroying that key is a non-recoverable
+# event (past signed records can no longer be verified against a live key, and
+# the chain cannot be extended under the same identity), so recovery stays one
+# step away even on an automated purge.
+#
 # Usage:
 #   ./uninstall.sh
 #   ./uninstall.sh --non-interactive   (alias: -y, --yes)
@@ -36,7 +43,8 @@ while [[ $# -gt 0 ]]; do
       echo "Options:"
       echo "  -y, --yes,           Skip the confirmation prompt"
       echo "  --non-interactive"
-      echo "  --purge              Also remove .env (secrets will be regenerated on reinstall)"
+      echo "  --purge              Also remove .env, after saving a timestamped backup"
+      echo "                       (.env holds VAULT_SIGNING_KEY; secrets regenerate on reinstall)"
       echo "  -h, --help           Show this help"
       exit 0
       ;;
@@ -52,7 +60,13 @@ if [[ "$NON_INTERACTIVE" != "true" ]]; then
   echo "This will stop all AGLedger containers and delete Docker volumes."
   echo "All data in the bundled database will be destroyed. External databases are untouched."
   if [[ "$PURGE" == "true" ]]; then
-    echo "--purge: ${ENV_FILE} will also be removed."
+    echo "--purge: ${ENV_FILE} will be removed (a timestamped backup is saved first)."
+    echo ""
+    echo "WARNING: ${ENV_FILE} holds VAULT_SIGNING_KEY, the Ed25519 key every record"
+    echo "signature chains to. Without it you cannot verify existing signed records"
+    echo "against a live key or extend the chain under the same identity. The backup"
+    echo "still contains that key: store it securely, or shred it if you intend to"
+    echo "destroy the key permanently."
   else
     echo "${ENV_FILE} will be kept so secrets survive a reinstall."
   fi
@@ -80,8 +94,15 @@ info "Containers and volumes removed"
 
 if [[ "$PURGE" == "true" ]]; then
   if [[ -f "$ENV_FILE" ]]; then
+    # Back up before removal so destroying VAULT_SIGNING_KEY (which .env holds)
+    # is never a one-way door. Runs on both interactive and --non-interactive
+    # purges, so an automated teardown can still recover the chain-signing key.
+    BACKUP_FILE="${ENV_FILE}.backup-$(date -u +%Y%m%dT%H%M%SZ)"
+    cp -p "$ENV_FILE" "$BACKUP_FILE"
+    chmod 600 "$BACKUP_FILE" 2>/dev/null || true
     rm -f "$ENV_FILE"
-    info "Removed ${ENV_FILE}"
+    info "Removed ${ENV_FILE} (backup saved to ${BACKUP_FILE})"
+    warn "${BACKUP_FILE} still contains VAULT_SIGNING_KEY. Store it securely, or shred it to destroy the key permanently."
   fi
 fi
 
