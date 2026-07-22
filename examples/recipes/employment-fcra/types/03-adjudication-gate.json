@@ -10,7 +10,7 @@
     "required": ["candidateId", "reportRef", "autoClearOutcome"],
     "properties": {
       "candidateId": {"type": "string", "minLength": 1},
-      "reportRef": {"type": "string", "minLength": 1, "description": "recordId of the ironvale-consumer-report-v1 whose outcome is being banded."},
+      "reportRef": {"type": "string", "minLength": 1, "description": "recordId of the ironvale-consumer-report-v1 whose outcome is being banded.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "autoClearOutcome": {"type": "string", "enum": ["pass"], "description": "The engineOutcome that auto-clears with no human review (operator policy). Single-valued for employment: only a clean 'pass' proceeds without an individualized assessment; needs-review and fail both require a human."}
     }
   },

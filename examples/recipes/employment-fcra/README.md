@@ -13,9 +13,9 @@ to give the candidate a pre-adverse notice (a copy of the actual report plus the
 rights), then wait so the candidate can dispute errors, then take the final action under 615(a).
 The elapsed interval is a litigated fact (*Tyus v. U.S. Postal Service*: a 3-day window against a
 promised 5 was held actionable; 14 days "ample"). This recipe makes the wait **engine-enforced**
-(the wait gate refuses to settle a final action dated before the window elapses) and the interval
-**provable offline** from two signed record timestamps. What is normally a swearing contest
-becomes a signed fact.
+(the wait gate refuses to settle until the committed window has elapsed between two timestamps the
+engine itself signed) and the interval **provable offline** from those signed record timestamps.
+What is normally a swearing contest becomes a signed fact.
 
 ## Why gates here
 
@@ -28,11 +28,13 @@ Two acts are gated by the engine and two by humans:
   This deliberately replaces a self-attested "needs review" boolean that an orchestrator could set
   false to launder an adverse-capable report past human review. The rule is a case-sensitive
   string equality; string verbs carry no widening tolerance, so there is no band to quietly loosen.
-- **The waiting period (engine, auto).** The `ironvale-wait-window-gate-v1` rule settles FULFILLED
-  only when the actual final-action time is on or after the committed floor (`finalActionAt >=
-  earliestFinalActionAt`, on-or-after), and FAILED otherwise. The engine refuses a final action
-  dated inside the window: the FCRA clock becomes a preventive control, not an after-the-fact
-  dispute.
+- **The waiting period (engine, auto).** The `ironvale-wait-window-gate-v1` rule is an expression
+  over signed time: the gate is created as a child of the pre-adverse notice, and it settles
+  FULFILLED only when the whole days elapsed between the notice's engine-signed timestamp and the
+  gate record's own engine-signed timestamp reach `committedWaitDays`. You supply no datetime, so
+  the floor cannot be understated; a gate created without its parent fails closed, and a too-early
+  attempt settles FAILED as signed evidence of the refusal. The FCRA clock becomes a preventive
+  control, not an after-the-fact dispute.
 - **The individualized assessment (human, principal).** An EEOC Title VII control, not an FCRA
   one: a senior reviewer weighs the Green factors (nature of the offense, time elapsed, job
   relatedness) before a candidate is screened out. The reviewer renders the verdict; AGLedger
@@ -63,7 +65,7 @@ on-chain.
 | 03 | `ironvale-adjudication-gate-v1` | **engine-gate (auto)** | Auto-clear vs human review, decided by the engine from the CRA's normalized outcome. FULFILLED clears to hire; FAILED routes to the individualized assessment. |
 | 04 | `ironvale-individualized-assessment-v1` | **principal-gate** | The EEOC Green-factors review by a human. On `initiate-adverse` all three factors are conditional-required true. |
 | 05 | `ironvale-pre-adverse-notice-v1` | notarize-only | The FCRA 604(b)(3) notice that starts the clock: report copy and summary of rights are const-true, `committedWaitDays` states the window, and the record's signed timestamp is T0. |
-| 06 | `ironvale-wait-window-gate-v1` | **engine-gate (auto)** | The clock: refuses to settle a final action dated before T0 plus the committed wait (datetime on-or-after rule). |
+| 06 | `ironvale-wait-window-gate-v1` | **engine-gate (auto)** | The clock: a child of the pre-adverse notice that refuses to settle until the committed wait has elapsed between the notice's and its own engine-signed timestamps (expression rule on signed time). |
 | 07 | `ironvale-final-adverse-action-v1` | **principal-gate** | The terminal human decision (adverse or reversed-to-hire), reachable only via the FULFILLED wait gate, with the 615(a) disclosure block conditional-required on adverse. |
 
 ## The CRA seam
@@ -92,9 +94,9 @@ types.
 
 - **Engine adjudication gate** (`ironvale-adjudication-gate-v1`, string equality). The engine
   decides review-required from the CRA's rendered outcome, not from a self-attested flag.
-- **Engine wait-window gate** (`ironvale-wait-window-gate-v1`, datetime on-or-after). A final
-  action dated before the committed floor settles FAILED. Two signed timestamps make the interval
-  provable offline.
+- **Engine wait-window gate** (`ironvale-wait-window-gate-v1`, expression on signed time). A
+  too-early attempt settles FAILED. Both instants are engine-signed, so the interval is provable
+  offline and cannot be supplied dishonestly.
 - **Const-true notice contents** (engine, structural). A pre-adverse notice that did not include
   the report copy or the summary of rights is not a valid 604(b)(3) notice; the schema refuses it
   at creation.
@@ -125,30 +127,36 @@ For anything an auditor relies on, read `GET /v1/records/{id}/audit-export` (or 
 `?integrity=true`), not the plain record body; the export offline-verifies against the public key
 from `GET /v1/verification-keys`.
 
-### Bind the wait floor to the notice's signed time
+### The wait gate reads the clock itself; wire the parent binding
 
-The wait gate compares two datetimes you supply: it settles on `finalActionAt` vs
-`earliestFinalActionAt`, and it cannot reach into the referenced pre-adverse record to read its
-signed time. So the floor is only as honest as the orchestrator that computes it. The rule:
-`earliestFinalActionAt` MUST equal the pre-adverse notice's **signed** timestamp (T0) plus
-`committedWaitDays`. An orchestrator that sets the floor early would pass the engine while
-understating the wait; the cross-check is offline arithmetic over the signed bundle (assert the
-floor equals T0 plus the committed days, and that `finalActionAt` is not later than the wait-gate
-record's own signed time, so it cannot be future-dated). This is the same posture as the
-finance-KYC screening gate: an engine band plus an on-chain cross-check.
+The gate compares two timestamps the engine signed: the pre-adverse notice's and the wait-gate
+record's own. You supply no datetime, so an orchestrator cannot understate the floor. (An earlier
+form of this recipe compared two supplied datetimes and leaned on an offline cross-check to catch
+an early floor; that gap is closed.) The contract:
 
-One mechanical detail: derive T0 from the record's signed attestation (the CWT `iat` claim, second
-precision) rather than eyeballing the record JSON's millisecond `createdAt`. If you compute from
-`createdAt`, truncate to whole seconds and let the offline cross-check confirm the result.
+- **Notarize the pre-adverse notice under the sending agent's key**, not an org-admin key. An
+  admin-notarized record has no performer and can never anchor children.
+- **Create the wait gate at final-action attempt time** with `parentRecordId` set to the notice
+  and `preAdverseRef` echoing the same id; the offline cross-check asserts the echo matches.
+- **Only the notice's performer key may create the gate**, and the gate's principal is that same
+  identity. To keep the attempt on a distinct authorizer, create it with `performerAgentId` set to
+  the authorizer's agent and drive the four-step flow: the notice sender proposes and activates,
+  the authorizer accepts and completes.
+- **A FAILED early attempt does not consume the notice.** Retry after the window with a new gate
+  under the same parent; the refusal stays on-chain as signed evidence that the engine held the
+  line.
+- **There is no tolerance to police.** Expression rules take no tolerance parameter, so the
+  grace-widening footgun the earlier datetime form carried is gone by construction.
 
-### Never set a tolerance on the wait gate
+One control remains yours: the engine enforces whatever `committedWaitDays` was recorded; it
+cannot cross-check that number against your policy. Understating the committed window at notice
+time is the residual dodge, so cross-check `committedWaitDays` against your policy floor
+operator-side, and let the offline check assert that the notice, the gate, and the final action
+all carry the same value.
 
-Create the wait gate with a zero tolerance for its datetime rule. A positive grace widens the
-floor **earlier**, silently allowing a final action before the window elapses, which re-introduces
-the exact short-window violation the gate exists to prevent. A contract type cannot forbid a
-record-creation tolerance parameter, so this is orchestrator policy: never pass one. A loosened
-tolerance is recorded on-chain and therefore catchable, but a control you have to catch after the
-fact is a weaker control; do not rely on the auditor.
+Offline tooling that recomputes the interval from an exported chain still derives each record's
+signed time from its attestation (the CWT `iat` claim, second precision) rather than the record
+JSON's millisecond `createdAt`.
 
 ### The committed wait is your policy, not the statute
 
@@ -156,7 +164,8 @@ FCRA 604(b)(3) says only that the notice must come "before" the action; it names
 days. About 5 business days is common FTC and case-law guidance, and *Tyus* shows a too-short
 window against a promised one is actionable. Set `committedWaitDays` to your policy, use the
 stricter floor where a state or city overlay applies (California and NYC fair-chance rules, for
-example), and never represent a specific day count as an FCRA statutory requirement.
+example), and never represent a specific day count as an FCRA statutory requirement. The schema
+allows `0` for integration wiring only; production deployments must set at least 1.
 
 ### Separation of duties lives in your orchestrator, not the type
 

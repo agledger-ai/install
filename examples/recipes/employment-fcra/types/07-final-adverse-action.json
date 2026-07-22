@@ -3,42 +3,118 @@
   "category": "employment",
   "defaultGateMode": "principal",
   "displayName": "Final Adverse Action (FCRA 615(a), the terminal decision)",
-  "description": "The terminal adverse-action decision (the human authorization), taken AFTER the pre-adverse waiting period, and its FCRA 615(a) notice content. A senior authorizer (the principal) renders the binding decision; AGLedger holds it with attribution. The waiting period itself is enforced upstream by the ironvale-wait-window-gate-v1 (an engine datetime:min-inclusive gate that will not settle FULFILLED until the actual final-action time is on or after the pre-adverse-notice time + committedWaitDays) — this record references that FULFILLED gate via waitGateRef, so the human decision is only reachable once the engine has confirmed the wait elapsed. That makes the Tyus v. USPS fact (a too-short window is an actionable FCRA claim) an engine-PREVENTIVE control, not just an after-the-fact dispute. The interval also remains provable offline from the signed record timestamps (the wait gate's and this record's) with zero server trust. committedWaitDays is echoed for the audit trail. | On decision=adverse the full FCRA 615(a) disclosure block is conditional-required (CRA identity + phone, the CRA-didn't-decide statement, the free-report-within-60-days right, the dispute right); a reversed-to-hire outcome needs none of it. No credit-score block: an employment background screen uses no score. | SoD: rendered by a SEPARATE principal from the individualized assessment where policy separates them; never the performer/orchestrator (F-758 class, deployment-owned).",
+  "description": "The terminal adverse-action decision (the human authorization), taken AFTER the pre-adverse waiting period, and its FCRA 615(a) notice content. A senior authorizer (the principal) renders the binding decision; AGLedger holds it with attribution. The waiting period itself is enforced upstream by the ironvale-wait-window-gate-v1 (a v2 expression gate on SIGNED time: created as a child of the pre-adverse notice via parentRecordId, it will not settle FULFILLED until daysBetween(parent.created_at, record.created_at) >= committedWaitDays, both instants engine-signed) \u2014 this record references that FULFILLED gate via waitGateRef, so the human decision is only reachable once the engine has confirmed the wait elapsed. That makes the Tyus v. USPS fact (a too-short window is an actionable FCRA claim) an engine-PREVENTIVE control, not just an after-the-fact dispute. The interval also remains provable offline from the signed record timestamps (the pre-adverse notice's and the wait gate's) with zero server trust. committedWaitDays is echoed for the audit trail. | On decision=adverse the full FCRA 615(a) disclosure block is conditional-required (CRA identity + phone, the CRA-didn't-decide statement, the free-report-within-60-days right, the dispute right); a reversed-to-hire outcome needs none of it. No credit-score block: an employment background screen uses no score. | SoD: rendered by a SEPARATE principal from the individualized assessment where policy separates them; never the performer/orchestrator (F-758 class, deployment-owned).",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["candidateId", "preAdverseRef", "waitGateRef", "committedWaitDays"],
+    "required": [
+      "candidateId",
+      "preAdverseRef",
+      "waitGateRef",
+      "committedWaitDays"
+    ],
     "properties": {
-      "candidateId": {"type": "string", "minLength": 1},
-      "preAdverseRef": {"type": "string", "minLength": 1, "description": "recordId of the ironvale-pre-adverse-notice-v1 that started the clock (T0)."},
-      "waitGateRef": {"type": "string", "minLength": 1, "description": "recordId of the FULFILLED ironvale-wait-window-gate-v1 that engine-confirmed the pre-adverse wait elapsed before this authorization. The deployment must only open this record after that gate is FULFILLED."},
-      "committedWaitDays": {"type": "integer", "minimum": 1, "description": "Echo of the pre-adverse notice's committedWaitDays for the audit trail. The wait-interval-check asserts this equals the pre-adverse value and matches the wait gate's."}
+      "candidateId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "preAdverseRef": {
+        "type": "string",
+        "minLength": 1,
+        "description": "recordId of the ironvale-pre-adverse-notice-v1 that started the clock (T0).", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+      "waitGateRef": {
+        "type": "string",
+        "minLength": 1,
+        "description": "recordId of the FULFILLED ironvale-wait-window-gate-v1 that engine-confirmed the pre-adverse wait elapsed before this authorization. The deployment must only open this record after that gate is FULFILLED.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+      "committedWaitDays": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Echo of the pre-adverse notice's committedWaitDays for the audit trail. The wait-interval-check asserts this equals the pre-adverse value and matches the wait gate's."
+      }
     }
   },
   "completionSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["decision", "finalActionAt", "rationale"],
+    "required": [
+      "decision",
+      "finalActionAt",
+      "rationale"
+    ],
     "properties": {
-      "decision": {"type": "string", "enum": ["adverse", "reversed-to-hire"], "description": "adverse = take the adverse action (no-hire/rescind) based on the report; reversed-to-hire = the candidate's dispute or the individualized assessment reversed the decision, no adverse action taken."},
-      "finalActionAt": {"type": "string", "format": "date-time", "description": "When the final decision was authorized (the event time; the interval anchor is this record's signed timestamp)."},
-      "rationale": {"type": "string", "minLength": 10},
-      "craName": {"type": "string", "description": "FCRA 615(a)(2): CRA name. Conditional-required on decision=adverse."},
-      "craAddress": {"type": "string", "description": "FCRA 615(a)(2): CRA address. Conditional-required on decision=adverse."},
-      "craPhone": {"type": "string", "description": "FCRA 615(a)(2): CRA telephone (toll-free if a nationwide CRA). Conditional-required on decision=adverse."},
-      "craDidNotDecide": {"type": "boolean", "description": "FCRA 615(a)(3): affirms the notice states the CRA did not make the decision and cannot give the specific reasons. Conditional-required TRUE on decision=adverse."},
-      "freeReportRightWithin60Days": {"type": "boolean", "description": "FCRA 615(a)(3): affirms the notice states the candidate's right to a free copy of the report from the CRA within 60 days. Conditional-required TRUE on decision=adverse."},
-      "disputeRight": {"type": "boolean", "description": "FCRA 615(a)(3): affirms the notice states the candidate's right to dispute the accuracy/completeness of the report with the CRA. Conditional-required TRUE on decision=adverse."}
+      "decision": {
+        "type": "string",
+        "enum": [
+          "adverse",
+          "reversed-to-hire"
+        ],
+        "description": "adverse = take the adverse action (no-hire/rescind) based on the report; reversed-to-hire = the candidate's dispute or the individualized assessment reversed the decision, no adverse action taken."
+      },
+      "finalActionAt": {
+        "type": "string",
+        "format": "date-time",
+        "description": "When the final decision was authorized (the event time; the interval anchor is this record's signed timestamp)."
+      },
+      "rationale": {
+        "type": "string",
+        "minLength": 10
+      },
+      "craName": {
+        "type": "string",
+        "description": "FCRA 615(a)(2): CRA name. Conditional-required on decision=adverse."
+      },
+      "craAddress": {
+        "type": "string",
+        "description": "FCRA 615(a)(2): CRA address. Conditional-required on decision=adverse."
+      },
+      "craPhone": {
+        "type": "string",
+        "description": "FCRA 615(a)(2): CRA telephone (toll-free if a nationwide CRA). Conditional-required on decision=adverse."
+      },
+      "craDidNotDecide": {
+        "type": "boolean",
+        "description": "FCRA 615(a)(3): affirms the notice states the CRA did not make the decision and cannot give the specific reasons. Conditional-required TRUE on decision=adverse."
+      },
+      "freeReportRightWithin60Days": {
+        "type": "boolean",
+        "description": "FCRA 615(a)(3): affirms the notice states the candidate's right to a free copy of the report from the CRA within 60 days. Conditional-required TRUE on decision=adverse."
+      },
+      "disputeRight": {
+        "type": "boolean",
+        "description": "FCRA 615(a)(3): affirms the notice states the candidate's right to dispute the accuracy/completeness of the report with the CRA. Conditional-required TRUE on decision=adverse."
+      }
     },
     "allOf": [
       {
-        "if": {"required": ["decision"], "properties": {"decision": {"const": "adverse"}}},
-        "then": {
-          "required": ["craName", "craAddress", "craPhone", "craDidNotDecide", "freeReportRightWithin60Days", "disputeRight"],
+        "if": {
+          "required": [
+            "decision"
+          ],
           "properties": {
-            "craDidNotDecide": {"const": true},
-            "freeReportRightWithin60Days": {"const": true},
-            "disputeRight": {"const": true}
+            "decision": {
+              "const": "adverse"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "craName",
+            "craAddress",
+            "craPhone",
+            "craDidNotDecide",
+            "freeReportRightWithin60Days",
+            "disputeRight"
+          ],
+          "properties": {
+            "craDidNotDecide": {
+              "const": true
+            },
+            "freeReportRightWithin60Days": {
+              "const": true
+            },
+            "disputeRight": {
+              "const": true
+            }
           }
         }
       }

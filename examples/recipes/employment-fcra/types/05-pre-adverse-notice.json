@@ -2,20 +2,62 @@
   "type": "ironvale-pre-adverse-notice-v1",
   "category": "employment",
   "displayName": "Pre-Adverse Action Notice (FCRA 604(b)(3), to the candidate)",
-  "description": "The FCRA 604(b)(3) pre-adverse action notice: BEFORE taking adverse action based in whole or part on a consumer report, the employer must give the candidate (a) a copy of the actual consumer report and (b) the CFPB 'A Summary of Your Rights Under the FCRA', then WAIT so the candidate can dispute errors before the decision is final. This record NOTARIZES that notice and STARTS THE CLOCK: its signed timestamp is T0, the anchor the final adverse action's interval is measured from (the Tyus v. USPS interval — a 3-day window was held actionable, 14 days 'ample'). reportCopyProvided and summaryOfRightsProvided are const:true — a 'pre-adverse notice' that did not include the report copy or the summary of rights is not a valid 604(b)(3) notice and the schema refuses it. committedWaitDays is the window the employer commits to here; the final adverse action must not be taken before it elapses. | The wait period is NOT a statutory number (604(b)(3) says only 'before'); it is operator policy informed by FTC/court guidance (~5 business days is a common floor). committedWaitDays is therefore an OPERATOR-CONFIGURED policy value, never represented as an FCRA statutory requirement. | Notarize-only; the recipe's Notify subscription for this type delivers to the CANDIDATE channel (the notice is REQUIRED to the subject — the mirror of the finance/KYC no-tip-off inversion).",
+  "description": "The FCRA 604(b)(3) pre-adverse action notice: BEFORE taking adverse action based in whole or part on a consumer report, the employer must give the candidate (a) a copy of the actual consumer report and (b) the CFPB 'A Summary of Your Rights Under the FCRA', then WAIT so the candidate can dispute errors before the decision is final. This record NOTARIZES that notice and STARTS THE CLOCK: its signed timestamp is T0, the anchor the final adverse action's interval is measured from (the Tyus v. USPS interval \u2014 a 3-day window was held actionable, 14 days 'ample'). reportCopyProvided and summaryOfRightsProvided are const:true \u2014 a 'pre-adverse notice' that did not include the report copy or the summary of rights is not a valid 604(b)(3) notice and the schema refuses it. committedWaitDays is the window the employer commits to here; the final adverse action must not be taken before it elapses. | The wait period is NOT a statutory number (604(b)(3) says only 'before'); it is operator policy informed by FTC/court guidance (~5 business days is a common floor). committedWaitDays is therefore an OPERATOR-CONFIGURED policy value, never represented as an FCRA statutory requirement. | Notarize-only; the recipe's Notify subscription for this type delivers to the CANDIDATE channel (the notice is REQUIRED to the subject \u2014 the mirror of the finance/KYC no-tip-off inversion).",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["candidateId", "assessmentRef", "reportCopyProvided", "summaryOfRightsProvided", "committedWaitDays", "sentAt", "deliveryMethod"],
+    "required": [
+      "candidateId",
+      "assessmentRef",
+      "reportCopyProvided",
+      "summaryOfRightsProvided",
+      "committedWaitDays",
+      "sentAt",
+      "deliveryMethod"
+    ],
     "properties": {
-      "candidateId": {"type": "string", "minLength": 1},
-      "assessmentRef": {"type": "string", "minLength": 1, "description": "recordId of the ironvale-individualized-assessment-v1 whose initiate-adverse outcome opened this notice."},
-      "reportCopyProvided": {"type": "boolean", "const": true, "description": "const:true — the candidate was given a copy of the actual consumer report (FCRA 604(b)(3)(A))."},
-      "summaryOfRightsProvided": {"type": "boolean", "const": true, "description": "const:true — the candidate was given the CFPB 'A Summary of Your Rights Under the FCRA' (FCRA 604(b)(3)(B))."},
-      "committedWaitDays": {"type": "integer", "minimum": 1, "description": "The waiting period (in days) the employer commits to before final adverse action, so the candidate can dispute. OPERATOR POLICY, not a statutory number. The final adverse action's signed timestamp minus this record's must be >= committedWaitDays."},
-      "sentAt": {"type": "string", "format": "date-time", "description": "When the pre-adverse notice was sent to the candidate (the notice event time; T0 for the interval is this record's signed timestamp)."},
-      "deliveryMethod": {"type": "string", "enum": ["email", "mail", "portal", "electronic", "in-person"], "description": "How the notice + report copy + summary of rights were delivered."},
-      "reportRef": {"type": "string", "description": "recordId of the ironvale-consumer-report-v1 whose copy was provided (binds 'the report disclosed' to 'the report adjudicated')."}
+      "candidateId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "assessmentRef": {
+        "type": "string",
+        "minLength": 1,
+        "description": "recordId of the ironvale-individualized-assessment-v1 whose initiate-adverse outcome opened this notice.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+      "reportCopyProvided": {
+        "type": "boolean",
+        "const": true,
+        "description": "const:true \u2014 the candidate was given a copy of the actual consumer report (FCRA 604(b)(3)(A))."
+      },
+      "summaryOfRightsProvided": {
+        "type": "boolean",
+        "const": true,
+        "description": "const:true \u2014 the candidate was given the CFPB 'A Summary of Your Rights Under the FCRA' (FCRA 604(b)(3)(B))."
+      },
+      "committedWaitDays": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "The waiting period (in whole days) the employer commits to before final adverse action, so the candidate can dispute. OPERATOR POLICY, not a statutory number: production deployments MUST set >= 1 (EEOC-informed practice is 5 business days); 0 disables the wait and exists for integration wiring only. The v2 wait gate enforces this window against SIGNED time (create the wait gate as a child of this record); the policy floor itself is an operator-side cross-check against the employer policy record (api#972). NOTE: notarize this record under the sender agent's key (not an org-admin key); an admin-notarized record has no performer and cannot anchor the wait-gate child (delegation is self-assignment only)."
+      },
+      "sentAt": {
+        "type": "string",
+        "format": "date-time",
+        "description": "When the pre-adverse notice was sent to the candidate (the notice event time; T0 for the interval is this record's signed timestamp)."
+      },
+      "deliveryMethod": {
+        "type": "string",
+        "enum": [
+          "email",
+          "mail",
+          "portal",
+          "electronic",
+          "in-person"
+        ],
+        "description": "How the notice + report copy + summary of rights were delivered."
+      },
+      "reportRef": {
+        "type": "string",
+        "description": "recordId of the ironvale-consumer-report-v1 whose copy was provided (binds 'the report disclosed' to 'the report adjudicated').", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}
     }
   }
 }

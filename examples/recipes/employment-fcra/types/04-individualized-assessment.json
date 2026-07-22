@@ -10,8 +10,8 @@
     "required": ["candidateId", "reportRef"],
     "properties": {
       "candidateId": {"type": "string", "minLength": 1},
-      "reportRef": {"type": "string", "minLength": 1, "description": "recordId of the ironvale-consumer-report-v1 under assessment."},
-      "gateRef": {"type": "string", "description": "recordId of the ironvale-adjudication-gate-v1 that FAILED and routed this candidate to a human (the routing anchor)."}
+      "reportRef": {"type": "string", "minLength": 1, "description": "recordId of the ironvale-consumer-report-v1 under assessment.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+      "gateRef": {"type": "string", "description": "recordId of the ironvale-adjudication-gate-v1 that FAILED and routed this candidate to a human (the routing anchor).", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}
     }
   },
   "completionSchema": {
