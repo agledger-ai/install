@@ -2,17 +2,16 @@
   "type": "ironvale-wait-window-gate-v1",
   "category": "employment",
   "defaultGateMode": "auto",
-  "displayName": "Pre-Adverse Wait-Window Gate (engine-enforced clock)",
-  "description": "The engine-enforced FCRA pre-adverse waiting period. This is the vertical's defining mechanic: the gate is a CLOCK. The criteria carry earliestFinalActionAt (the not-before instant: the pre-adverse notice's issuance time T0 plus the employer's committedWaitDays); the performer submits finalActionAt (when the final adverse action is actually taken) as completion evidence. The rules engine settles FULFILLED only when finalActionAt >= earliestFinalActionAt (datetime:min-inclusive, on-or-after) and FAILED otherwise — so the engine REFUSES to open the final-adverse-action window before the wait elapses. This converts the Tyus v. USPS problem (a too-short window is an actionable FCRA claim) from a detective after-the-fact dispute into a preventive gate. | THE DEPLOYMENT CROSS-CHECK (mandatory, F-787 class): earliestFinalActionAt MUST be computed as the referenced ironvale-pre-adverse-notice-v1's SIGNED timestamp (T0) plus committedWaitDays. The engine compares two supplied datetimes; it cannot itself reach into the referenced record's signed time, so an orchestrator that sets earliestFinalActionAt too early would pass the engine while understating the wait. The e2e wait-interval-check asserts earliestFinalActionAt == preAdverse.signedAt + committedWaitDays and finalActionAt <= this record's own signed time (no future-dating) — the same 'engine band + on-chain cross-check' posture as the finance screening gate (screen-vs-gate). | TOLERANCE MUST BE 0 (grace seconds default): a positive grace on datetime:min-inclusive WIDENS THE FLOOR EARLIER, silently allowing a final action before the window elapses — re-introducing the very short-window violation this gate prevents. The type cannot forbid a record-creation tolerance param; the orchestrator must never set it. | On FULFILLED, open the ironvale-final-adverse-action-v1 (the human authorization) and set waitGateRef to THIS record id.",
+  "displayName": "Pre-Adverse Wait-Window Gate (engine-enforced clock, signed-time bound)",
+  "description": "The engine-enforced FCRA pre-adverse waiting period. This is the vertical's defining mechanic: the gate is a CLOCK, and since v2 the clock is the server's own signed time, not an orchestrator-supplied datetime. CONTRACT: create this record with parentRecordId set to the ironvale-pre-adverse-notice-v1 record (the notice is notarize-only, so it is a valid RECORDED parent), at the moment the final adverse action is being attempted. The expression rule settles FULFILLED only when daysBetween(parent.created_at, record.created_at) >= committedWaitDays, where BOTH instants are engine-signed notarization times: the orchestrator supplies no datetime and cannot understate the floor (this closes the supplied-floor gap the v1 datetime:min-inclusive form carried, formerly mitigated only by the offline wait-interval-check). A record created without a parent FAILS closed. A too-early attempt FAILS and is itself signed evidence of the refusal; retry after the window with a new record under the same parent (a FAILED child does not consume the notice). | DELEGATION CONSTRAINT (platform WAD): only the pre-adverse notice's performer key may create this child, and the child's principal is that same identity. To keep the final-action attempt on a distinct authorizer identity, create with performerAgentId = the authorizer agent; the record then needs the propose/accept/activate flow (notice-sender proposes and activates, authorizer accepts and completes). Proven live on 1.3.3. | committedWaitDays is OPERATOR POLICY echoed from the pre-adverse notice (must match it; the offline check asserts consistency). 0 disables the wait and exists for test wiring; production FCRA practice is >= 5 business days, and the policy floor itself is an operator-side cross-check against the employer policy record (the engine enforces whatever window is recorded: api#972). | TOLERANCE: expression rules take no tolerance; there is no widening parameter to misuse on this form. | On FULFILLED, open the ironvale-final-adverse-action-v1 (the human authorization) and set waitGateRef to THIS record id.",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["candidateId", "preAdverseRef", "committedWaitDays", "earliestFinalActionAt"],
+    "required": ["candidateId", "preAdverseRef", "committedWaitDays"],
     "properties": {
       "candidateId": {"type": "string", "minLength": 1},
-      "preAdverseRef": {"type": "string", "minLength": 1, "description": "recordId of the ironvale-pre-adverse-notice-v1 that started the clock (T0)."},
-      "committedWaitDays": {"type": "integer", "minimum": 1, "description": "The waiting period the employer committed to in the pre-adverse notice (operator policy, not statutory). Echoed here for the cross-check."},
-      "earliestFinalActionAt": {"type": "string", "format": "date-time", "description": "The not-before instant = the pre-adverse notice's SIGNED timestamp (T0) + committedWaitDays. Cross-checked by the wait-interval-check against the referenced record's signed time; the engine gate refuses to settle unless the actual finalActionAt is on or after this."}
+      "preAdverseRef": {"type": "string", "minLength": 1, "description": "recordId of the ironvale-pre-adverse-notice-v1 that started the clock (T0). MUST equal this record's parentRecordId; the engine reads the clock from the parent binding, and the offline check asserts the echo matches.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+      "committedWaitDays": {"type": "integer", "minimum": 0, "description": "The waiting period the employer committed to in the pre-adverse notice (operator policy, echoed here; must match the notice). The engine enforces this many whole days between the notice's signed time and this record's signed time."}
     }
   },
   "completionSchema": {
@@ -20,16 +19,15 @@
     "additionalProperties": false,
     "required": ["finalActionAt", "rationale"],
     "properties": {
-      "finalActionAt": {"type": "string", "format": "date-time", "description": "When the final adverse action is actually taken. Must be on or after earliestFinalActionAt (engine-enforced) and no later than this record's own signed time (cross-checked)."},
+      "finalActionAt": {"type": "string", "format": "date-time", "description": "When the final adverse action is being taken (attested). The engine verdict does not depend on this value; it is recorded for the file and cross-checked offline against the record's own signed time (no future-dating)."},
       "rationale": {"type": "string", "minLength": 10}
     }
   },
   "fieldMappings": [
     {
-      "ruleId": "datetime:min-inclusive",
-      "criteriaPath": "earliestFinalActionAt",
-      "evidencePath": "finalActionAt",
-      "valueType": "datetime"
+      "ruleId": "fcra-wait-signed-clock",
+      "valueType": "expression",
+      "expression": "daysBetween(parent.created_at, record.created_at) >= criteria.committedWaitDays"
     }
   ]
 }
