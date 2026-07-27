@@ -9,7 +9,7 @@
     "required": ["caseId", "decisionRef", "reportType", "filedWith"],
     "properties": {
       "caseId": {"type": "string"},
-      "decisionRef": {"type": "string", "description": "recordId of the keystone-onboarding-decision-v1 that triggered the report."},
+      "decisionRef": {"type": "string", "description": "recordId of the keystone-onboarding-decision-v1 that triggered the report.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "reportType": {"type": "string", "enum": ["SAR", "OFAC-block"], "description": "SAR = Suspicious Activity Report to FinCEN | OFAC-block = blocking report on a confirmed SDN match."},
       "filedWith": {"type": "string", "enum": ["FinCEN", "OFAC"], "description": "The receiving regulator."},
       "filingReference": {"type": "string", "description": "The regulator's filing acknowledgment id where available."},

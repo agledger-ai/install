@@ -47,7 +47,8 @@
       },
       "supersedesRef": {
         "type": "string",
-        "description": "Optional. recordId of the prior reserve record this change supersedes, forming the reserve history chain."
+        "description": "Optional. recordId of the prior reserve record this change supersedes, forming the reserve history chain.",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       }
     }
   }

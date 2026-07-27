@@ -9,7 +9,7 @@
     "required": ["contentRef", "enforcementRef", "statementHash", "deliveryChannel"],
     "properties": {
       "contentRef": {"type": "string", "minLength": 1, "description": "Platform identifier of the content/account the statement concerns."},
-      "enforcementRef": {"type": "string", "minLength": 1, "description": "recordId of the enforcement-decision-v1 this statement explains (chain lineage)."},
+      "enforcementRef": {"type": "string", "minLength": 1, "description": "recordId of the enforcement-decision-v1 this statement explains (chain lineage).", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "statementHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "sha256:<hex> of the exact, canonicalized statement-of-reasons document delivered to the user. Binds the disclosure to specific bytes."},
       "deliveryChannel": {"type": "string", "enum": ["in_app_notification", "email", "account_dashboard", "api", "not_deliverable"], "description": "How the statement was delivered. not_deliverable records a justified inability to reach the recipient (e.g. account already removed by the user) — DSA Art.17 applies 'where the relevant electronic contact details are known'."},
       "recipientRef": {"type": "string", "description": "Optional platform identifier of the recipient (pseudonymous). Kept opaque; PII stays off-chain."},

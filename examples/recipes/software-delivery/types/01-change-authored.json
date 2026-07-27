@@ -82,7 +82,8 @@
       },
       "revertOfRef": {
         "type": "string",
-        "description": "recordId of the delivery-outcome-v1 this change backs out, when the change is a revert. Types the what-undid-what edge instead of leaving it in prose."
+        "description": "recordId of the delivery-outcome-v1 this change backs out, when the change is a revert. Types the what-undid-what edge instead of leaving it in prose.",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       }
     }
   }

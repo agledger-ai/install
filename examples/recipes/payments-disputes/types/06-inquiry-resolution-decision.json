@@ -10,7 +10,7 @@
     "required": ["disputeId", "disputeRef", "amount", "currency", "resolutionPath"],
     "properties": {
       "disputeId": {"type": "string", "minLength": 1, "description": "Stripe Dispute id (du_...) of the INQUIRY this decision resolves (status warning_needs_response)."},
-      "disputeRef": {"type": "string", "minLength": 1, "description": "recordId of the chargeback-dispute-filed-v1 (disputeFlow=inquiry) this descends from."},
+      "disputeRef": {"type": "string", "minLength": 1, "description": "recordId of the chargeback-dispute-filed-v1 (disputeFlow=inquiry) this descends from.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "amount": {"type": "number", "minimum": 0, "description": "Inquiry amount in major units."},
       "currency": {"type": "string", "minLength": 3, "maxLength": 3},
       "networkReasonCode": {"type": "string", "description": "Visa/network reason code where surfaced (payment_method_details.card.network_reason_code)."},

@@ -9,7 +9,7 @@
     "required": ["applicationId", "verdictRef", "creditorName", "principalReasons", "ecoaStatement", "federalAgency", "scoreUsed"],
     "properties": {
       "applicationId": {"type": "string"},
-      "verdictRef": {"type": "string", "description": "recordId of the keystone-underwriting-verdict-v1 (or auto keystone-credit-decision-v1) the notice reports."},
+      "verdictRef": {"type": "string", "description": "recordId of the keystone-underwriting-verdict-v1 (or auto keystone-credit-decision-v1) the notice reports.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "creditorName": {"type": "string", "minLength": 2, "description": "Name (and address, in deployment) of the creditor — ECOA §1002.9(a)(2)."},
       "principalReasons": {
         "type": "array",

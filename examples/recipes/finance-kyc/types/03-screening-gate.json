@@ -10,7 +10,7 @@
     "required": ["caseId", "screenRef", "clearThreshold"],
     "properties": {
       "caseId": {"type": "string"},
-      "screenRef": {"type": "string", "description": "recordId of the keystone-sanctions-screen-v1 whose score is being banded."},
+      "screenRef": {"type": "string", "description": "recordId of the keystone-sanctions-screen-v1 whose score is being banded.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "clearThreshold": {"type": "number", "minimum": 0, "maximum": 1, "description": "Institution-configured auto-clear cutoff (0.0-1.0). Scores at or below clear automatically; scores above require human disposition."}
     }
   },

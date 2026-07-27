@@ -9,8 +9,8 @@
     "required": ["disputeId", "disputeRef", "finalStatus", "currency"],
     "properties": {
       "disputeId": {"type": "string", "minLength": 1, "description": "Stripe Dispute id (du_...; older docs show dp_) that closed."},
-      "disputeRef": {"type": "string", "minLength": 1, "description": "recordId of the chargeback-dispute-filed-v1 this disposition closes."},
-      "decisionRef": {"type": "string", "description": "Optional recordId of the evidence-submission-decision-v1 / dispute-concession-decision-v1 that drove this outcome."},
+      "disputeRef": {"type": "string", "minLength": 1, "description": "recordId of the chargeback-dispute-filed-v1 this disposition closes.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+      "decisionRef": {"type": "string", "description": "Optional recordId of the evidence-submission-decision-v1 / dispute-concession-decision-v1 that drove this outcome.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "finalStatus": {"type": "string", "enum": ["won", "lost", "warning_closed", "prevented"], "description": "Terminal Stripe Dispute.status. won = funds returned; lost = funds stay withdrawn; warning_closed = inquiry resolved without becoming a chargeback; prevented = deflected pre-dispute (RDR/Ethoca/CE3)."},
       "network": {"type": "string", "enum": ["visa", "mastercard", "amex", "discover", "other"]},
       "networkReasonCode": {"type": "string"},

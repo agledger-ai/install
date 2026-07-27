@@ -8,7 +8,7 @@
     "additionalProperties": false,
     "required": ["declarationRef", "vrn", "periodKey", "submittedReturnHash", "submissionStatus"],
     "properties": {
-      "declarationRef": {"type": "string", "minLength": 1, "description": "recordId of the FULFILLED vat-return-declaration-v1 whose held human declaration authorized this filing (chain lineage)."},
+      "declarationRef": {"type": "string", "minLength": 1, "description": "recordId of the FULFILLED vat-return-declaration-v1 whose held human declaration authorized this filing (chain lineage).", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "vrn": {"type": "string", "pattern": "^[0-9]{9}$", "description": "The 9-digit VAT registration number filed for."},
       "periodKey": {"type": "string", "minLength": 1, "maxLength": 4, "description": "HMRC period key filed. With vrn, the irreversible one-shot identity."},
       "submittedReturnHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "sha256:<hex> of the exact canonicalized nine-box JSON body POSTed to HMRC. Binds the record to the precise bytes HMRC received."},

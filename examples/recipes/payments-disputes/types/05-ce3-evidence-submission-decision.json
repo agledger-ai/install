@@ -27,7 +27,8 @@
       "disputeRef": {
         "type": "string",
         "minLength": 1,
-        "description": "recordId of the chargeback-dispute-filed-v1 this decision descends from (chain lineage)."
+        "description": "recordId of the chargeback-dispute-filed-v1 this decision descends from (chain lineage).",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       },
       "amount": {
         "type": "number",
