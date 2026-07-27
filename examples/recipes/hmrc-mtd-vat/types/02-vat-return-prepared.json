@@ -10,7 +10,7 @@
     "properties": {
       "vrn": {"type": "string", "pattern": "^[0-9]{9}$", "description": "The 9-digit VAT registration number."},
       "periodKey": {"type": "string", "minLength": 1, "maxLength": 4, "description": "HMRC period key this return is for (matches the retrieved obligation)."},
-      "obligationRef": {"type": "string", "description": "Optional recordId of the vat-obligation-retrieved-v1 this return answers (chain lineage)."},
+      "obligationRef": {"type": "string", "description": "Optional recordId of the vat-obligation-retrieved-v1 this return answers (chain lineage).", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "vatDueSales": {"type": "number", "description": "Box 1: VAT due on sales and other outputs. May be negative in a period where credit notes exceed sales (HMRC permits negative Boxes 1-4)."},
       "vatDueAcquisitions": {"type": "number", "description": "Box 2: VAT due on acquisitions of goods made in Northern Ireland from EU member states."},
       "totalVatDue": {"type": "number", "description": "Box 3: total VAT due = Box 1 + Box 2. HMRC rejects VAT_TOTAL_VALUE if this is inconsistent; the validation gate checks it pre-flight."},

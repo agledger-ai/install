@@ -11,9 +11,9 @@
     "properties": {
       "vrn": {"type": "string", "pattern": "^[0-9]{9}$", "description": "The 9-digit VAT registration number being declared for."},
       "periodKey": {"type": "string", "minLength": 1, "maxLength": 4, "description": "HMRC period key being declared. Matches the validated return."},
-      "preparedRef": {"type": "string", "minLength": 1, "description": "recordId of the vat-return-prepared-v1 whose figures are declared (chain lineage)."},
-      "validationGateRef": {"type": "string", "minLength": 1, "description": "recordId of the FULFILLED vat-return-validation-gate-v1 (well-formedness cleared before the declaration)."},
-      "obligationRef": {"type": "string", "description": "Optional recordId of the vat-obligation-retrieved-v1 (chain lineage)."}
+      "preparedRef": {"type": "string", "minLength": 1, "description": "recordId of the vat-return-prepared-v1 whose figures are declared (chain lineage).", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+      "validationGateRef": {"type": "string", "minLength": 1, "description": "recordId of the FULFILLED vat-return-validation-gate-v1 (well-formedness cleared before the declaration).", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+      "obligationRef": {"type": "string", "description": "Optional recordId of the vat-obligation-retrieved-v1 (chain lineage).", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}
     }
   },
   "completionSchema": {

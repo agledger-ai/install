@@ -9,7 +9,7 @@
     "required": ["claimId", "paRequestRef", "payerDisposition", "x12System", "claimResponseId", "autoAdjudicated"],
     "properties": {
       "claimId": {"type": "string"},
-      "paRequestRef": {"type": "string", "description": "recordId of the halcyon-pa-request-v1 this disposition answers."},
+      "paRequestRef": {"type": "string", "description": "recordId of the halcyon-pa-request-v1 this disposition answers.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "payerDisposition": {
         "type": "string",
         "enum": ["A1", "A2", "A3", "A4", "A6"],

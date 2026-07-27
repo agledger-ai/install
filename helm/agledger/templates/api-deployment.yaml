@@ -30,7 +30,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      terminationGracePeriodSeconds: 35
+      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml .Values.api.podSecurityContext | nindent 8 }}
       containers:
@@ -78,6 +78,17 @@ spec:
               port: http
             periodSeconds: 10
             failureThreshold: 30
+          {{- if and .Values.api.preStopSleepSeconds (eq .Values.api.strategy.type "RollingUpdate") }}
+          # #967: hold the container fully serving while LB/endpoint
+          # deregistration propagates, THEN deliver SIGTERM for the in-flight
+          # drain. Kubelet runs exec hooks via the container runtime, not as a
+          # child of the Node process, so Node's --permission sandbox does not
+          # block it; /bin/sleep exists in the node:24-slim base.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", {{ .Values.api.preStopSleepSeconds | quote }}]
+          {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
           securityContext:

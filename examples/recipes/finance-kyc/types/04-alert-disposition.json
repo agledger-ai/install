@@ -10,8 +10,8 @@
     "required": ["caseId", "screenRef", "screeningGateRef", "listVersion"],
     "properties": {
       "caseId": {"type": "string"},
-      "screenRef": {"type": "string", "description": "recordId of the keystone-sanctions-screen-v1 being dispositioned."},
-      "screeningGateRef": {"type": "string", "description": "recordId of the FAILED keystone-screening-gate-v1 that routed this hit to a human."},
+      "screenRef": {"type": "string", "description": "recordId of the keystone-sanctions-screen-v1 being dispositioned.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+      "screeningGateRef": {"type": "string", "description": "recordId of the FAILED keystone-screening-gate-v1 that routed this hit to a human.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "listVersion": {"type": "string", "description": "The dataset/list snapshot the disposition is rendered against (must match the screen's datasetVersion)."}
     }
   },

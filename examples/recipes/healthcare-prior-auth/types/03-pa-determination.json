@@ -11,7 +11,7 @@
     "properties": {
       "claimId": {"type": "string"},
       "paRequestRef": {"type": "string"},
-      "dispositionRef": {"type": "string", "description": "recordId of the contested halcyon-pa-disposition-v1 (A2/A4) routing this to a human."},
+      "dispositionRef": {"type": "string", "description": "recordId of the contested halcyon-pa-disposition-v1 (A2/A4) routing this to a human.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "systemDisposition": {
         "type": "string",
         "enum": ["A2", "A4"],

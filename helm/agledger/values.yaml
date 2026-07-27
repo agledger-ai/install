@@ -64,6 +64,19 @@ api:
     limits:
       memory: 512Mi
       cpu: "1"
+  # Rolling restarts behind a load balancer (#967): pod endpoint removal and
+  # ALB target deregistration are asynchronous, so without a preStop delay the
+  # old pod starts shutting down while the ALB is still routing to it (a hard
+  # window of timeouts then 502/503 that `kubectl rollout status` never sees).
+  # The sleep keeps the container fully serving while deregistration
+  # propagates; SIGTERM (and the app's in-flight drain) comes after. Rendered
+  # ONLY when strategy.type is RollingUpdate: under Recreate there is no
+  # traffic handoff to drain and the sleep would just lengthen the outage.
+  # Set 0 to disable.
+  preStopSleepSeconds: 15
+  # Must cover preStopSleepSeconds + the app's own graceful shutdown (up to
+  # ~25s of in-flight drain) + headroom, or the kubelet SIGKILLs mid-drain.
+  terminationGracePeriodSeconds: 45
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -146,6 +159,16 @@ worker:
 migrate:
   # Defaults to api.resources. Override here if migrations need different limits.
   resources: {}
+  # Scheduling constraints for the migration pod. Each empty value falls back
+  # to the matching api.* value, so a cluster where the API is pinned to a
+  # node class (arch, taints) schedules the migration pod the same way. On the
+  # external-DB path this Job is a pre-install/pre-upgrade hook: a migration
+  # pod that cannot schedule (or lands on an incompatible arch and crashes)
+  # fails the whole helm install/upgrade, so keep these aligned with wherever
+  # the image can actually run.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 # ---
 # Database (PostgreSQL)
@@ -298,6 +321,17 @@ ingress:
   #   alb.ingress.kubernetes.io/scheme: internet-facing
   #   alb.ingress.kubernetes.io/target-type: ip
   #   alb.ingress.kubernetes.io/healthcheck-path: /health
+  #
+  # With target-type: ip, ALSO label the release namespace so the AWS Load
+  # Balancer Controller injects its pod readiness gate:
+  #   kubectl label namespace <ns> elbv2.k8s.aws/pod-readiness-gate-inject=enabled
+  # Without it, a rolling update counts a new pod Ready as soon as the
+  # readinessProbe passes, even though the ALB target is still registering:
+  # the old pod is torn down before the new one receives traffic (#967).
+  # Pair with api.preStopSleepSeconds for the shutdown half of the same race,
+  # and consider alb.ingress.kubernetes.io/target-group-attributes:
+  #   deregistration_delay.timeout_seconds=30
+  # so old targets drain promptly instead of holding the default 300s.
   # nginx example:
   #   kubernetes.io/ingress.class: nginx
   hosts: []

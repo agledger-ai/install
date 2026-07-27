@@ -65,11 +65,13 @@
       "changeRef": {
         "type": "string",
         "minLength": 1,
-        "description": "recordId of the change-authored-v1 this conclusion judges (chain lineage)."
+        "description": "recordId of the change-authored-v1 this conclusion judges (chain lineage).",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       },
       "supersedesRef": {
         "type": "string",
-        "description": "recordId of the ci-conclusion-v1 this re-run replaces (same headSha, next runAttempt), so a conclusion-flip history is chain-walkable."
+        "description": "recordId of the ci-conclusion-v1 this re-run replaces (same headSha, next runAttempt), so a conclusion-flip history is chain-walkable.",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       }
     }
   }
