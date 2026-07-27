@@ -9,7 +9,7 @@
     "required": ["applicationId", "applicationRef", "disposition", "scoreModel", "score", "scoreRange"],
     "properties": {
       "applicationId": {"type": "string"},
-      "applicationRef": {"type": "string", "description": "recordId of the keystone-credit-application-v1."},
+      "applicationRef": {"type": "string", "description": "recordId of the keystone-credit-application-v1.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "disposition": {"type": "string", "enum": ["approve", "decline", "refer"], "description": "approve/decline can auto-finalize; refer routes to a human underwriter."},
       "scoreModel": {"type": "string", "description": "The model that produced the score, e.g. 'FICO 9', 'VantageScore 4.0', 'keystone-ml-v3'."},
       "score": {"type": "integer", "description": "The numeric score used (FCRA §615 requires this be disclosed when a score is used)."},

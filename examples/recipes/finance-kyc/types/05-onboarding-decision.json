@@ -10,7 +10,7 @@
     "required": ["caseId", "alertDispositionRef"],
     "properties": {
       "caseId": {"type": "string"},
-      "alertDispositionRef": {"type": "string", "description": "recordId of the keystone-alert-disposition-v1 routing this case to a business decision."},
+      "alertDispositionRef": {"type": "string", "description": "recordId of the keystone-alert-disposition-v1 routing this case to a business decision.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "escalationReason": {"type": "string", "enum": ["confirmed-match", "EDD", "adverse-media", "ongoing-review"], "description": "Why this reached an L2/MLRO verdict."}
     }
   },

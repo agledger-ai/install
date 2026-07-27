@@ -22,7 +22,8 @@
       },
       "authorityBandCheckRef": {
         "type": "string",
-        "description": "recordId of the FAILED meridian-authority-band-v1 check that routed this settlement to a human."
+        "description": "recordId of the FAILED meridian-authority-band-v1 check that routed this settlement to a human.",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       },
       "authorityBand": {
         "type": "string",
@@ -39,7 +40,8 @@
       },
       "appealOfRef": {
         "type": "string",
-        "description": "Optional. recordId of the original settlement-outcome being appealed; recording the appeal as a fresh human re-determination that supersedes the original (the original chain stays intact)."
+        "description": "Optional. recordId of the original settlement-outcome being appealed; recording the appeal as a fresh human re-determination that supersedes the original (the original chain stays intact).",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       }
     }
   },

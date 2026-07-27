@@ -10,7 +10,7 @@
     "required": ["applicationId", "decisionRef"],
     "properties": {
       "applicationId": {"type": "string"},
-      "decisionRef": {"type": "string", "description": "recordId of the keystone-credit-decision-v1 (disposition=refer) or the contested decision."},
+      "decisionRef": {"type": "string", "description": "recordId of the keystone-credit-decision-v1 (disposition=refer) or the contested decision.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "reviewTrigger": {"type": "string", "enum": ["refer", "reconsideration"], "description": "Why a human is deciding."}
     }
   },

@@ -10,7 +10,7 @@
     "required": ["appealId", "enforcementRef", "contentRef"],
     "properties": {
       "appealId": {"type": "string", "minLength": 1, "description": "Platform's identifier for the internal complaint/appeal."},
-      "enforcementRef": {"type": "string", "minLength": 1, "description": "recordId of the enforcement-decision-v1 being appealed (chain lineage)."},
+      "enforcementRef": {"type": "string", "minLength": 1, "description": "recordId of the enforcement-decision-v1 being appealed (chain lineage).", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "contentRef": {"type": "string", "minLength": 1, "description": "Platform identifier of the content/account at issue."},
       "appellantStatementRef": {"type": "string", "description": "Optional reference to the appellant's submitted grounds (held off-chain)."},
       "appealReceivedAt": {"type": "string", "format": "date-time", "description": "Optional: when the appeal was lodged — starts the Art.20 handling clock."}
@@ -26,7 +26,7 @@
       "redeterminationFacts": {"type": "string", "minLength": 1, "maxLength": 5000, "description": "The facts and reasoning of the re-determination — communicated to the appellant."},
       "upholdBasis": {"type": "string", "maxLength": 2000, "description": "Why the original decision is confirmed. Required when outcome=UPHELD."},
       "reinstatementAction": {"type": "string", "enum": ["content_reinstated", "account_reinstated", "restriction_downgraded", "monetization_restored", "no_action_possible"], "description": "What was restored/changed. Required when outcome=REVERSED or PARTIALLY_REVERSED."},
-      "substitutedDecisionRef": {"type": "string", "description": "Optional recordId of the new enforcement-decision-v1 issued to effect a partial reversal (the substituted lesser restriction)."},
+      "substitutedDecisionRef": {"type": "string", "description": "Optional recordId of the new enforcement-decision-v1 issued to effect a partial reversal (the substituted lesser restriction).", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "redeterminedAt": {"type": "string", "format": "date-time", "description": "Optional: when the re-determination was rendered."}
     },
     "allOf": [

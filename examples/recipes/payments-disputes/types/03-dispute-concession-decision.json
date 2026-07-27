@@ -10,7 +10,7 @@
     "required": ["disputeId", "disputeRef", "amount", "currency", "concessionBasis"],
     "properties": {
       "disputeId": {"type": "string", "minLength": 1, "description": "Stripe Dispute id (du_...; older docs show dp_) being conceded."},
-      "disputeRef": {"type": "string", "minLength": 1, "description": "recordId of the chargeback-dispute-filed-v1 this concession descends from."},
+      "disputeRef": {"type": "string", "minLength": 1, "description": "recordId of the chargeback-dispute-filed-v1 this concession descends from.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "amount": {"type": "number", "minimum": 0, "description": "Amount being written off (stays withdrawn) on concession, major units."},
       "currency": {"type": "string", "minLength": 3, "maxLength": 3},
       "concessionBasis": {"type": "string", "enum": ["no_defensible_evidence", "cost_exceeds_recovery", "fraud_confirmed", "policy_noncompliant", "customer_goodwill", "other"], "description": "Why concession is chosen over contesting. fraud_confirmed = the merchant agrees the charge was fraudulent."},

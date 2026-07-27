@@ -8,8 +8,8 @@
     "additionalProperties": false,
     "required": ["enforcementRef", "puid", "submissionPayloadHash", "submissionStatus"],
     "properties": {
-      "enforcementRef": {"type": "string", "minLength": 1, "description": "recordId of the enforcement-decision-v1 being reported (chain lineage)."},
-      "statementRef": {"type": "string", "description": "Optional recordId of the statement-of-reasons-issued-v1 — the user-facing statement whose reasons should match this submission."},
+      "enforcementRef": {"type": "string", "minLength": 1, "description": "recordId of the enforcement-decision-v1 being reported (chain lineage).", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+      "statementRef": {"type": "string", "description": "Optional recordId of the statement-of-reasons-issued-v1 — the user-facing statement whose reasons should match this submission.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "puid": {"type": "string", "minLength": 1, "maxLength": 500, "pattern": "^[A-Za-z0-9_-]+$", "description": "DSA puid (platform unique id) for this decision — alphanumeric/hyphen/underscore, the platform's own correlation key in the Transparency DB."},
       "submissionPayloadHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "sha256:<hex> of the exact canonicalized JSON body POSTed to the DSA Transparency DB. Binds the on-chain record to the precise bytes the regulator received."},
       "submissionStatus": {"type": "string", "enum": ["pending", "submitted", "rejected"], "description": "pending: prepared, not yet sent (or endpoint doc-grounded). submitted: the DSA DB returned 201 (dsaUuid/dsaPermalink present). rejected: the DSA DB rejected the payload (rejectionDetail present)."},

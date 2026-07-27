@@ -10,7 +10,7 @@
     "required": ["claimId", "appealOfRef", "appealLevel", "filedBy"],
     "properties": {
       "claimId": {"type": "string"},
-      "appealOfRef": {"type": "string", "description": "recordId of the halcyon-pa-determination-v1 (or a prior appeal) being appealed."},
+      "appealOfRef": {"type": "string", "description": "recordId of the halcyon-pa-determination-v1 (or a prior appeal) being appealed.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
       "appealLevel": {
         "type": "string",
         "enum": ["peer-to-peer", "internal-appeal", "external-review"],

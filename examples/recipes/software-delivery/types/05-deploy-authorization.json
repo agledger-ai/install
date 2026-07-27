@@ -38,20 +38,24 @@
       },
       "changeRef": {
         "type": "string",
-        "description": "recordId of the change-authored-v1 that produced this deployable (chain lineage), when the deploy follows a tracked change."
+        "description": "recordId of the change-authored-v1 that produced this deployable (chain lineage), when the deploy follows a tracked change.",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       },
       "ciRef": {
         "type": "string",
         "minLength": 1,
-        "description": "recordId of the ci-conclusion-v1 for this commit (chain lineage)."
+        "description": "recordId of the ci-conclusion-v1 for this commit (chain lineage).",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       },
       "mergeAuthorizationRef": {
         "type": "string",
-        "description": "recordId of the merge-authorization-v1 (or review-verdict-v1 relay) whose merge produced the commit being deployed, so the deploy decision's lineage to the merge decision is a typed edge rather than free text."
+        "description": "recordId of the merge-authorization-v1 (or review-verdict-v1 relay) whose merge produced the commit being deployed, so the deploy decision's lineage to the merge decision is a typed edge rather than free text.",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       },
       "rollbackOfRef": {
         "type": "string",
-        "description": "recordId of the delivery-outcome-v1 (deployed) being rolled back, when this authorization redeploys a previous commit."
+        "description": "recordId of the delivery-outcome-v1 (deployed) being rolled back, when this authorization redeploys a previous commit.",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       },
       "changeRefs": {
         "type": "array",

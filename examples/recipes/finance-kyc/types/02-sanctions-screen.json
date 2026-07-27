@@ -23,7 +23,8 @@
       },
       "onboardingCaseRef": {
         "type": "string",
-        "description": "recordId of the keystone-onboarding-case-v1 this screen belongs to."
+        "description": "recordId of the keystone-onboarding-case-v1 this screen belongs to.",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       },
       "screeningProvider": {
         "type": "string",

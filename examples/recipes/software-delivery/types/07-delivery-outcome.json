@@ -78,11 +78,13 @@
       "authorizedRef": {
         "type": "string",
         "minLength": 1,
-        "description": "recordId of the authorization this outcome executed: a merge-authorization-v1 / deploy-authorization-v1 (AGLedger-held) or a review-verdict-v1 / deployment-approval-v1 relay (SoR-held)."
+        "description": "recordId of the authorization this outcome executed: a merge-authorization-v1 / deploy-authorization-v1 (AGLedger-held) or a review-verdict-v1 / deployment-approval-v1 relay (SoR-held).",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       },
       "changeRef": {
         "type": "string",
-        "description": "recordId of the change-authored-v1 this outcome closes (chain lineage), when applicable."
+        "description": "recordId of the change-authored-v1 this outcome closes (chain lineage), when applicable.",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       },
       "artifactDigest": {
         "type": "string",

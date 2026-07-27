@@ -16,8 +16,8 @@
       "comment": {"type": "string", "maxLength": 2000, "description": "The approver's comment as recorded by the SoR, when present."},
       "renderedAt": {"type": "string", "format": "date-time", "description": "When the SoR recorded the decision."},
       "headSha": {"type": "string", "pattern": "^[0-9a-f]{40}$", "description": "The commit the held run would deploy, for chain binding."},
-      "changeRef": {"type": "string", "description": "recordId of the change-authored-v1 that produced this deployable (chain lineage), when applicable."},
-      "ciRef": {"type": "string", "description": "recordId of the ci-conclusion-v1 for this commit (chain lineage), when applicable."}
+      "changeRef": {"type": "string", "description": "recordId of the change-authored-v1 that produced this deployable (chain lineage), when applicable.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+      "ciRef": {"type": "string", "description": "recordId of the ci-conclusion-v1 for this commit (chain lineage), when applicable.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}
     }
   }
 }
