@@ -90,7 +90,7 @@ AGLedger has a single role: Server. To federate, run more than one Server (each 
 ./scripts/agl-deploy.sh -H user@10.0.0.5 -J you@bastion -i ~/.ssh/key tunnel
 ```
 
-Commands: `bootstrap install upgrade status health key logs tunnel shell uninstall [--purge]`. Flags can be set as `AGL_*` environment variables to pin a host once. It deploys the Developer Edition (Compose on Docker CE, bundled PostgreSQL), which is free and production-ready; for production, set `AGLEDGER_EXTERNAL_URL` and front the API with TLS. For multi-node scale, HA, or an external database, see the [Helm chart](#kubernetes-helm) (Enterprise). Run `./scripts/agl-deploy.sh --help` for the full reference.
+Commands: `bootstrap install upgrade status health key logs tunnel shell uninstall [--purge]`. Flags can be set as `AGL_*` environment variables to pin a host once. It deploys the Developer Edition (Compose on Docker CE, bundled PostgreSQL), which is free and production-ready; for production, set `AGLEDGER_EXTERNAL_URL` and front the API with TLS. For multi-node scale, HA, or an external database, see the [Helm chart](#kubernetes-helm). The chart runs under Developer Edition on its bundled PostgreSQL; only pointing it at an external database requires Enterprise. Run `./scripts/agl-deploy.sh --help` for the full reference.
 
 ## Upgrading
 
@@ -133,7 +133,13 @@ The complete recipe (Helm chart signature, SBOM/OpenVEX/malware-scan attestation
 
 ## Licensing
 
-AGLedger Developer Edition is free to self-host for evaluation, development, and production use. Register at [agledger.ai](https://agledger.ai) to obtain a Developer Edition License Key. Enterprise Edition is available for customers who need the warranty, indemnification, and liability coverage in the Software License Agreement, or who elect to purchase Support under the Support Terms. See [agledger.ai/pricing](https://agledger.ai/pricing).
+**Running AGLedger in production requires a license. The Developer Edition license is free, so get one.** Register at [agledger.ai](https://agledger.ai) and you have it in a minute: no credit card, no account, and the key validates offline with no phone-home.
+
+Registering is not a formality. Unlicensed use is permitted for evaluation, development, and testing only. The Developer Edition key is what grants you production rights and the written terms that come with them, and it is what gives us a record of who is running the software. Both sides are better off for it, which is why it costs nothing.
+
+Every feature ships in every image. The one line the Developer Edition grant does not cross is the database: it is licensed for the PostgreSQL bundled with the Compose and Helm deployments, and pointing the Server at an external or managed PostgreSQL (Aurora, RDS, Cloud SQL, or a self-managed server) requires an Enterprise license. Enterprise is also where the warranty, indemnification, and liability coverage in the Software License Agreement live, along with Support under the Support Terms. See [agledger.ai/pricing](https://agledger.ai/pricing).
+
+We do not enforce either boundary in software. Every feature stays enabled and the Server logs a periodic notice instead of degrading or blocking. That is a deliberate choice about how we treat operators, not a statement that the license is optional: running unregistered in production, or running Developer Edition against an external database, is outside the grant whether or not anything stops you.
 
 The [LICENSE](LICENSE) in this repository is the **Installer License**. It governs your use of the deployment scripts, Compose files, Helm chart, and related packaging in this repository. The AGLedger server software itself (the `agledger/agledger` Docker image) is governed by the separate **Software License Agreement** at [agledger.ai/license](https://agledger.ai/license). Both apply when you run a full AGLedger deployment; where they conflict, the SWLA controls.
 
