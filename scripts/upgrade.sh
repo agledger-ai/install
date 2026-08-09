@@ -93,34 +93,58 @@ fi
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
-CURRENT_VERSION=""
+# Two sources, and neither is `resolve_version`. That helper answers "which
+# version should we install", falling through to the repo's package.json and
+# then to "latest". In a source checkout it returns the version being released,
+# which is the TARGET; reported as the current version it made the equality
+# check below true, and the upgrade exited "Nothing to do" without upgrading
+# anything. It also never returns empty, so the docker probe underneath it was
+# unreachable (#1170).
+#
+# What is running is either written down (.env, set by install.sh and by this
+# script) or readable off the running container. Nothing else is evidence.
+CURRENT_VERSION="$(get_env_value AGLEDGER_VERSION "$ENV_FILE")"
 
-# Try .env first
-if grep -q 'AGLEDGER_VERSION=' "$ENV_FILE" 2>/dev/null; then
-  CURRENT_VERSION=$(grep 'AGLEDGER_VERSION=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '[:space:]')
-fi
-
-# Fall back to package.json
+# The tag is whatever follows the last colon of the image ref; `${ref##*:}` says
+# that directly and, unlike `grep -oP`, works on macOS, whose BSD grep has no -P.
+#
+# Shape-checked, because install.sh writes AGLEDGER_IMAGE_PIN on every verified
+# install and compose prefers it, so the ref this reads is usually
+# `agledger/agledger@sha256:<64 hex>`, which has no tag at all. The same `##*:`
+# happily returns the digest hex, and a 64-character hash reported as "current
+# version" would be printed at the confirmation prompt and written into
+# backup/.pre-upgrade-version, the one file that says what to roll back to.
 if [[ -z "$CURRENT_VERSION" ]]; then
-  CURRENT_VERSION=$(resolve_version)
+  RUNNING_IMAGE_REF=$(docker inspect --format '{{.Config.Image}}' \
+    "$(docker compose -f "${COMPOSE_DIR}/docker-compose.yml" ps -q agledger-api 2>/dev/null | head -1)" 2>/dev/null || true)
+  RUNNING_TAG="${RUNNING_IMAGE_REF##*:}"
+  if [[ "$RUNNING_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+    CURRENT_VERSION="$RUNNING_TAG"
+  fi
 fi
 
-# Fall back to docker inspect
-if [[ -z "$CURRENT_VERSION" ]]; then
-  CURRENT_VERSION=$(docker inspect --format '{{.Config.Image}}' \
-    "$(docker compose -f "${COMPOSE_DIR}/docker-compose.yml" ps -q agledger-api 2>/dev/null | head -1)" 2>/dev/null \
-    | grep -oP '(?<=:)[^:]+$' || echo "unknown")
-fi
+# Kept out of the equality check below: "unknown" is never a target version, so
+# an upgrade whose starting point cannot be established runs rather than skips.
+CURRENT_VERSION="${CURRENT_VERSION:-unknown}"
 
 info "Current version: ${CURRENT_VERSION}"
 info "Target version:  ${TARGET_VERSION}"
 
 # --- Detect removed env vars (v0.15.0+) ---
 
-if grep -q '^[[:space:]]*\(export[[:space:]]\+\)\?AGLEDGER_LICENSE_MODE[[:space:]]*=' "$ENV_FILE" 2>/dev/null; then
-  warn "AGLEDGER_LICENSE_MODE is removed in v0.15.0 — the server will refuse to start if it is set."
+# POSIX BRE intervals (`\{0,1\}`, `[[:space:]][[:space:]]*`), not the GNU
+# extensions `\?` and `\+`: BSD sed and BSD grep read those as a literal `?`
+# and `+`, so on macOS both the detection and the rewrite below silently match
+# nothing, so the line would survive an upgrade that reported success.
+#
+# The Server ignores the variable rather than rejecting it: src/config.ts reads
+# AGLEDGER_LICENSE / AGLEDGER_LICENSE_KEY / AGLEDGER_LICENSE_KEY_FILE and
+# nothing else. Commenting it out keeps .env honest about what is actually
+# live; it is tidying, not a boot prerequisite.
+if grep -q '^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}AGLEDGER_LICENSE_MODE[[:space:]]*=' "$ENV_FILE" 2>/dev/null; then
+  warn "AGLEDGER_LICENSE_MODE was removed in v0.15.0 and is ignored by the Server."
   warn "Commenting it out in ${ENV_FILE}."
-  sedi 's/^\([[:space:]]*\)\(export[[:space:]]\+\)\?\(AGLEDGER_LICENSE_MODE[[:space:]]*=\)/#REMOVED_v0.15# \1\2\3/' "$ENV_FILE"
+  sedi 's/^\([[:space:]]*\)\(export[[:space:]][[:space:]]*\)\{0,1\}\(AGLEDGER_LICENSE_MODE[[:space:]]*=\)/#REMOVED_v0.15# \1\2\3/' "$ENV_FILE"
   info "AGLEDGER_LICENSE_MODE commented out. Licensing is now automatic when a license key is present."
 fi
 
@@ -158,6 +182,69 @@ if ! grep -qE '^COMPOSE_FILE=' "$ENV_FILE" 2>/dev/null; then
   fi
   upsert_env_var COMPOSE_FILE "${OVERLAY_LIST}" "$ENV_FILE"
   info "Added COMPOSE_FILE=${OVERLAY_LIST}"
+fi
+
+# --- Federation Identity ---
+# #1193: the same gap install.sh now closes, reached from the other direction.
+# An install stood up before that fix has no AGLEDGER_INSTANCE_ID, so its
+# operator is told the Server's id is the literal "default" and the peer's
+# handshake refuses it. `federation_hub_id_action` will not touch a Server that
+# already has a usable id, so an upgrade can never move an identity peers have
+# stored: it only fills in the absent case.
+if [[ "$(federation_hub_id_action "$ENV_FILE")" == "generate" ]]; then
+  if HUB_ID_VALUE=$(generate_uuid); then
+    upsert_env_var AGLEDGER_INSTANCE_ID "${HUB_ID_VALUE}" "$ENV_FILE"
+    info "Generated AGLEDGER_INSTANCE_ID (this Server's federation identity; it had none)"
+  else
+    warn "Could not generate AGLEDGER_INSTANCE_ID. Federation stays unavailable until one is set;"
+    warn "GET /federation/v1/admin/instance names the variable and how to generate a value."
+  fi
+fi
+
+# --- Monitoring Profile ---
+# #1180: an install stood up with --with-monitoring before COMPOSE_PROFILES was
+# persisted has monitoring containers running and nothing in .env that selects
+# them. Every compose command here, including the `up -d` below, would then skip
+# the profile: the containers keep running on the OLD image with the OLD port
+# bindings while the upgrade reports success, and the release notes describe a
+# hardening the machine never received. Repair the .env before anything else
+# reads it, so the profile also sticks for the operator's own later commands.
+MONITORING_ACTIVE=false
+if monitoring_containers_running; then
+  MONITORING_ACTIVE=true
+  if [[ "$(ensure_monitoring_profile "$ENV_FILE")" == "added" ]]; then
+    info "Monitoring containers are running but COMPOSE_PROFILES did not select them."
+    info "  Added COMPOSE_PROFILES=monitoring to .env so this upgrade includes them."
+  fi
+fi
+
+# --- Config Gate ---
+#
+# `missing_prod_config` names every production prerequisite the Server
+# fail-fasts on. install.sh runs it and REFUSES; here it warns, and the
+# difference is deliberate.
+#
+# The function reads .env and nothing else. On a first install that is the whole
+# truth. On an upgrade there is a Server already running, which is standing
+# evidence the configuration works, and an operator may be supplying these from
+# an exported environment or a secrets manager rather than the file. Refusing
+# would block a working customer's upgrade over a variable that is in fact set.
+#
+# Warning still buys the whole point of #1163: if the new image does fail to
+# boot, the operator already has the variable name in front of them instead of
+# "container is unhealthy". CONFIG_GAPS is re-reported on that failure below.
+CONFIG_GAPS=()
+while IFS= read -r gap_line; do
+  CONFIG_GAPS+=("$gap_line")
+done < <(missing_prod_config "$ENV_FILE")
+
+if [[ ${#CONFIG_GAPS[@]} -gt 0 ]]; then
+  warn "${ENV_FILE} does not set every production prerequisite:"
+  for gap in "${CONFIG_GAPS[@]}"; do
+    warn "  ${gap}"
+  done
+  warn "If they reach the container another way (exported env, secrets manager), this is fine."
+  warn "If they do not, ${TARGET_VERSION} will refuse to boot and this upgrade will stop at the restart."
 fi
 
 # --- Confirmation ---
@@ -232,6 +319,16 @@ info "Worker stopped"
 
 step "Running database migrations with new image"
 
+# Postgres's own healthcheck runs inside its container, so it passes while
+# sibling-container traffic on the compose bridge is being dropped by stale
+# Docker iptables state. install.sh probes for exactly this before its migrate
+# and upgrade.sh did not, though it runs the same `compose run agledger-migrate`
+# a line later: the customer got a ~55s TCP timeout and a Node stack trace
+# instead of the named recovery. The window is if anything wider here, because
+# an upgrade happens on a host that has been running (and restarting Docker)
+# since the install that did check.
+verify_sibling_reachability
+
 AGLEDGER_VERSION="${TARGET_VERSION}" "${COMPOSE[@]}" run --rm agledger-migrate
 info "Migrations complete"
 
@@ -251,9 +348,39 @@ step "Restarting all services"
 # the container is created, the preflight loop below logs a soft WARN, and
 # the script exits 0 — handing the customer a broken upgrade with no
 # visible signal anything went wrong.
-"${COMPOSE[@]}" up -d --wait \
-  || fatal "Services failed to become healthy after upgrade. Check: docker compose logs agledger-api"
+if ! "${COMPOSE[@]}" up -d --wait; then
+  # A config fail-fast is the likeliest cause and the one the generic message
+  # hid: the Server names the variable and exits at import, compose reports
+  # "unhealthy", and the operator was sent to read container logs to find out
+  # which one. If the gate above found gaps, they are almost certainly it.
+  if [[ ${#CONFIG_GAPS[@]} -gt 0 ]]; then
+    error "${TARGET_VERSION} did not boot, and ${ENV_FILE} is missing production prerequisites:"
+    for gap in "${CONFIG_GAPS[@]}"; do
+      error "  ${gap}"
+    done
+    error "Set them in ${ENV_FILE} and re-run this script. Your previous version is still installed."
+  fi
+  fatal "Services failed to become healthy after upgrade. Check: docker compose logs agledger-api"
+fi
 info "All services restarted"
+
+# --- Grafana Credential State ---
+# #1180: the installer generates GRAFANA_ADMIN_PASSWORD on a fresh monitoring
+# install, and warns when a Grafana volume already exists because the password
+# is applied only when the admin user is created and ignored on every later
+# boot. Neither ran on the upgrade path, so an install that predates the change
+# came out the far side still answering to admin/admin with nothing anywhere in
+# the output saying so. The generate branch cannot apply here for the same
+# reason it does not apply in the installer: the volume already pinned it.
+if [[ "$MONITORING_ACTIVE" == true ]] \
+  && [[ "$(grafana_password_action "$ENV_FILE")" == "stale" ]]; then
+  echo ""
+  warn "Grafana is running from an existing volume, so its admin password is whatever it was first started with."
+  warn "  Releases before 1.4.0 defaulted it to 'admin', which is very likely what it still is. To set a new one:"
+  warn "    docker compose exec grafana grafana cli admin reset-admin-password <new-password>"
+  warn "  then record it as GRAFANA_ADMIN_PASSWORD in ${ENV_FILE}."
+  warn "  The port bindings moved to loopback in this upgrade, so it is no longer reachable off this host."
+fi
 
 # --- Preflight Check ---
 
@@ -287,7 +414,11 @@ HEALTH_RESPONSE=$("${COMPOSE[@]}" exec agledger-api /nodejs/bin/node -e \
   "fetch('http://localhost:3000/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d))).catch(e=>console.error(e))" \
   2>/dev/null || echo "{}")
 
-HEALTH_VERSION=$(echo "$HEALTH_RESPONSE" | grep -oP '"version"\s*:\s*"[^"]*"' | grep -oP '(?<=")[^"]+(?="$)' || echo "unknown")
+# POSIX sed rather than two chained `grep -oP`: BSD grep (macOS) has no -P, and
+# sed prints nothing instead of failing when /health returned {}, so the
+# fallback moves into the expansion.
+HEALTH_VERSION=$(echo "$HEALTH_RESPONSE" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+HEALTH_VERSION="${HEALTH_VERSION:-unknown}"
 if [[ "$HEALTH_VERSION" == "$TARGET_VERSION" ]]; then
   info "/health reports version: ${HEALTH_VERSION}"
 elif [[ "$HEALTH_VERSION" != "unknown" ]]; then
@@ -307,7 +438,7 @@ echo -e "  ${BOLD}Previous version:${NC}  ${CURRENT_VERSION}"
 echo -e "  ${BOLD}Current version:${NC}   ${TARGET_VERSION}"
 echo ""
 echo -e "  ${BOLD}Verify:${NC}"
-echo -e "    curl -s http://localhost:3001/health | jq ."
+echo -e "    curl -s http://localhost:$(resolve_host_port AGLEDGER_HOST_PORT 3001)/health | jq ."
 echo -e "    docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps"
 echo ""
 echo -e "${GREEN}=============================================================================${NC}"
