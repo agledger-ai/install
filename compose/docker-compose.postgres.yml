@@ -7,6 +7,18 @@
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --wait
+#
+# That bring-up needs POSTGRES_PASSWORD set in .env. `./scripts/install.sh`
+# generates one; this overlay ships no default, because a default here is a
+# password published in this repo and initdb would keep it for the life of the
+# data directory.
+#
+# Without one, on a data directory that does not exist yet, the postgres
+# entrypoint refuses to initialize. `restart: unless-stopped` then retries it,
+# so `up --wait` reports "container is unhealthy" rather than the reason:
+# `docker compose logs postgres` has the actual line ("Database is
+# uninitialized and superuser password is not specified"). Teardown is
+# unaffected, which is the whole reason this is `:-` and not `:?`.
 # =============================================================================
 
 services:
@@ -14,10 +26,34 @@ services:
     image: postgres:18-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-agledger}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agledger}
+      # Empty default, deliberately, and NOT `:?`.
+      #
+      # No published default: initdb applies this value once and the data
+      # directory then keeps it forever, so shipping a real one here means a
+      # stack brought up without install.sh bakes a credential from this repo
+      # into its database permanently.
+      #
+      # Empty is a genuine refusal rather than a weak password. The postgres
+      # entrypoint will not initialize a data directory without a password
+      # ("Database is uninitialized and superuser password is not specified")
+      # and nothing here sets POSTGRES_HOST_AUTH_METHOD, so there is no path
+      # from empty to a running fresh database.
+      #
+      # `:?` would look stricter and is worse: compose resolves variables when
+      # it PARSES the file, so it fails every subcommand, not just `up`. That
+      # breaks `down -v`, `ps`, `logs` and `exec pg_dump` for anyone whose
+      # .env is missing, which is exactly the operator trying to clean up or
+      # back up. Refusing to start is recoverable; refusing to be torn down is
+      # not.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_DB: ${POSTGRES_DB:-agledger}
     ports:
-      - '127.0.0.1:5432:5432'
+      # Host side is a variable so a second stack can run beside the first on
+      # one host. The app reaches Postgres over the compose network, so this
+      # mapping exists only for psql/pg_dump from the host and can be moved
+      # freely. Container side stays 5432 (DATABASE_URL targets it by service
+      # name).
+      - '127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432'
     volumes:
       # postgres:18-alpine refuses to initialize when data is mounted at the
       # legacy /var/lib/postgresql/data path; the new entrypoint expects the

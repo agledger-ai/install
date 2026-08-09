@@ -1,0 +1,267 @@
+# AGLedger Prometheus alerting rules.
+#
+# A dashboard is the wrong delivery mechanism for a silent-drop class, because
+# the failure is defined by nobody looking. These rules are the half that does
+# not need an operator in front of a screen.
+#
+# Load them by pointing Prometheus at this directory:
+#
+#   rule_files:
+#     - /etc/prometheus/alerts/*.rules.yml
+#
+# The bundled compose stack does this already. Routing is deliberately left to
+# the customer: Alertmanager, its receivers and its escalation policy are site
+# decisions, and shipping an opinion about who gets paged would be wrong. The
+# `severity` labels below are the only hook the rules assume.
+#
+# Every `expr` here is checked against the live metric registry by
+# `src/test/dashboard-metric-coverage.test.ts`. An alert on a metric nobody
+# emits never fires, which is indistinguishable from a healthy system and is
+# strictly worse than a blank panel.
+
+groups:
+  # ---------------------------------------------------------------------------
+  # Silent drops. Everything here is a fire-and-forget path that swallows its
+  # error at runtime: nothing 500s, nothing retries, and the only evidence is
+  # the counter. These are the reason this file exists.
+  # ---------------------------------------------------------------------------
+  - name: agledger-silent-drops
+    rules:
+      - alert: AGLedgerChainEntryDropped
+        # The chain is the product. An audit_vault append that failed and was
+        # swallowed means a record transitioned with no chain entry behind it,
+        # which offline verification will later report as a break that no
+        # amount of investigation can reconstruct.
+        expr: increase(agledger_federation_audit_vault_dropped_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A federation audit-vault append was dropped"
+          description: >-
+            {{ $value | printf "%.0f" }} chain append(s) failed and were swallowed in the
+            last 15m. The record transitioned and the chain entry never landed, so
+            verification will report a break. Check the API logs for the append error and
+            run POST /v1/admin/vault/scan to size the damage.
+
+      - alert: AGLedgerAuditTrailDropped
+        # persistEvent / post-commit callback losses. The state change is
+        # durable and the record OF the state change is gone, so /v1/events and
+        # any SIEM fed from it are incomplete.
+        expr: |
+          (sum(increase(agledger_post_commit_callback_failures_total[15m])) or vector(0))
+          + (sum(increase(agledger_federation_outbound_event_persist_dropped_total[15m])) or vector(0))
+          + (sum(increase(agledger_cascading_gate_persist_event_failures_total[15m])) or vector(0))
+          + (sum(increase(agledger_phase2_enqueue_persist_event_failures_total[15m])) or vector(0))
+          + (sum(increase(agledger_federation_forensic_audit_dropped_total[15m])) or vector(0))
+          + (sum(increase(agledger_support_bundle_audit_failures_total[15m])) or vector(0)) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Audit-trail writes are being dropped"
+          description: >-
+            A state change committed and the event recording it did not. /v1/events and
+            anything polling it (SIEM) are missing rows for this window.
+
+      - alert: AGLedgerWorkEnqueueDropped
+        # A job that never got queued is work that will never happen. Cascade
+        # cancel is the sharpest: a child keeps executing after its parent
+        # terminalized.
+        expr: |
+          (sum(increase(agledger_cascade_cancel_enqueue_failures_total[15m])) or vector(0))
+          + (sum(increase(agledger_webhook_enqueue_failures_total[15m])) or vector(0))
+          + (sum(increase(agledger_cascading_gate_enqueue_failures_total[15m])) or vector(0))
+          + (sum(increase(agledger_phase2_enqueue_failures_total[15m])) or vector(0))
+          + (sum(increase(agledger_federation_outbound_enqueue_failed_total[15m])) or vector(0))
+          + (sum(increase(agledger_federation_outbound_publish_failures_total[15m])) or vector(0)) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Queued work was dropped instead of enqueued"
+          description: >-
+            An enqueue failed and was swallowed. Cascade-cancel drops leave a child record
+            executing after its parent terminalized; webhook and federation drops mean a
+            downstream system is never told.
+
+      - alert: AGLedgerGateJobRetriesExhausted
+        # The other end of the same story as AGLedgerWorkEnqueueDropped: the job
+        # was queued, ran, and still never finished. Federation has carried this
+        # alert since April (AGLedgerFederationDeadLettered); the gate worker's
+        # two exhaustion counters had no rule, so the same failure inside the
+        # engine's own queue was the quiet one.
+        expr: |
+          (sum(increase(agledger_cascade_rollup_retry_exhausted_total[1h])) or vector(0))
+          + (sum(increase(agledger_gate_dlq_advisory_pass_lost_total[1h])) or vector(0)) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gate-worker jobs gave up after exhausting their retries"
+          description: >-
+            A cascade rollup that exhausts its retries on the last child's job leaves the
+            parent stranded ACTIVE with every child terminal; check
+            agledger_auto_rollup_stuck_parents_total, which the consistency sweep raises
+            within five minutes if that is what happened. A lost advisory pass leaves the
+            record correctly awaiting its principal, minus the advisory annotation,
+            permanently.
+
+      - alert: AGLedgerSiemExportDegraded
+        # The compliance feed. A customer discovers this at audit time.
+        expr: |
+          (sum(increase(agledger_siem_mapper_failures_total[1h])) or vector(0))
+          + (sum(increase(agledger_siem_http_batches_dropped_total[1h])) or vector(0))
+          + (sum(increase(agledger_siem_file_lines_dropped_total[1h])) or vector(0))
+          + (sum(increase(agledger_siem_poll_failures_total[1h])) or vector(0)) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SIEM export is dropping records"
+          description: >-
+            The SIEM feed is lossy. Poll failures retry from an unadvanced cursor and
+            recover; dropped batches and lines do not.
+
+      - alert: AGLedgerConfigReloadFailing
+        # Config that silently did not take. The operator edited a file, saw no
+        # error, and is running something else.
+        expr: |
+          (sum(increase(agledger_provisioning_reload_failures_total[15m])) or vector(0))
+          + (sum(increase(agledger_llms_txt_customization_load_failures_total[15m])) or vector(0))
+          + (sum(increase(agledger_schema_warmcache_refresh_failures_total[15m])) or vector(0))
+          + (sum(increase(agledger_cache_invalidation_drops_total[15m])) or vector(0)) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A config reload or cache refresh is failing"
+          description: >-
+            The running configuration may not match what is on disk, and replicas may be
+            serving stale schemas.
+
+  # ---------------------------------------------------------------------------
+  # Chain integrity. Distinct from a dropped append: these fire when the chain
+  # that IS there fails to verify.
+  # ---------------------------------------------------------------------------
+  - name: agledger-chain-integrity
+    rules:
+      - alert: AGLedgerVaultIntegrityCheckFailed
+        expr: increase(agledger_vault_integrity_check_results_total{result="broken"}[1h]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          # The selector is `result="broken"`, not `result!="pass"`. The check
+          # emits exactly two values, `clean` and `broken`, so excluding a third
+          # that nothing emits excluded nothing: this fired CRITICAL on every
+          # healthy scan.
+          summary: "Vault integrity check reported a broken chain"
+          description: >-
+            The hash chain did not verify. Do not restart into this: capture the state
+            first, then GET /v1/admin/vault/scan for the affected range.
+
+      - alert: AGLedgerCheckpointSkippedBrokenChain
+        expr: increase(agledger_vault_checkpoint_skipped_broken_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A vault checkpoint was skipped because the chain is broken"
+          description: >-
+            Checkpointing refused rather than anchoring over a break. Every write after
+            this point is unanchored until the break is resolved.
+
+  # ---------------------------------------------------------------------------
+  # Federation delivery. Retries are normal; exhausting them is not.
+  # ---------------------------------------------------------------------------
+  - name: agledger-federation
+    rules:
+      - alert: AGLedgerFederationDeadLettered
+        expr: increase(agledger_federation_outbound_retry_exhausted_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Federation jobs exhausted their retries and dead-lettered"
+          description: >-
+            {{ $value | printf "%.0f" }} outbound job(s) of kind "{{ $labels.kind }}" will
+            never reach the peer without an operator redrive. Triage at
+            GET /federation/v1/admin/dlq.
+
+      - alert: AGLedgerFederationSchemaDigestMismatch
+        expr: increase(agledger_federation_schema_digest_mismatch_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A peer asserted a schema digest this Server does not hold"
+          description: >-
+            Operation "{{ $labels.operation }}". The two Servers registered the same
+            (publisher, type, version) from different bytes. Re-import the manifest on one
+            side so the digests agree.
+
+  # ---------------------------------------------------------------------------
+  # Availability and saturation. Ordinary service health, included because
+  # nothing else in deploy/ carried it.
+  # ---------------------------------------------------------------------------
+  - name: agledger-availability
+    rules:
+      - alert: AGLedgerHighErrorRate
+        expr: |
+          sum(rate(agledger_http_request_duration_seconds_count{status_code=~"5.."}[5m]))
+          / clamp_min(sum(rate(agledger_http_request_duration_seconds_count[5m])), 0.001) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Over 5% of requests are returning 5xx"
+          description: "{{ $value | humanizePercentage }} of requests over the last 5m."
+
+      - alert: AGLedgerHighLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(agledger_http_request_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 request latency is above 2s"
+          description: "P95 is {{ $value | printf \"%.2f\" }}s."
+
+      - alert: AGLedgerDbPoolSaturated
+        # Waiting connections mean requests are queued behind the pool. This is
+        # the shape a pool deadlock takes from the outside.
+        expr: agledger_db_pool_waiting_connections > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Requests are queued waiting for a database connection"
+          description: >-
+            {{ $value | printf "%.0f" }} waiter(s) for 5m. Sustained waiting is either an
+            undersized pool or a query holding a client across an await.
+
+      - alert: AGLedgerQueueBacklogGrowing
+        expr: sum by (queue) (agledger_pgboss_queue_size{state="queued"}) > 1000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue {{ $labels.queue }} has a growing backlog"
+          description: >-
+            {{ $value | printf "%.0f" }} jobs pending for 15m. Either the worker is down or
+            it cannot keep up.
+
+      - alert: AGLedgerWorkerJobsFailing
+        expr: |
+          sum(rate(agledger_worker_jobs_processed_total{status="failure"}[10m]))
+          / clamp_min(sum(rate(agledger_worker_jobs_processed_total[10m])), 0.001) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Over 10% of worker jobs are failing"
+          description: "{{ $value | humanizePercentage }} of jobs over the last 10m."

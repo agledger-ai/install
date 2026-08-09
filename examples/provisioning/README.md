@@ -46,6 +46,13 @@ displayName: ${AGENT_NAME:-My Agent}         # with default
 secret: ${WEBHOOK_HMAC_SECRET}               # HMAC webhook shared secret
 ```
 
+A bare `${VAR}` with no default is a **hard parse error** when the variable is
+unset, and it fails the whole file: every resource in it is skipped, the rest of
+the run continues, and the Server boots reporting "Provisioning completed with
+errors". Use `${VAR:-default}` wherever a sensible default exists, and check
+`GET /v1/admin/provisioning/status` after a config change: it reports the failed
+files under `loadErrors`.
+
 Secrets referenced this way must be present in the pod environment. With the
 Helm chart, inject them via `extraEnv` / `extraEnvFrom` (see values.yaml) — e.g.
 a `secretKeyRef` to an operator-managed Secret — rather than committing the

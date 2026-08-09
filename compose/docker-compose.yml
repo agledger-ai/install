@@ -32,7 +32,19 @@ services:
     command: ['dist/src/db/migrate.js']
     restart: 'no'
     environment:
-      - DATABASE_URL=${DATABASE_URL_MIGRATE:-${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-agledger}@postgres:5432/${POSTGRES_DB:-agledger}}}
+      # The bundled-PG fallback carries no password default, matching the
+      # overlay that provides that database. Neither file refuses an empty
+      # value: the refusal is the postgres entrypoint's, and it happens only
+      # when it would initialize a new data directory.
+      #
+      # Do NOT "fix" this with `:?`. Compose interpolates nested expressions
+      # EAGERLY, so a `:?` here fires even when DATABASE_URL is set and this
+      # whole branch is discarded, breaking every external-database install.
+      # (The overlay avoids `:?` for a different reason, in its own comment:
+      # parse-time resolution would kill `down`/`ps`/`logs` too.) Both are
+      # pinned by guards in deploy/tests/install-preflight.test.sh that run
+      # real `docker compose config`.
+      - DATABASE_URL=${DATABASE_URL_MIGRATE:-${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-agledger}}}
       - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-}
       # Post-v1.0: shipped migrations are immutable; refuse any baseline checksum rebase.
       - AGLEDGER_LAUNCH_FROZEN=${AGLEDGER_LAUNCH_FROZEN:-true}
@@ -43,12 +55,16 @@ services:
     image: ${AGLEDGER_IMAGE_PIN:-agledger/agledger:${AGLEDGER_VERSION:-latest}}
     init: true
     ports:
-      - '127.0.0.1:3001:3000'
+      # Host side is a variable so a second stack can run beside the first on
+      # one host (COMPOSE_PROJECT_NAME isolates containers and volumes, not
+      # host ports). Change it in .env, together with AGLEDGER_EXTERNAL_URL,
+      # which is the issuer signed into every record.
+      - '127.0.0.1:${AGLEDGER_HOST_PORT:-3001}:3000'
     env_file:
       - path: .env
         required: false
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-agledger}@postgres:5432/${POSTGRES_DB:-agledger}}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-agledger}}
       - ALLOW_DB_WITHOUT_SSL=${ALLOW_DB_WITHOUT_SSL:-false}
     depends_on:
       agledger-migrate:
@@ -71,13 +87,16 @@ services:
     # inspector; network is ungated. File SIEM sink → add
     # --allow-fs-write=/var/log/agledger here too.
     command: ['--permission', '--allow-fs-read=*', 'dist/src/worker.js']
-    ports:
-      - '127.0.0.1:3002:3001'
+    # No `ports:` mapping on purpose. The worker's health endpoint is reached
+    # in-container by the healthcheck below, so publishing it to the host buys
+    # nothing and a fixed host port makes `--scale agledger-worker=N` fail on a
+    # collision. To reach worker health from the host, add a mapping in an
+    # override file.
     env_file:
       - path: .env
         required: false
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-agledger}@postgres:5432/${POSTGRES_DB:-agledger}}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-agledger}}
       - ALLOW_DB_WITHOUT_SSL=${ALLOW_DB_WITHOUT_SSL:-false}
       - WORKER_HEALTH_PORT=3001
     depends_on:
@@ -93,45 +112,69 @@ services:
   # --- Monitoring (optional, enable with --profile monitoring) ---
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.149.0
+    image: otel/opentelemetry-collector-contrib:0.157.0-386
     profiles: [monitoring]
+    # Same restart policy the app services carry in docker-compose.prod.yml. The
+    # app is configured to export at this collector permanently, so a collector
+    # that does not come back after a host or daemon restart leaves the app
+    # logging export failures with nowhere to send telemetry.
+    restart: unless-stopped
     command: ['--config', '/etc/otel/config.yaml']
     volumes:
       - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    # Loopback-bound, like the api and postgres services above. None of the
+    # monitoring stack authenticates an OTLP receiver or a read-only UI, so a
+    # host-wide bind publishes the trace stream and the metrics to anything that
+    # can reach the host. Front them with the same reverse proxy that terminates
+    # TLS for the API if they need to be reachable off-box.
     ports:
-      - '4317:4317'   # OTLP gRPC
-      - '4318:4318'   # OTLP HTTP
-      - '8889:8889'   # Prometheus metrics exporter
+      - '127.0.0.1:${OTLP_GRPC_HOST_PORT:-4317}:4317'        # OTLP gRPC
+      - '127.0.0.1:${OTLP_HTTP_HOST_PORT:-4318}:4318'        # OTLP HTTP
+      - '127.0.0.1:${OTEL_METRICS_HOST_PORT:-8889}:8889'     # Prometheus metrics exporter
     depends_on:
       - jaeger
 
   jaeger:
-    image: jaegertracing/jaeger:2.17.0
+    image: jaegertracing/jaeger:2.20.0
     profiles: [monitoring]
+    restart: unless-stopped
     ports:
-      - '16686:16686'  # Jaeger UI
-      - '4317'         # OTLP gRPC (internal, OTel collector → Jaeger)
+      - '127.0.0.1:${JAEGER_UI_HOST_PORT:-16686}:16686'  # Jaeger UI
+    # The collector reaches these over the compose network, so they belong in
+    # `expose`. Listed under `ports` they were single-value entries, which
+    # publishes each on a random host port on every interface: the opposite of
+    # what the comment claimed.
+    expose:
+      - '4317'         # OTLP gRPC (internal, OTel collector to Jaeger)
       - '4318'         # OTLP HTTP (internal)
 
   prometheus:
-    image: prom/prometheus:v3.11.0
+    image: prom/prometheus:v3.13.2
     profiles: [monitoring]
+    restart: unless-stopped
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.retention.time=30d'
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Rule files are referenced by prometheus.yml `rule_files` (#1186).
+      - ../monitoring/alerts:/etc/prometheus/alerts:ro
     ports:
-      - '9090:9090'
+      - '127.0.0.1:${PROMETHEUS_HOST_PORT:-9090}:9090'
 
   grafana:
-    image: grafana/grafana:12.4.2
+    image: grafana/grafana:13.1.1
     profiles: [monitoring]
+    restart: unless-stopped
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # No `:-admin` fallback. A default here is indistinguishable from a chosen
+      # password, and it was the value install.sh then printed as the login.
+      # install.sh generates one into .env under --with-monitoring; an operator
+      # enabling the profile by hand sets it themselves.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
       GF_USERS_ALLOW_SIGN_UP: 'false'
     ports:
-      - '3003:3000'
+      - '127.0.0.1:${GRAFANA_HOST_PORT:-3003}:3000'
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro

@@ -88,5 +88,23 @@ Image pin (production hardening):
     docker buildx imagetools inspect {{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}
 {{- end }}
 
+{{- if (.Values.openshift).enabled }}
+
+OpenShift mode is ON:
+  The pod-level securityContext is omitted from the api Deployment, the worker
+  Deployment and the migrate Job, so the SCC assigns the uid. Non-root now comes
+  from the image's own USER 65532 and, on OpenShift, from restricted-v2 itself.
+  Container hardening is unchanged (read-only root filesystem, no privilege
+  escalation, all capabilities dropped).
+{{- else }}
+
+Running on OpenShift?
+  restricted-v2 assigns uids from a per-namespace range, and this render asks
+  for 65532, so admission will refuse the pods with `runAsUser: Invalid value:
+  65532: must be in the ranges: [...]`. Re-run with:
+    --set openshift.enabled=true
+  See the `openshift` block in values.yaml, or https://agledger.ai/docs/install
+{{- end }}
+
 Documentation: https://agledger.ai/docs
 Pricing:       https://agledger.ai/pricing

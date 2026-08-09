@@ -36,6 +36,9 @@ data:
   RATE_LIMIT_ENABLED: {{ .Values.config.rateLimitEnabled | quote }}
   CORS_ENABLED: {{ .Values.config.corsEnabled | quote }}
   HELMET_ENABLED: {{ .Values.config.helmetEnabled | quote }}
+  {{- if .Values.config.allowNonDefaultSigningAlg }}
+  AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG: "true"
+  {{- end }}
   DATABASE_POOL_MAX: {{ .Values.database.poolMax | quote }}
   DATABASE_IDLE_IN_TX_TIMEOUT_MS: {{ .Values.database.idleInTxTimeoutMs | default 30000 | quote }}
   WORKER_HEALTH_PORT: {{ .Values.worker.healthPort | quote }}

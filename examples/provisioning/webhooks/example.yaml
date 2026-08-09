@@ -27,7 +27,13 @@ webhooks:
     url: https://hooks.acme-corp.example.com/agledger-hmac
     eventTypes:
       - record.created
-    secret: ${ACME_WEBHOOK_SECRET}
+    # A placeholder, NOT a usable secret. Replace it with your receiver's shared
+    # secret, and for a real deployment move it out of this file: writing
+    # `secret: ${ACME_WEBHOOK_SECRET}` reads it from the pod environment instead
+    # (chart extraEnv / extraEnvFrom). It is spelled out here rather than left as
+    # a bare env-var ref because an unset ref with no default is a hard parse
+    # error, and this starter set has to survive being copied verbatim.
+    secret: replace-me-with-your-receivers-shared-secret
 
   # Settlement webhook → external payment/ERP system. Listing a settlement event
   # on a Server that has a VAULT_SIGNING_KEY defaults to ed25519 (RFC 9421): the

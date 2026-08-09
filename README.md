@@ -38,6 +38,24 @@ Single-node deployments, evaluation, and small-to-medium workloads.
 
 All configuration lives in `compose/.env`. See `compose/.env.example` for the full list of variables.
 
+The stack runs under the compose project named after the `compose/` directory, so its containers, network and `compose_pgdata` volume belong to the Docker host rather than to a particular checkout. Two checkouts on one host share one database, `docker compose down -v` in either destroys it for both, and the volume survives deleting the checkout that created it. `install.sh` refuses to generate fresh credentials against a volume that already exists (Postgres keeps the password it was initialized with, so the new ones would fail authentication) and tells you how to keep it, discard it, or install beside it. To give a checkout its own containers and data instead, set the project name on a checkout that is not already installed. Host ports are global to the machine, so a stack running alongside another needs its own there too:
+
+```bash
+COMPOSE_PROJECT_NAME=agledger-2 AGLEDGER_HOST_PORT=3011 POSTGRES_HOST_PORT=5442 ./scripts/install.sh
+```
+
+The name is written into `compose/.env`, so later `docker compose` commands and `upgrade.sh` stay on the same project.
+
+That file is also why a second stack needs a second directory. There is one `compose/.env` per checkout and it is the entire state of the install that lives there: host ports, `COMPOSE_PROJECT_NAME`, `VAULT_SIGNING_KEY`, `PLATFORM_API_KEY`, `AGLEDGER_EXTERNAL_URL`. Re-running `install.sh` under a new project name in a directory that already holds an install would leave the first stack running while rewriting the only file that points at it, so `install.sh` refuses and prints the copy recipe:
+
+```bash
+cp -r <this-install> ../agledger-2 && cd ../agledger-2
+rm -f compose/.env compose/.env.backup-*   # so the new stack generates its own secrets rather than signing under the first one's key
+COMPOSE_PROJECT_NAME=agledger-2 AGLEDGER_HOST_PORT=3011 POSTGRES_HOST_PORT=5442 ./scripts/install.sh
+```
+
+The refusal is scoped to a directory whose stack still exists. After `uninstall.sh` (which keeps `compose/.env` so a reinstall preserves the signing key) there is nothing left to orphan, so the same checkout can be reinstalled under any project name.
+
 ### Kubernetes (Helm)
 
 Production clusters:
@@ -49,6 +67,23 @@ helm install agledger oci://registry-1.docker.io/agledger/agledger-chart \
 ```
 
 Reference values: `helm/agledger/values.yaml`. Or run `./scripts/helm-install.sh` for a guided install that generates secrets and produces a values file.
+
+#### OpenShift
+
+Add `--set openshift.enabled=true`:
+
+```bash
+helm install agledger oci://registry-1.docker.io/agledger/agledger-chart \
+  --namespace agledger --create-namespace \
+  --set openshift.enabled=true \
+  --values your-values.yaml
+```
+
+OpenShift's default `restricted-v2` SCC assigns uids from a per-namespace range and admits pods with `MustRunAsRange`. The chart's stock `podSecurityContext` asks for 65532, outside that range on essentially every cluster, so without the flag admission refuses the pods, naming a uid the operator never chose (`runAsUser: Invalid value: 65532: must be in the ranges: [...]`). The flag drops the pod-level block from all three workloads (api, worker, migrate Job) and lets the platform assign a uid.
+
+That block is `runAsNonRoot: true` plus the two uid/gid keys, so non-root stops being asserted in the manifest: on OpenShift `restricted-v2` enforces it directly, and elsewhere it rests on the image's own `USER 65532:65532`. Every container-level control is untouched either way (read-only root filesystem, no privilege escalation, all capabilities dropped). The bundled PostgreSQL needs no equivalent, since it requests no securityContext at all. Admission behaviour here follows the documented SCC rules; what has been measured directly is the image under equivalent container constraints, and the rendered manifests.
+
+`helm/agledger/values-openshift.yaml` sets the same flag for anyone who prefers a values file, but reaching it means `helm pull --untar` first, so `--set` is the shorter path from the OCI registry. `./scripts/helm-install.sh` detects OpenShift (via the `security.openshift.io` API group) and sets the flag for you unless you configured it yourself.
 
 ### External Database
 
@@ -67,6 +102,66 @@ Requirements:
 ### Air-Gapped / Restricted-Network Installs
 
 `install.sh --image` lets you point at an internal registry. See [air-gap/README.md](air-gap/README.md) for the full flow.
+
+### FIPS 140 hosts (ES256 signing)
+
+AGLedger signs its chain with Ed25519 by default. A host running OpenSSL in FIPS mode cannot compute Ed25519: the provider does not carry it, and signing fails with `error:0308010C:digital envelope routines::unsupported`. For those hosts AGLedger supports a **single-Server ES256 configuration**, where every signature (chain, receipts, webhooks) uses ECDSA P-256 with SHA-256 instead.
+
+Install with FIPS from the start:
+
+```bash
+./scripts/install.sh --fips
+```
+
+`--fips` implies ES256: it generates a P-256 vault key and writes `AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true`, the explicit acknowledgment the Server requires before it will boot on a non-default algorithm. It also records `AGLEDGER_FIPS=true` in `compose/.env`, which adds the shipped `compose/docker-compose.fips.yml` overlay to every compose command the scripts run afterwards, `upgrade.sh` included.
+
+The overlay mounts `compose/openssl-fips.cnf` and points `OPENSSL_CONF` at it. The provider ships in the runtime image and activates from that config alone: no FIPS kernel, no `openssl fipsinstall` step.
+
+The flag is sticky on purpose. An upgrade that recreated the containers without the overlay would leave the host running non-FIPS with nothing to notice it, because an ES256 key signs perfectly well with or without the provider active.
+
+`--fips` against an install that already holds an Ed25519 key is refused, with the rotation steps below: the provider carries no EdDSA, so that Server would boot unable to sign at all.
+
+**What you give up.** This is a deliberately narrow configuration, and the Server enforces its edges rather than degrading quietly:
+
+- **Federation is not available.** The federation transport is Ed25519 and X25519 by design. A Server configured with both ES256 and federation keys refuses to boot, naming the conflict, rather than starting with a transport it cannot sign for.
+- **Ed25519-pinned surfaces refuse explicitly.** A webhook subscription requesting `signingAlg: "ed25519"` returns 422 naming the algorithms this Server can use (`ecdsa-p256-sha256`, `hmac`). Nothing silently downgrades.
+- **Consumers need a current verifier.** Anyone verifying your chain offline needs `@agledger/verify` 1.4.0 or later. The algorithm support lives in its `@agledger/verify-core` dependency rather than in `verify` itself; 1.4.0 is the `verify` release that resolves a core carrying ES256 under every install shape, including a consumer with an older core pinned at the top level. Quote the `verify` version, because that is the package people install. Your Server publishes the floor per key as `minVerifierVersion` at `GET /v1/verification-keys`. **Tell them before they run one**, because a verifier that cannot compute the algorithm does not reliably say so: builds from `verify-core` 1.1.0 on report `CHAIN_UNSUPPORTED_ALGORITHM` and name the fix, but older builds have no such code path and report a signature failure instead, which reads as tampering on an intact chain.
+
+**Licensing note.** Ed25519 is itself FIPS-approved (FIPS 186-5), and validated modules that implement it exist. The exclusion here is the vintage of the FIPS provider shipped with the runtime base image, not a property of the algorithm.
+
+**Switching an install that already has a chain.** Do not reinstall: entries already written must keep verifying. Rotate instead.
+
+```bash
+# 1. generate a P-256 key
+docker run --rm agledger/agledger:<version> dist/scripts/generate-signing-key.js --algorithm es256
+
+# 2. put the new VAULT_SIGNING_KEY and AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true in compose/.env
+
+# 3. restart. THIS is what rotates: on boot the Server reconciles the key
+#    registry to the configured VAULT_SIGNING_KEY, retiring the previous
+#    active key and activating the new one.
+docker compose up -d --force-recreate
+
+# 4. confirm the registry agrees
+curl -s http://localhost:3001/v1/verification-keys \
+  | jq '.data[] | {keyId, algorithm, status, activatedAt, retiredAt}'
+```
+
+You should see the new key `active` and the old one `retired`, with the retirement instant matching the restart.
+
+`POST /v1/admin/vault/signing-keys/rotate` exists for the case where the registry has not caught up with the configured key (it is the same reconciliation, on demand). After a restart it has already run, so the endpoint returns `status: "already_active"`. That is the expected answer there, not a failure.
+
+Rotation retires the old key, it does not delete it. `GET /v1/verification-keys` keeps serving every historical public key with the exact instants it was active (`activatedAt` / `retiredAt`), which is what lets a verifier check each entry against the key that actually signed it. Entries written before the rotation keep verifying under the retired Ed25519 key; entries after it use ES256. No re-signing, and the chain stays continuous.
+
+Re-running `install.sh` with `AGLEDGER_SIGNING_ALGORITHM` set does **not** change the algorithm of an existing install. The signing key is generated only alongside the other secrets, so a run that finds an existing `.env` keeps the key it already has; the installer says so rather than reporting a success that did not happen.
+
+**Verifying FIPS is actually on.** Ask the running container:
+
+```bash
+docker compose exec agledger-api /nodejs/bin/node -e "console.log(require('crypto').getFips())"   # 1 when active
+```
+
+With the provider active and an ES256 key, the install runs normally: records notarize, gates evaluate, and a chain scan (`POST /v1/admin/vault/scan`, then poll the returned job at `GET /v1/admin/vault/scan/{jobId}`) reports the chain healthy. Every release blocks on a boot gate that runs this exact configuration on both architectures, asserting both that the ES256 serve path works and that a federation-configured Server refuses to start under it.
 
 ### Federation (link multiple Servers)
 
@@ -106,7 +201,7 @@ The upgrade script creates a backup before upgrading. Rollback with `./scripts/r
 ./scripts/uninstall.sh
 ```
 
-Stops all containers and removes volumes. `compose/.env` is kept by default; pass `--purge` to remove it too.
+Stops all containers and removes volumes. `compose/.env` is kept by default; pass `--purge` to remove it too. Volumes belong to the compose project, so on a host running more than one checkout this removes the database both were using.
 
 ## Support
 

@@ -1,5 +1,54 @@
 ## AGLedger Helm Chart — Default Values
 
+# ---
+# OpenShift
+# ---
+# Set this on OpenShift (or any cluster admitting pods with `MustRunAsRange`).
+# It drops the pod-level uid/gid REQUEST from the api Deployment, the worker
+# Deployment and the migrate Job, letting the platform assign one instead:
+#
+#   helm install agledger oci://registry-1.docker.io/agledger/agledger-chart \
+#     --set openshift.enabled=true --values your-values.yaml
+#
+# Why it is needed. OpenShift's default `restricted-v2` SCC gives each namespace
+# a uid range (the `openshift.io/sa.scc.uid-range` annotation) and admits pods
+# with `MustRunAsRange`. The stock `podSecurityContext` below asks for uid/gid
+# 65532, outside that range on essentially every cluster, so a stock install is
+# rejected at admission with:
+#
+#   unable to validate against any security context constraint:
+#   runAsUser: Invalid value: 65532: must be in the ranges: [1000700000, ...]
+#
+# The image supports an arbitrary uid: it declares USER 65532 for plain
+# Kubernetes and Docker, but nothing in it is owned by or hardcoded to that uid.
+# Files are world-readable and it needs no passwd entry, so it runs correctly
+# under an assigned uid with gid 0. Measured against the shipped image under the
+# container constraints restricted-v2 imposes (arbitrary uid with gid 0,
+# read-only root filesystem, all capabilities dropped, no-new-privileges):
+# migrations apply, the API boots healthy, the discovery surfaces serve, a
+# platform key mints, and a record notarizes. Admission itself has not been
+# exercised on a live OpenShift cluster; that half follows from the SCC rules.
+#
+# What is actually dropped is the whole pod-level block below, which is
+# `runAsNonRoot: true` alongside the two uid/gid keys. Every container-level
+# control is untouched on all three workloads: read-only root filesystem, no
+# privilege escalation, all capabilities dropped.
+#
+# Non-root therefore still holds, but by a different guarantee. On OpenShift
+# restricted-v2 enforces it directly, along with a default seccomp profile. Off
+# OpenShift it rests on the image's own `USER 65532:65532`, which the kubelet no
+# longer independently verifies. That is fine for the stock image and worth
+# knowing if you point `image.repository` at a derived one.
+#
+# The bundled PostgreSQL is unaffected and needs no equivalent: it requests no
+# securityContext at all, which is precisely what restricted-v2 admits.
+#
+# `-f values-openshift.yaml` sets exactly this flag and nothing else. Prefer
+# `--set` when installing straight from the OCI registry, since reaching the
+# values file means pulling and untarring the chart first.
+openshift:
+  enabled: false
+
 image:
   repository: agledger/agledger
   tag: ""  # defaults to appVersion
@@ -221,6 +270,20 @@ postgres:
 # only carries the engine's own keys, so bring webhook/integration secrets here,
 # ideally by reference to an operator-managed (or External-Secrets-synced) Secret
 # rather than inline plaintext.
+#
+# FEDERATION is configured here too, and one of its variables has no working
+# default: AGLEDGER_INSTANCE_ID is this Server's identity, the value peers store
+# and look it up by. Unset, the Server has no usable identity and a peer's
+# handshake refuses what it can offer, because `peerHubId` is declared
+# `format: uuid`. The Compose installer generates one; a chart install has to
+# supply it, and it must be a stable UUID (survives restarts, distinct per
+# Server) rather than a value templated per release.
+#
+#   - name: AGLEDGER_INSTANCE_ID
+#     value: "<uuidgen output, pinned in your values file>"
+#
+# `GET /federation/v1/admin/instance` reports `configured: false` and names
+# every missing piece until this and both federation keys are set.
 extraEnv: []
   # - name: WEBHOOK_ACME_SECRET
   #   valueFrom:
@@ -239,8 +302,14 @@ extraEnvFrom: []
 secrets:
   apiKeySecret: ""          # Auto-generated if empty (64-char random). Preserved across upgrades.
   vaultSigningKey: ""       # Ed25519 key for audit vault signatures. Generate with:
-                             #   kubectl run keygen --rm -it --restart=Never --image=agledger/agledger \
-                             #     -- /nodejs/bin/node dist/scripts/generate-signing-key.js
+                             #   kubectl run keygen --rm -it --restart=Never \
+                             #     --image=agledger/agledger:<same tag this chart deploys> \
+                             #     --command -- /nodejs/bin/node dist/scripts/generate-signing-key.js
+                             # --command is required: it replaces the image's
+                             # ENTRYPOINT instead of appending to it (api#1135).
+                             # Install without this value set and the chart
+                             # prints the same command with the image already
+                             # filled in. Add --algorithm es256 for FIPS hosts.
                              # Preserved across upgrades once set.
   webhookEncryptionKey: ""
   databaseUrlMigrate: ""    # optional — superuser DATABASE_URL for migrations (DDL).
@@ -262,7 +331,7 @@ secrets:
                              #   AGLEDGER_LICENSE_KEY  (optional) — PEM license string
 
 # ---
-# License (Enterprise)
+# License (Developer Edition or Enterprise)
 # ---
 # No license = Developer Edition (all features enabled — enforcement is contractual, not software).
 # License problems fail-open — all features remain enabled with ERROR logs.
@@ -305,6 +374,10 @@ config:
   rateLimitEnabled: true
   corsEnabled: true
   helmetEnabled: true
+  # Opt-in acknowledgment for a non-default vault signing algorithm (e.g. an
+  # ES256 key on a FIPS-mode cluster). Chain consumers need @agledger/verify
+  # 1.4.0+. Maps to AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG.
+  allowNonDefaultSigningAlg: false
   nodeExtraCaCerts: ""  # Path to CA bundle inside the container.
                          # For Aurora/RDS: /etc/ssl/certs/rds-global-bundle.pem (bundled in image)
                          # For Cloud SQL or private CAs: mount your cert and set the path here

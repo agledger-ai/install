@@ -1,0 +1,50 @@
+# =============================================================================
+# AGLedger FIPS Overlay
+# =============================================================================
+# Runs every AGLedger container with the OpenSSL FIPS provider active, for
+# hosts under a FIPS 140 requirement.
+#
+# Do not wire this in by hand. Install with:
+#
+#   ./scripts/install.sh --fips
+#
+# which implies ES256 signing and records AGLEDGER_FIPS=true in .env. Every
+# script that brings containers up reads that flag and adds this overlay, so an
+# upgrade cannot silently drop it. Hand-editing COMPOSE_FILE does NOT survive:
+# install.sh reconciles that key, and the scripts pass their own explicit -f
+# list. A stack recreated without this overlay is no longer FIPS, and nothing
+# would report the loss, because an ES256 key signs either way.
+#
+# Direct invocation, if you are driving compose yourself:
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml \
+#                  -f docker-compose.prod.yml -f docker-compose.fips.yml up -d --wait
+#
+# The provider cannot compute Ed25519, so this overlay ONLY works on a Server
+# configured for ES256.
+#
+# A stock Ed25519 install will fail to sign under it. Federation is not
+# available in this configuration (its transport is Ed25519/X25519), and the
+# Server refuses to boot if federation keys are set alongside ES256.
+#
+# See the FIPS section of README.md for what the configuration gives up and
+# for the offline-verifier floor your chain consumers need.
+# =============================================================================
+
+services:
+  agledger-migrate:
+    volumes:
+      - ./openssl-fips.cnf:/etc/agledger/openssl-fips.cnf:ro
+    environment:
+      - OPENSSL_CONF=/etc/agledger/openssl-fips.cnf
+
+  agledger-api:
+    volumes:
+      - ./openssl-fips.cnf:/etc/agledger/openssl-fips.cnf:ro
+    environment:
+      - OPENSSL_CONF=/etc/agledger/openssl-fips.cnf
+
+  agledger-worker:
+    volumes:
+      - ./openssl-fips.cnf:/etc/agledger/openssl-fips.cnf:ro
+    environment:
+      - OPENSSL_CONF=/etc/agledger/openssl-fips.cnf
