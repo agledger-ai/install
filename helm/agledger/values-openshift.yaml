@@ -1,0 +1,21 @@
+# AGLedger on OpenShift
+#
+# Two ways in, same result. Straight from the OCI registry, no download:
+#
+#   helm install agledger oci://registry-1.docker.io/agledger/agledger-chart \
+#     --namespace agledger --create-namespace \
+#     --set openshift.enabled=true \
+#     --values my-values.yaml
+#
+# Or with this file, which needs the chart on disk first:
+#
+#   helm pull oci://registry-1.docker.io/agledger/agledger-chart --version <ver> --untar
+#   helm install agledger ./agledger-chart -n agledger \
+#     -f ./agledger-chart/values-openshift.yaml \
+#     -f my-values.yaml
+#
+# The flag is the mechanism; this file only sets it. Full rationale, the
+# admission error it prevents, and what stays hardened are in the `openshift`
+# block at the top of values.yaml.
+openshift:
+  enabled: true

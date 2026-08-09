@@ -30,6 +30,52 @@ DEFAULT_RDS_CA="/etc/ssl/certs/rds-global-bundle.pem"
 info()  { echo "  [*] $*"; }
 fatal() { echo "  [!] $*" >&2; exit 1; }
 
+# The advertised entry point is `curl ... | bash`, where the script's own source
+# IS stdin. A bare `read` there consumes the next LINE OF THE SCRIPT as the
+# operator's answer, and bash then parses the wreckage: the first prompt below
+# used to swallow its own `case` statement and die on `syntax error near
+# unexpected token ')'`, which reads like a truncated download rather than a
+# script that cannot prompt.
+#
+# So prompts go to the controlling terminal, and where there is no terminal
+# (CI, cron, a piped run with no tty) we take the default the prompt already
+# advertises and say so, instead of asking a question nobody can answer.
+# Probe by actually opening /dev/tty for reading: it exists inside containers
+# and detached runs where `test -r` passes but open() fails with ENXIO.
+TTY_IN=""
+if (exec 3</dev/tty) 2>/dev/null; then
+  TTY_IN=/dev/tty
+elif [[ -t 0 ]]; then
+  TTY_IN=/dev/stdin
+fi
+
+# A backgrounded run (`curl ... | bash &`) has a controlling terminal it is not
+# in the foreground group of, so /dev/tty opens and then reading it raises
+# SIGTTIN, whose default action STOPS the process: the install would sit at the
+# prompt forever with no output explaining why. Ignoring the signal turns that
+# read into a plain EIO failure, which falls through to the default below.
+trap '' TTIN 2>/dev/null || true
+
+# ask <varname> <prompt> <default> <flag-to-set-it-non-interactively>
+ask() {
+  local __var="$1" __prompt="$2" __default="$3" __flag="$4" __reply="" __ok=0
+  if [[ -n "$TTY_IN" ]]; then
+    # Prompt written separately rather than with `read -p` so the read's own
+    # stderr can be dropped: the backgrounded case above surfaces there as a
+    # raw "read error: 0: Input/output error" immediately before the line that
+    # actually explains what happened.
+    printf '%s' "$__prompt" >&2
+    if read -r __reply <"$TTY_IN" 2>/dev/null; then __ok=1; fi
+  fi
+  # A nonzero `read` still assigns what it managed to consume, which is a real
+  # answer when the operator ended the line with EOF instead of Enter. Only an
+  # empty-handed failure is a fallback, and only that is worth narrating.
+  if [[ "$__ok" -eq 0 && -z "$__reply" ]]; then
+    info "No terminal for input; using the default (${__default:-empty}). Pass ${__flag} to choose."
+  fi
+  printf -v "$__var" '%s' "${__reply:-$__default}"
+}
+
 while [[ $# -gt 0 ]]; do
   case $1 in
     --db)           DB_URL="$2"; shift 2 ;;
@@ -106,16 +152,33 @@ command -v helm >/dev/null 2>&1 || fatal "helm is required. Install: https://hel
 command -v kubectl >/dev/null 2>&1 || fatal "kubectl is required."
 kubectl cluster-info >/dev/null 2>&1 || fatal "No Kubernetes cluster available. Check kubectl config."
 
+# OpenShift admits pods with MustRunAsRange, so the chart's stock uid/gid
+# request (65532) is rejected by the default restricted-v2 SCC. Detecting it
+# here is the difference between a working install and an admission error
+# naming a uid the operator never chose.
+#
+# Asks the cluster, not the workstation: `oc` on the PATH says nothing about
+# which context kubectl is pointed at.
+IS_OPENSHIFT=false
+if kubectl api-versions 2>/dev/null | grep -q '^security\.openshift\.io/'; then
+  IS_OPENSHIFT=true
+fi
+
 # Resolve a concrete version so the chart + image can be pinned AND verified.
 # cosign needs a concrete tag, not a floating "latest".
 if [[ -z "$VERSION" ]] && [[ "${AGLEDGER_SKIP_VERIFY:-false}" != "true" ]]; then
   if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     # `|| true`: under `set -euo pipefail` a no-match `grep` would otherwise abort
     # the whole script instead of falling through to the graceful message below.
+    #
+    # Field-wise numeric sort, not `sort -V`: -V is GNU-only and BSD sort
+    # (macOS) errors out, which would silently resolve no version at all. The
+    # grep ahead of it leaves only bare numeric triples, where the two
+    # orderings agree (1.9.0 < 1.10.0 included).
     VERSION=$(curl -fsSL --max-time 10 \
       "https://hub.docker.com/v2/repositories/agledger/agledger-chart/tags?page_size=100" 2>/dev/null \
       | jq -r '.results[].name' 2>/dev/null \
-      | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+      | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 || true)
     [[ -n "$VERSION" ]] && info "Resolved latest chart version: $VERSION"
   fi
   [[ -z "$VERSION" ]] && info "Could not resolve a concrete version to verify — pass --version X.Y.Z to enable verification."
@@ -149,10 +212,11 @@ else
   echo "    1) Bundled PostgreSQL (free, dev/test)"
   echo "    2) External database (Aurora, RDS, Cloud SQL)"
   echo ""
-  read -rp "  Option [1]: " db_choice
-  case "${db_choice:-1}" in
+  ask db_choice "  Option [1]: " 1 "--bundled or --db <url>"
+  # shellcheck disable=SC2154  # assigned by `ask` via printf -v
+  case "$db_choice" in
     1) BUNDLED=true; info "Using bundled PostgreSQL" ;;
-    2) read -rp "  DATABASE_URL: " DB_URL
+    2) ask DB_URL "  DATABASE_URL: " "" "--db <url>"
        [[ -n "$DB_URL" ]] || fatal "DATABASE_URL is required for external database"
        if [[ -z "$CA_CERT" ]]; then
          echo ""
@@ -160,26 +224,55 @@ else
          echo "    Press Enter to use the bundled AWS RDS / Aurora cert (${DEFAULT_RDS_CA})"
          echo "    Type a path inside the container for a custom CA"
          echo "    Type 'none' to skip (most managed Postgres providers require a CA)"
-         read -rp "  CA cert [${DEFAULT_RDS_CA}]: " ca_choice
-         CA_CERT="${ca_choice:-$DEFAULT_RDS_CA}"
+         ask CA_CERT "  CA cert [${DEFAULT_RDS_CA}]: " "$DEFAULT_RDS_CA" "--ca-cert <path> or --no-ca-cert"
        fi
        ;;
     *) fatal "Invalid option" ;;
   esac
 fi
 
-# Generate vault signing key using the AGLedger container
-info "Generating Ed25519 vault signing key..."
-VAULT_KEY=$(kubectl run agledger-keygen --rm -it --restart=Never \
+# Generate vault signing key using the AGLedger container.
+# AGLEDGER_SIGNING_ALGORITHM: ed25519 (default) or es256. es256 is for
+# FIPS-mode clusters, whose providers cannot compute Ed25519; it also sets the
+# AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG acknowledgment via extraEnv (chain
+# consumers need @agledger/verify >= 1.4.0, the release that resolves a
+# @agledger/verify-core carrying ES256 under every install shape; core is where
+# the support lives).
+SIGNING_ALGORITHM="${AGLEDGER_SIGNING_ALGORITHM:-ed25519}"
+case "$SIGNING_ALGORITHM" in
+  ed25519|es256) ;;
+  *) fatal "AGLEDGER_SIGNING_ALGORITHM must be ed25519 or es256, got: ${SIGNING_ALGORITHM}" ;;
+esac
+info "Generating ${SIGNING_ALGORITHM} vault signing key..."
+# POSIX sed to read the key, not `grep -oP`: PCRE lookbehind is GNU-only and
+# BSD grep (macOS) rejects -P outright. This script is piped straight from
+# curl to bash, so it stands alone and cannot use lib-compose's helper.
+# `--attach`, never `-it`. Under `curl ... | bash` the script's source is stdin,
+# and `-i` hands that pipe to the pod, which drains the rest of the script.
+# `--attach` streams the pod's output and waits for it to exit (what `--rm`
+# needs) without claiming stdin; `</dev/null` closes the door behind it.
+VAULT_KEY=$(kubectl run agledger-keygen --rm --attach --restart=Never \
   --image="$IMG_REF" \
-  --command -- /nodejs/bin/node dist/scripts/generate-signing-key.js 2>/dev/null \
-  | grep -oP '(?<=VAULT_SIGNING_KEY=)\S+' | head -1 || true)
+  --command -- /nodejs/bin/node dist/scripts/generate-signing-key.js --algorithm "$SIGNING_ALGORITHM" 2>/dev/null </dev/null \
+  | sed -n 's/^VAULT_SIGNING_KEY=\([^[:space:]][^[:space:]]*\).*/\1/p' | head -1 || true)
 
 if [[ -z "$VAULT_KEY" ]]; then
-  # Fallback: generate locally with openssl if available
+  # Fallback: generate locally with openssl if available.
+  #
+  # `openssl base64 -A` for the single-line encode, NOT `base64 -w0 || base64`.
+  # -w0 is GNU-only, and that fallback is a trap in this script specifically:
+  # `A | B || C` groups as `(A|B) || C`, so on macOS the bare `base64` runs with
+  # the SCRIPT'S stdin, which under `curl ... | bash` is the rest of the script.
+  # It swallows the remainder and the run dies silently, having already created
+  # the keygen pod. openssl is guaranteed here (it is this branch's condition)
+  # and -A is portable.
   if command -v openssl >/dev/null 2>&1; then
     info "Generating key locally with openssl..."
-    VAULT_KEY=$(openssl genpkey -algorithm ed25519 2>/dev/null | openssl pkey -outform DER 2>/dev/null | base64 -w0 2>/dev/null || base64 2>/dev/null)
+    if [[ "$SIGNING_ALGORITHM" == "es256" ]]; then
+      VAULT_KEY=$(openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/null | openssl pkcs8 -topk8 -nocrypt -outform DER 2>/dev/null | openssl base64 -A 2>/dev/null)
+    else
+      VAULT_KEY=$(openssl genpkey -algorithm ed25519 2>/dev/null | openssl pkey -outform DER 2>/dev/null | openssl base64 -A 2>/dev/null)
+    fi
   fi
 fi
 
@@ -191,6 +284,75 @@ info "Vault signing key generated"
 HELM_CMD="helm install $RELEASE $CHART"
 HELM_CMD="$HELM_CMD --namespace $NAMESPACE --create-namespace"
 HELM_CMD="$HELM_CMD --set secrets.vaultSigningKey=$VAULT_KEY"
+if [[ "$SIGNING_ALGORITHM" == "es256" ]]; then
+  # Dedicated chart value; never claim an extraEnv index an operator's own
+  # values file or --set could collide with.
+  HELM_CMD="$HELM_CMD --set config.allowNonDefaultSigningAlg=true"
+fi
+# True when the operator has already expressed an openshift.enabled preference,
+# in any of the three ways they can reach the chart from here.
+#
+# Matches `openshift.enabled` rather than a bare `openshift`, because
+# EXTRA_ARGS is the catch-all for unrecognized arguments and an OpenShift
+# install carries the string in ordinary values: a Route hostname is
+# `*.openshiftapps.com` on ROSA, and an internal registry mirror is
+# `image-registry.openshift-image-registry.svc`. A bare substring match made
+# the most likely OpenShift command the one that silently skipped the flag.
+operator_set_openshift() {
+  [[ "$EXTRA_ARGS" == *openshift.enabled* ]] && return 0
+  # Values files reach us two ways: the script's own --values, and any values
+  # flag that fell through to EXTRA_ARGS. Only --set beats a values file on
+  # Helm precedence, so overriding one the operator wrote is the case actually
+  # worth guarding.
+  #
+  # Helm accepts six spellings of the values flag and all six render, so all
+  # six have to be recognised here (api#1136). The attached forms
+  # (--values=F, -f=F, -fF) arrive as a SINGLE token, so a lookahead on the
+  # previous token never sees a filename: the guard fell through and appended
+  # --set openshift.enabled=true, beating the explicit `false` the operator
+  # wrote in the file.
+  local candidate prev="" file
+  for candidate in "$EXTRA_VALUES" $EXTRA_ARGS; do
+    file=""
+    case "$candidate" in
+      --values=*) file="${candidate#--values=}" ;;
+      -f=*)       file="${candidate#-f=}" ;;
+      -f?*)       file="${candidate#-f}" ;;
+      *)
+        # Detached forms: `-f FILE`, `--values FILE`, and the script's own
+        # --values, which is already a bare filename.
+        if [[ "$prev" == "-f" || "$prev" == "--values" || "$candidate" == "$EXTRA_VALUES" ]]; then
+          file="$candidate"
+        fi
+        ;;
+    esac
+    prev="$candidate"
+    # --values is a pflag StringSlice, so helm also accepts a comma list under
+    # any of the six spellings and reads every element. Check each one.
+    if [[ -n "$file" ]]; then
+      local part
+      local IFS=,
+      for part in $file; do
+        [[ -n "$part" ]] \
+          && grep -q '^[[:space:]]*openshift:' "$part" 2>/dev/null \
+          && return 0
+      done
+    fi
+  done
+  return 1
+}
+
+if [[ "$IS_OPENSHIFT" == true ]]; then
+  if operator_set_openshift; then
+    info "OpenShift detected; leaving openshift.enabled to your own configuration."
+  else
+    HELM_CMD="$HELM_CMD --set openshift.enabled=true"
+    info "OpenShift detected (security.openshift.io API group present)."
+    info "Setting openshift.enabled=true so the SCC assigns the uid instead of the chart"
+    info "requesting 65532, which restricted-v2 refuses. Container hardening is unchanged."
+  fi
+fi
+
 [[ -n "$VERSION" ]] && HELM_CMD="$HELM_CMD --version $VERSION"
 
 if [[ "$BUNDLED" == "true" ]]; then

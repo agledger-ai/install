@@ -1,6 +1,8 @@
 {
-  "annotations": { "list": [] },
-  "description": "Event-handler silent-drop surveillance. Each panel here surfaces a fire-and-forget path that swallows errors at runtime — a non-zero rate means data is being dropped on the floor without raising. Investigate any color change.",
+  "annotations": {
+    "list": []
+  },
+  "description": "Event-handler silent-drop surveillance. Each panel surfaces a fire-and-forget path that swallows errors at runtime, so a non-zero rate means data is being dropped without raising. Rows group the drops by what is lost: a queued job, an audit-trail entry, a federated projection, a SIEM record, or a config reload.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -9,139 +11,269 @@
   "liveNow": false,
   "panels": [
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "At-a-glance summary across every silent-drop counter on this dashboard. If this is non-zero, something on the chain is being dropped silently right now.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "At-a-glance summary across every silent-drop counter on this dashboard, which is now every drop-class counter the engine registers except the ones that fail loudly elsewhere (webhook and federation DLQs, pool and rate-limit degradation). Non-zero means something is being dropped on the floor right now. Every term carries `or vector(0)` because most of these counters are labelled, a labelled counter has no series until its first increment, and sum() over no series is an empty vector: without the guard one never-incremented counter made the whole sum empty and this tile read \"No data\" while the others climbed. `src/test/dashboard-metric-coverage.test.ts` fails the build if a new drop counter is added without a panel here or a documented reason it does not belong, and if any term in a multi-counter sum loses its guard.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 1 },
-              { "color": "red", "value": 10 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
             ]
           },
           "unit": "short"
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 1,
       "options": {
         "colorMode": "background",
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "value_and_name"
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(increase(agledger_cascade_cancel_enqueue_failures_total[24h])) + sum(increase(agledger_webhook_enqueue_failures_total[24h])) + sum(increase(agledger_cascading_gate_enqueue_failures_total[24h])) + sum(increase(agledger_phase2_enqueue_failures_total[24h])) + sum(increase(agledger_reputation_update_failures_total[24h])) + sum(increase(agledger_siem_mapper_failures_total[24h])) + sum(increase(agledger_auth_audit_persist_failures_total[24h])) + sum(increase(agledger_federation_outbound_enqueue_failed_total[24h])) + sum(increase(agledger_siem_http_batches_dropped_total[24h])) + sum(increase(agledger_siem_file_lines_dropped_total[24h]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum(increase(agledger_api_key_last_used_update_failures_total[24h])) or vector(0)) + (sum(increase(agledger_auth_audit_persist_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cache_invalidation_drops_total[24h])) or vector(0)) + (sum(increase(agledger_cascade_cancel_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cascade_rollup_retry_exhausted_total[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_persist_event_failures_total[24h])) or vector(0)) + (sum(increase(agledger_federation_audit_vault_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_forensic_audit_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_enqueue_failed_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_event_persist_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_publish_failures_total[24h])) or vector(0)) + (sum(increase(agledger_federation_record_state_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_gate_dlq_advisory_pass_lost_total[24h])) or vector(0)) + (sum(increase(agledger_inline_phase2_failures_total[24h])) or vector(0)) + (sum(increase(agledger_llms_txt_customization_load_failures_total[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_persist_event_failures_total[24h])) or vector(0)) + (sum(increase(agledger_post_commit_callback_failures_total[24h])) or vector(0)) + (sum(increase(agledger_provisioning_reload_failures_total[24h])) or vector(0)) + (sum(increase(agledger_reputation_update_failures_total[24h])) or vector(0)) + (sum(increase(agledger_schema_warmcache_refresh_failures_total[24h])) or vector(0)) + (sum(increase(agledger_siem_file_lines_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_siem_http_batches_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_siem_mapper_failures_total[24h])) or vector(0)) + (sum(increase(agledger_siem_poll_failures_total[24h])) or vector(0)) + (sum(increase(agledger_support_bundle_audit_failures_total[24h])) or vector(0)) + (sum(increase(agledger_webhook_enqueue_failures_total[24h])) or vector(0))",
           "legendFormat": "drops in last 24h",
           "refId": "A"
         }
       ],
-      "title": "Silent drops — total events dropped in last 24h",
+      "title": "Silent drops \u2014 total events dropped in last 24h",
       "type": "stat"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Cascade-cancel enqueue failures — when a parent record terminalizes, children are supposed to fan out and cancel. A failure here orphans a child that may keep executing. Highest operational stakes on this dashboard.",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "id": 100,
+      "panels": [],
+      "title": "Queue + inline execution drops",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Cascade-cancel enqueue failures \u2014 when a parent record terminalizes, children are supposed to fan out and cancel. A failure here orphans a child that may keep executing. Highest operational stakes on this dashboard.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.001 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
             ]
           },
           "unit": "ops"
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
-      "id": 2,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "id": 101,
       "options": {
-        "legend": { "calcs": ["max", "mean"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (scope) (rate(agledger_cascade_cancel_enqueue_failures_total[5m]))",
           "legendFormat": "{{scope}}",
           "refId": "A"
         }
       ],
-      "title": "Cascade-cancel enqueue failures (drops/sec) — agledger_cascade_cancel_enqueue_failures_total",
+      "title": "Cascade-cancel enqueue failures (drops/sec) \u2014 agledger_cascade_cancel_enqueue_failures_total",
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Webhook dispatch-time enqueue failures. Distinct from `agledger_webhooks_failed_total` which is the *delivery* failure counter — this is the one-step-earlier failure where the webhook never made it onto the queue at all. Customer never sees it; we never retry it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Webhook dispatch-time enqueue failures. Distinct from `agledger_webhooks_failed_total` which is the *delivery* failure counter \u2014 this is the one-step-earlier failure where the webhook never made it onto the queue at all. Customer never sees it; we never retry it.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.001 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
             ]
           },
           "unit": "ops"
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
-      "id": 3,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "id": 102,
       "options": {
-        "legend": { "calcs": ["max", "mean"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (stage) (rate(agledger_webhook_enqueue_failures_total[5m]))",
           "legendFormat": "{{stage}}",
           "refId": "A"
         }
       ],
-      "title": "Webhook enqueue failures (drops/sec) — agledger_webhook_enqueue_failures_total",
+      "title": "Webhook enqueue failures (drops/sec) \u2014 agledger_webhook_enqueue_failures_total",
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Cascading-verification enqueue failures. The recovery sweep is the safety net for stuck records, but this counter measures dispatch-time drops — the rate at which we lean on the sweep to catch up.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Cascading-verification enqueue failures. The recovery sweep is the safety net for stuck records, but this counter measures dispatch-time drops \u2014 the rate at which we lean on the sweep to catch up.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.001 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.001
+              }
             ]
           },
           "unit": "ops"
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 12 },
-      "id": 4,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "id": 103,
       "options": {
-        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(agledger_cascading_gate_enqueue_failures_total[5m])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_cascading_gate_enqueue_failures_total[5m]))",
           "legendFormat": "drops/sec",
           "refId": "A"
         }
@@ -150,32 +282,61 @@
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Phase-2 gate enqueue failures. Same sweep-safety-net pattern as cascading-gate — non-zero rate means we're papering over a queue or DB issue with the periodic sweep.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Phase-2 gate enqueue failures. Same sweep-safety-net pattern as cascading-gate \u2014 non-zero rate means we're papering over a queue or DB issue with the periodic sweep.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.001 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.001
+              }
             ]
           },
           "unit": "ops"
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 12 },
-      "id": 5,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "id": 104,
       "options": {
-        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(agledger_phase2_enqueue_failures_total[5m])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_phase2_enqueue_failures_total[5m]))",
           "legendFormat": "drops/sec",
           "refId": "A"
         }
@@ -184,31 +345,455 @@
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Reputation cache update failures. Intentionally swallowed at the call site (reputation is eventual-consistency convenience, not chain data) — this counter measures the eventual-consistency drift rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Federation outbound enqueue failures. State-transitions or signals that didn't make it onto the federation outbound queue. The peer never sees them; the chain on the peer's side stays out of sync.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.01 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
             ]
           },
           "unit": "ops"
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 12 },
-      "id": 6,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 21
+      },
+      "id": 105,
       "options": {
-        "legend": { "calcs": ["max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "none" }
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_federation_outbound_enqueue_failed_total[5m]))",
+          "legendFormat": "drops/sec",
+          "refId": "A"
+        }
+      ],
+      "title": "Federation outbound enqueue failures",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Bus-handler enqueue failures in the federation outbound publisher. The record transitioned locally and no outbound job exists, so the peer never learns of it.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 21
+      },
+      "id": 106,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_federation_outbound_publish_failures_total[5m]))",
+          "legendFormat": "agledger_federation_outbound_publish_failures_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Federation outbound publish enqueue failures (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Inline Phase 2 gate evaluation threw inside submitCompletion. pg-boss and the recovery sweep are the safety nets, so this measures how often the fast path is falling back rather than data loss on its own.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "id": 107,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_inline_phase2_failures_total[5m]))",
+          "legendFormat": "agledger_inline_phase2_failures_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Inline Phase-2 gate failures (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "A cascade-rollup job gave up after every pg-boss retry. If the failing job was the last child's, the parent is stranded ACTIVE with every child terminal and nothing rolls it up; if other children were still outstanding, a later one rolls the parent up normally and only this attempt was lost. The auto-rollup consistency sweep (agledger_auto_rollup_stuck_parents_total, data-integrity dashboard) is what distinguishes the two. That sweep runs every five minutes and only counts a parent idle for five, so expect it five to ten minutes later. This counter names the cause at the moment it happens.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 29
+      },
+      "id": 131,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_cascade_rollup_retry_exhausted_total[5m]))",
+          "legendFormat": "agledger_cascade_rollup_retry_exhausted_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Cascade-rollup retries exhausted (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "A principal-mode advisory gate pass crashed through every retry. Nothing terminalizes wrongly (the record correctly keeps awaiting its principal verdict), but the advisory annotation the customer expected on it is gone for good. A sustained rate means the engine is systematically failing on one contract type.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 37
+      },
+      "id": 132,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_gate_dlq_advisory_pass_lost_total[5m]))",
+          "legendFormat": "agledger_gate_dlq_advisory_pass_lost_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Advisory gate passes lost (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "id": 108,
+      "panels": [],
+      "title": "Audit-trail drops (the chain and /v1/events)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Auth-audit persistence failures. Login/logout/key-use audit rows that didn't make it into system_audit_log. SIEM polls that table \u2014 drops here are gaps in the customer's compliance feed.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 46
+      },
+      "id": 109,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (event) (rate(agledger_auth_audit_persist_failures_total[5m]))",
+          "legendFormat": "{{event}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Auth-audit persistence failures \u2014 agledger_auth_audit_persist_failures_total",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Reputation cache update failures. Intentionally swallowed at the call site (reputation is eventual-consistency convenience, not chain data) \u2014 this counter measures the eventual-consistency drift rate.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.01
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 46
+      },
+      "id": 110,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (event) (rate(agledger_reputation_update_failures_total[5m]))",
           "legendFormat": "{{event}}",
           "refId": "A"
@@ -218,99 +803,598 @@
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Auth-audit persistence failures. Login/logout/key-use audit rows that didn't make it into system_audit_log. SIEM polls that table — drops here are gaps in the customer's compliance feed.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Persist-event failed INSIDE the cascading-gate enqueue-failure recovery handler. The outer counter ticked too: this is the audit trail going missing when both layers fail.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.001 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
             ]
           },
           "unit": "ops"
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 18 },
-      "id": 7,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 54
+      },
+      "id": 111,
       "options": {
-        "legend": { "calcs": ["max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "none" }
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (event) (rate(agledger_auth_audit_persist_failures_total[5m]))",
-          "legendFormat": "{{event}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (reason) (rate(agledger_cascading_gate_persist_event_failures_total[5m]))",
+          "legendFormat": "{{reason}}",
           "refId": "A"
         }
       ],
-      "title": "Auth-audit persistence failures — agledger_auth_audit_persist_failures_total",
+      "title": "Cascading-gate recovery persist-event failures (drops/sec)",
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Federation outbound enqueue failures. State-transitions or signals that didn't make it onto the federation outbound queue. The peer never sees them; the chain on the peer's side stays out of sync.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Same shape as the cascading-gate pair: persist-event failed inside the Phase 2 enqueue-failure recovery handler, so the failure itself left no /v1/events row.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.001 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
             ]
           },
           "unit": "ops"
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 18 },
-      "id": 8,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 54
+      },
+      "id": 112,
       "options": {
-        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(agledger_federation_outbound_enqueue_failed_total[5m])",
-          "legendFormat": "drops/sec",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (reason) (rate(agledger_phase2_enqueue_persist_event_failures_total[5m]))",
+          "legendFormat": "{{reason}}",
           "refId": "A"
         }
       ],
-      "title": "Federation outbound enqueue failures",
+      "title": "Phase-2 recovery persist-event failures (drops/sec)",
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "SIEM OCSF mapper failures by event_type. When a mapper throws, the event never reaches the file or HTTP sender — it's dropped before the SIEM sees it. Non-zero by event_type tells you which mapping is broken.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "A withTransaction post-commit callback threw AFTER the commit succeeded. Usually a lost bus emit or webhook fan-out: the state change is durable and the notification of it is gone.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.001 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
             ]
           },
           "unit": "ops"
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 24 },
-      "id": 9,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 62
+      },
+      "id": 113,
       "options": {
-        "legend": { "calcs": ["max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "none" }
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_post_commit_callback_failures_total[5m]))",
+          "legendFormat": "agledger_post_commit_callback_failures_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Post-commit callback failures (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Support-bundle vault audit-log writes dropped. The bundle was produced and the record that it was produced is missing.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 62
+      },
+      "id": 114,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_support_bundle_audit_failures_total[5m]))",
+          "legendFormat": "agledger_support_bundle_audit_failures_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Support-bundle audit writes dropped (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 70
+      },
+      "id": 115,
+      "panels": [],
+      "title": "Federation drops",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Fire-and-forget audit_vault appends from federation outbound that failed and were swallowed: the chain entry never landed. Highest stakes on this dashboard alongside cascade-cancel, because the chain is the product.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 71
+      },
+      "id": 116,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_federation_audit_vault_dropped_total[5m]))",
+          "legendFormat": "agledger_federation_audit_vault_dropped_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Federation audit-vault appends dropped (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Fire-and-forget record_federation_state writes that failed and were swallowed. The Server believes a peer is in a state it was never told about.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 71
+      },
+      "id": 117,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_federation_record_state_dropped_total[5m]))",
+          "legendFormat": "agledger_federation_record_state_dropped_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Federation record-state writes dropped (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Forensic/schema audit writes on the federation REJECT path that were swallowed, so a rejected peer attempt or digest mismatch left no forensic trail. The rejection was correct and unprovable.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 79
+      },
+      "id": 118,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_federation_forensic_audit_dropped_total[5m]))",
+          "legendFormat": "agledger_federation_forensic_audit_dropped_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Federation forensic-audit writes dropped (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Sender-side persistEvent calls in the outbound publisher that failed and were swallowed: /v1/events is missing federation.* rows this Server did emit.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 79
+      },
+      "id": 119,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_federation_outbound_event_persist_dropped_total[5m]))",
+          "legendFormat": "agledger_federation_outbound_event_persist_dropped_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Federation outbound persist-event dropped (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 87
+      },
+      "id": 120,
+      "panels": [],
+      "title": "SIEM export drops",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "SIEM OCSF mapper failures by event_type. When a mapper throws, the event never reaches the file or HTTP sender \u2014 it's dropped before the SIEM sees it. Non-zero by event_type tells you which mapping is broken.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 88
+      },
+      "id": 121,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (event_type) (rate(agledger_siem_mapper_failures_total[5m]))",
           "legendFormat": "{{event_type}}",
           "refId": "A"
@@ -320,32 +1404,61 @@
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "SIEM HTTP batches dropped after delivery failure. The send retried, exhausted, and the batch is gone — customer's HTTP-mode SIEM is missing those events.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "SIEM HTTP batches dropped after delivery failure. The send retried, exhausted, and the batch is gone \u2014 customer's HTTP-mode SIEM is missing those events.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.001 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
             ]
           },
           "unit": "ops"
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 24 },
-      "id": 10,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 88
+      },
+      "id": 122,
       "options": {
-        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(agledger_siem_http_batches_dropped_total[5m])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_siem_http_batches_dropped_total[5m]))",
           "legendFormat": "drops/sec",
           "refId": "A"
         }
@@ -354,48 +1467,483 @@
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "SIEM file lines dropped after write failure. File-mode SIEM is missing those lines — file-tailing collectors won't pick them up.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "SIEM file lines dropped after write failure. File-mode SIEM is missing those lines \u2014 file-tailing collectors won't pick them up.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.001 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
             ]
           },
           "unit": "ops"
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 24 },
-      "id": 11,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 96
+      },
+      "id": 123,
       "options": {
-        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(agledger_siem_file_lines_dropped_total[5m])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_siem_file_lines_dropped_total[5m]))",
           "legendFormat": "drops/sec",
           "refId": "A"
         }
       ],
       "title": "SIEM file lines dropped",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "A system_audit_log poll cycle threw (query or cursor-persist). The poller retries from the unadvanced cursor, so this is recoverable, but a sustained rate means the SIEM feed is stalled.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 96
+      },
+      "id": 124,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_siem_poll_failures_total[5m]))",
+          "legendFormat": "agledger_siem_poll_failures_total",
+          "refId": "A"
+        }
+      ],
+      "title": "SIEM poll-cycle failures (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 104
+      },
+      "id": 125,
+      "panels": [],
+      "title": "Config + cache drops",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "A cross-replica cache-invalidation event was dropped. Replicas serve stale schemas until the next TTL expiry.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 105
+      },
+      "id": 126,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_cache_invalidation_drops_total[5m]))",
+          "legendFormat": "agledger_cache_invalidation_drops_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Cache-invalidation events dropped (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Async warmCache re-warm failed off a cross-replica schema invalidation. Degrades to the name-resolved entry rather than losing data, but a publisher-scoped hint is gone until the next refresh.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 105
+      },
+      "id": 127,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (reason) (rate(agledger_schema_warmcache_refresh_failures_total[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Schema warm-cache refresh failures (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Provisioning hot-reload failed. The running config no longer matches the YAML the operator edited, and nothing else says so.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 113
+      },
+      "id": 128,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_provisioning_reload_failures_total[5m]))",
+          "legendFormat": "agledger_provisioning_reload_failures_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Provisioning hot-reload failures (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "An llms.txt override/prepend/append file failed to load, and the built-in template was served instead. Catches a typo in AGLEDGER_LLMS_TXT_*_PATH that is otherwise invisible: the endpoint keeps returning 200.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 113
+      },
+      "id": 129,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (reason) (rate(agledger_llms_txt_customization_load_failures_total[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "llms.txt customization load failures (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Debounced api_keys.last_used_at UPDATE failures. Key rotation reviews read last_used_at to decide what is dormant, so a sustained rate makes an active key look unused.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 121
+      },
+      "id": 130,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_api_key_last_used_update_failures_total[5m]))",
+          "legendFormat": "agledger_api_key_last_used_update_failures_total",
+          "refId": "A"
+        }
+      ],
+      "title": "api_keys.last_used_at update failures (drops/sec)",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["agledger", "event-handlers", "silent-drops"],
-  "templating": { "list": [] },
-  "time": { "from": "now-6h", "to": "now" },
+  "tags": [
+    "agledger",
+    "event-handlers",
+    "silent-drops"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "",
-  "title": "AGLedger — Event-handler silent drops",
+  "title": "AGLedger \u2014 Event-handler silent drops",
   "uid": "agledger-event-handlers",
   "version": 1,
   "weekStart": ""

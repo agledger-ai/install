@@ -129,6 +129,33 @@ the entry script in a container command/args array. Empty when
 {{- end -}}
 
 {{/*
+Extra environment entries (use inside container.env).
+
+Rendered entry by entry rather than with a bare `toYaml` over the whole list.
+Helm's `--set extraEnv[0].value=500` yields an int64 and `...=true` a bool, but a
+Kubernetes EnvVar `value` must be a string, so a whole-list `toYaml` passes the
+native type through and the apiserver rejects the apply with "expected string,
+got &value.valueUnstructured" (api#1018). Quoting here means `--set` works
+without `--set-string`.
+
+`value` and `valueFrom` are branched, never both emitted: an empty `value`
+alongside a `valueFrom` is rejected as "may not have more than one field
+specified". EnvVar carries exactly name/value/valueFrom, so this covers the type.
+*/}}
+{{- define "agledger.extraEnv" -}}
+{{- range .Values.extraEnv }}
+- name: {{ .name | quote }}
+  {{- if hasKey . "value" }}
+  value: {{ .value | quote }}
+  {{- end }}
+  {{- with .valueFrom }}
+  valueFrom:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 Provisioning ConfigMap name (chart-generated).
 */}}
 {{- define "agledger.provisioningConfigMapName" -}}

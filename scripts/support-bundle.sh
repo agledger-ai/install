@@ -107,14 +107,18 @@ collect "disk (df -h)" "system-disk.txt" \
 
 # --- Health endpoints ---
 
+# The API's published host port is configurable (AGLEDGER_HOST_PORT), so read
+# what this install actually serves rather than assuming the stock 3001.
+API_HOST_PORT="$(resolve_host_port AGLEDGER_HOST_PORT 3001)"
+
 collect "GET /health" "health.json" \
-  curl -sf --max-time 5 http://localhost:3001/health
+  curl -sf --max-time 5 "http://localhost:${API_HOST_PORT}/health"
 
 collect "GET /v1/conformance" "conformance.json" \
-  curl -sf --max-time 5 http://localhost:3001/v1/conformance
+  curl -sf --max-time 5 "http://localhost:${API_HOST_PORT}/v1/conformance"
 
 collect "GET /status" "status.json" \
-  curl -sf --max-time 5 http://localhost:3001/status
+  curl -sf --max-time 5 "http://localhost:${API_HOST_PORT}/status"
 
 # --- AGLedger version ---
 

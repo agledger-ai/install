@@ -2,10 +2,36 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Services are discovered by DNS rather than listed as static targets. Compose's
+# embedded DNS returns one A record per replica, so `--scale` produces one
+# Prometheus target per container with a distinct `instance` label. A static
+# target on the service name collapses them into a single series identity that
+# round-robins between processes, which makes counters appear to decrease and
+# breaks every rate()/increase() the shipped dashboards are built on (#1065).
+#
+# Only agledger-worker can scale today: agledger-api still publishes a fixed host
+# port, so `--scale agledger-api=2` fails on a port collision. It is discovered
+# the same way anyway, so dropping that mapping is the only change scaling the
+# API would need.
+#
+# One behavior difference from static_configs: when a service is stopped its
+# targets disappear rather than reporting `up == 0`. Alert on `absent(up{job=...})`
+# alongside `up == 0` if you add rules; no shipped dashboard uses `up` today.
+# Alerting rules ship alongside the dashboards (#1186). A silent-drop class is
+# defined by nobody looking, so a dashboard alone is the wrong delivery
+# mechanism for it. Routing stays a customer decision: no Alertmanager is
+# bundled, so these evaluate and surface on Prometheus' own /alerts page until
+# an `alerting:` block points them somewhere.
+rule_files:
+  - /etc/prometheus/alerts/*.rules.yml
+
 scrape_configs:
   - job_name: agledger-api
-    static_configs:
-      - targets: ['agledger-api:3000']
+    dns_sd_configs:
+      - names: ['agledger-api']
+        type: A
+        port: 3000
+        refresh_interval: 30s
     metrics_path: /metrics
     scrape_interval: 10s
 
@@ -14,8 +40,11 @@ scrape_configs:
   # and siem_mapper counters fire in this process; without scraping it,
   # operators see HELP/TYPE only on the API-side scrape (F-518).
   - job_name: agledger-worker
-    static_configs:
-      - targets: ['agledger-worker:3001']
+    dns_sd_configs:
+      - names: ['agledger-worker']
+        type: A
+        port: 3001
+        refresh_interval: 30s
     metrics_path: /metrics
     scrape_interval: 10s
 

@@ -1,0 +1,37 @@
+##############################################################################
+# OpenSSL configuration that activates the FIPS provider shipped in the
+# AGLedger runtime image, at /usr/lib64/ossl-modules/fips.so.
+#
+# Used by docker-compose.fips.yml, which mounts this file and points
+# OPENSSL_CONF at it. No FIPS kernel and no `openssl fipsinstall` step are
+# required: the provider activates from this config alone. Verify inside a
+# running container with
+#
+#   docker compose exec agledger-api /nodejs/bin/node -e "console.log(require('crypto').getFips())"
+#
+# which prints 1 when the provider is active.
+#
+# With it active, Ed25519 is unavailable (this provider carries no EdDSA), so
+# the Server must be configured for ES256. See the FIPS section of README.md.
+##############################################################################
+
+config_diagnostics = 1
+openssl_conf = openssl_init
+
+[openssl_init]
+providers = provider_sect
+alg_section = algorithm_sect
+
+[provider_sect]
+fips = fips_sect
+base = base_sect
+
+[base_sect]
+activate = 1
+
+[fips_sect]
+module = /usr/lib64/ossl-modules/fips.so
+activate = 1
+
+[algorithm_sect]
+default_properties = fips=yes
