@@ -1,0 +1,175 @@
+{
+  "manifest": {
+    "type": "work-context-v1",
+    "displayName": "Agent Work Context (checkpoint)",
+    "description": "Notarize-only contract for durable Agent Work Context. A registered agent is a persistent seat; the processes that occupy it are ephemeral. Each record of this type is an immutable, signed checkpoint of the state of a piece of work, so a fresh process holding the seat's key resumes without the prior conversation. Pattern: ONE root record represents the work; every checkpoint is a CHILD of that root via parentRecordId (checkpoints are siblings, never children of each other). FIND THE CURRENT STATE with one call: GET /v1/records/search?parentRecordId=<rootId>&type=work-context-v1 returns the checkpoints newest first; the head is the newest one, and its supersedesRecordId chain lets you confirm lineage. The first checkpoint uses checkpointReason 'initial'; every later checkpoint must set supersedesRecordId to the id of the head it replaces. Resume by reading the head's resumeInstructions and pendingWork (first entry = next action), then write your own checkpoint under the same root superseding the head. Large artifacts belong in references entries (system/refType/refId, digest in attributes), not inline; criteria is capped at 10KB, so keep completedWork summarized rather than unbounded.",
+    "category": "general",
+    "recordSchema": {
+      "type": "object",
+      "required": [
+        "objective",
+        "summary",
+        "checkpointReason"
+      ],
+      "properties": {
+        "objective": {
+          "type": "string",
+          "description": "What this work is trying to achieve, stated durably: it should read correctly at every checkpoint from first to last."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Current state of the work in plain language. This is the first thing a cold-start agent reads; write it for a reader with zero prior conversation."
+        },
+        "acceptanceCriteria": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "What good looks like: the conditions under which this work is done. If the work is gated, these should mirror the criteria on the gated record that will render the verdict."
+        },
+        "completedWork": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Work finished as of this checkpoint, kept to the RECENT working set. Do not carry the full history forward: superseded checkpoints remain on-chain, so the supersedes chain is the archive. Summarize older progress in `summary`. When an entry refers to a record this work created, include that record's id so the claim is checkable."
+        },
+        "pendingWork": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Work remaining, ordered. The first entry is what the resuming agent should do next."
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "decision"
+            ],
+            "properties": {
+              "decision": {
+                "type": "string"
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "decidedBy": {
+                "type": "string",
+                "description": "Who rendered the decision: a human principal, a system of record, or an agent id."
+              }
+            },
+            "additionalProperties": true
+          },
+          "description": "Decisions made so far, with rationale. A resuming agent honors these; reopening one is itself a decision worth recording."
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "What the work currently assumes true but has not confirmed. A resuming agent treats these as unverified."
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Boundaries the work must respect (budget, scope, policy, technical). Durable across checkpoints unless a recorded decision changes them."
+        },
+        "openQuestions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Unresolved questions blocking or shaping the work, including who can answer each if known."
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "description"
+            ],
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "uri": {
+                "type": "string",
+                "description": "Where the evidence lives, if externally addressable."
+              }
+            },
+            "additionalProperties": true
+          },
+          "description": "Evidence gathered so far that supports the work's conclusions. Point at sources; do not inline large content."
+        },
+        "checkpointReason": {
+          "type": "string",
+          "enum": [
+            "initial",
+            "context-limit",
+            "pause",
+            "awaiting-approval",
+            "awaiting-dependency",
+            "shutdown",
+            "handoff",
+            "milestone",
+            "final"
+          ],
+          "description": "Why this checkpoint was written. `initial` is the first checkpoint under a root and the only one allowed to omit supersedesRecordId; every later checkpoint MUST name the checkpoint it supersedes. `handoff` signals a different process is expected to resume; `final` marks the work complete (pendingWork must be empty)."
+        },
+        "resumeInstructions": {
+          "type": "string",
+          "description": "Direct instructions to whoever resumes: what to do first, what to read, what not to redo. The single highest-value field for a cold start; write it every checkpoint."
+        },
+        "supersedesRecordId": {
+          "type": "string",
+          "description": "Record id of the checkpoint this one supersedes (usually the previous newest child under the same root). The newest child of this type under the root is always the authoritative head; this field makes lineage explicit for offline verification."
+        }
+      },
+      "additionalProperties": true,
+      "if": {
+        "properties": {
+          "checkpointReason": {
+            "const": "initial"
+          }
+        },
+        "required": [
+          "checkpointReason"
+        ]
+      },
+      "else": {
+        "required": [
+          "supersedesRecordId"
+        ]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "checkpointReason": {
+                "const": "final"
+              }
+            },
+            "required": [
+              "checkpointReason"
+            ]
+          },
+          "then": {
+            "properties": {
+              "pendingWork": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "completionSchema": {},
+    "manifestVersion": "1.0",
+    "publisher": "agledger-recipes",
+    "version": "1.0"
+  }
+}
