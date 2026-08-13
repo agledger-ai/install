@@ -1,7 +1,7 @@
 # Agent Work Context: AGLedger horizontal recipe
 
 Durable work state for AI agents, checkpointed as immutable signed records, so
-a fresh process with no prior conversation resumes or takes handoff of
+a fresh session with no prior conversation resumes or takes handoff of
 in-progress work. One contract type and a small convention set. Unlike the
 vertical recipes in this directory, this one is domain-neutral: it scaffolds
 HOW agents carry work state, not WHAT the work is.
@@ -19,22 +19,22 @@ HOW agents carry work state, not WHAT the work is.
 
 ## The identity model (read this first)
 
-A registered AGLedger agent is a persistent **seat**. The processes that
-occupy it (different models, harnesses, runs) are ephemeral **occupants**; the
-server sees only the key they connect with, and the key's owner binding names
-the seat. "A fresh agent resumes the work" means a new occupant of the SAME
-seat:
+A registered AGLedger agent is a durable identity. The **sessions** that do
+its work (different models, harnesses, runs) are ephemeral; the server sees
+only the key a session connects with, and the key's owner binding names the
+agent. "A fresh agent resumes the work" means a new session of the SAME
+agent:
 
-- **Resume**: the new occupant presents the seat's existing key.
+- **Resume**: the new session presents the agent's existing key.
 - **Handoff with visible succession**: mint an additional key bound to the
-  same seat for the successor process (`POST /v1/admin/api-keys`,
+  same agent for the successor session (`POST /v1/admin/api-keys`,
   admin-mediated). The vault's signed attribution is two-level,
-  `actorOwnerId` (seat) and `actorId` (key), both inside the signature, so
+  `actorOwnerId` (agent) and `actorId` (key), both inside the signature, so
   succession is tamper-evident and each successor is independently revocable.
 - Plain key reuse also works but leaves succession unrecorded in the chain.
-- **Seat isolation is structural**: a key bound to a different agent seat can
+- **Agent isolation is structural**: a key bound to a different agent can
   neither read nor continue the work (structural-role refusals, caller-scoped
-  lists, self-assignment-only delegation). The boundary is the seat's keys,
+  lists, self-assignment-only delegation). The boundary is the agent's keys,
   and key minting is admin-mediated, so the org admin is inside that boundary.
 
 ## Shape
@@ -79,10 +79,10 @@ The server notarizes what it is told; `supersedesRecordId` is signed content,
 not checked semantics. All of the following land as ordinary 201s that verify
 clean offline:
 
-- **A fork**: two occupants resume the same seat concurrently, both read the
-  same head, both write successors superseding it. Both land. The head query
-  silently returns whichever got the later server timestamp; the other branch
-  is invisible unless you look for it.
+- **A fork**: two sessions of the same agent resume concurrently, both read
+  the same head, both write successors superseding it. Both land. The head
+  query silently returns whichever got the later server timestamp; the other
+  branch is invisible unless you look for it.
 - A `supersedesRecordId` naming a **nonexistent record**, or a checkpoint
   under a **different root**.
 - A **second `initial`** under one root.
@@ -91,16 +91,16 @@ clean offline:
 provide: given a root id it fetches every checkpoint (cursor pagination) and
 proves exactly one initial, every supersedes resolves under the root, no
 record superseded twice, a single chain covering all checkpoints, and
-terminus == head-query answer. Run it at every resume if concurrent occupancy
-is possible in your deployment.
+terminus == head-query answer. Run it at every resume if two sessions of the
+same agent can run concurrently in your deployment.
 
-A detected fork is not tamper: every branch is genuinely signed by the seat.
+A detected fork is not tamper: every branch is genuinely signed by the agent.
 Recover by writing a new checkpoint that supersedes the branch you keep and
 records the merge; never try to un-write the other branch.
 
 Concurrency detail worth knowing: the head query orders by **server**
 `createdAt`. Under same-millisecond concurrent writes this can invert the
-order the ids were minted in (UUIDv7 timestamps), so two racing occupants can
+order the ids were minted in (UUIDv7 timestamps), so two racing sessions can
 each believe they wrote the newest checkpoint. The lineage check is what
 turns that race from silent divergence into a visible fork.
 
@@ -144,7 +144,7 @@ bare `type` ambiguous (422 on every record create until callers pin
 ## What cold-start runs taught us
 
 The conventions above were shaped by running fresh model contexts (no prior
-conversation, one generic HTTP tool, a brief of base URL + seat key + root id
+conversation, one generic HTTP tool, a brief of base URL + agent key + root id
 + type name) against a live server:
 
 - **The schema guard held in every failed run.** No model produced a fork or
@@ -162,8 +162,8 @@ conversation, one generic HTTP tool, a brief of base URL + seat key + root id
 ## A2A
 
 The server speaks A2A 0.3 and 1.0 on `/a2a` (dialect via the `A2A-Version`
-header), and an A2A-native process can hold a seat's key. Probed live against
-this recipe on both dialects:
+header), and an A2A-native session can hold an agent's key. Probed live
+against this recipe on both dialects:
 
 - **On current releases the spine is REST-only.** The A2A `create_record`
   action does not carry `parentRecordId`, and no A2A action answers the head
@@ -172,9 +172,10 @@ this recipe on both dialects:
   `supersedesRecordId` sent via A2A is refused with the full
   `google.rpc.ErrorInfo` envelope (detail, validationErrors, schemaUrl), so
   the highest-value guard is dialect-independent.
-- **The pattern that works is hybrid**: agents coordinate over A2A; whichever
-  occupant holds the seat writes and reads checkpoints over REST with the
-  seat's key. Put the work-context ROOT id in the A2A task or message
+- **The pattern that works is hybrid**: agents coordinate over A2A; the
+  session currently acting as the work's agent writes and reads checkpoints
+  over REST with that agent's key. Put the work-context ROOT id in the A2A
+  task or message
   metadata so a fleet coordinating over A2A can find the ledger tree, and
   record A2A task ids in checkpoint `references`
   (`{system: "a2a", refType: "task", refId: <taskId>}`) so the A2A side of a
@@ -196,6 +197,6 @@ this recipe on both dialects:
   429 carries `retryAfterSeconds`). Months-long work items with thousands of
   checkpoints remain unexercised.
 - Succession attribution is byte-level verifiable: the actor key id and the
-  seat id ride as CWT claims in the COSE protected header, which the Ed25519
-  signature covers. Two checkpoints from two occupants of one seat differ in
-  key id and agree on seat id.
+  agent id ride as CWT claims in the COSE protected header, which the Ed25519
+  signature covers. Two checkpoints from two sessions of one agent differ in
+  key id and agree on agent id.
