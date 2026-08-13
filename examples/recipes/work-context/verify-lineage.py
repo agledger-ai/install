@@ -5,13 +5,13 @@ Lineage-coherence checker for the Agent Work Context recipe.
 The server notarizes checkpoints; it does NOT judge their lineage claims
 (notarize-only by design). supersedesRecordId is signed content, so all of the
 following land as 201s and verify clean offline: two checkpoints superseding
-the same head (a fork, e.g. two occupants resuming concurrently), a
+the same head (a fork, e.g. two sessions resuming concurrently), a
 supersedesRecordId naming a nonexistent record, one naming a checkpoint under
 a DIFFERENT root, and a second `initial` under one root. This tool is the
 client-side check the recipe's schema guards cannot provide.
 
 Usage:  verify-lineage.py <rootRecordId>
-  Env: AGLEDGER_API_URL, AGLEDGER_API_KEY (seat key; read access to the tree).
+  Env: AGLEDGER_API_URL, AGLEDGER_API_KEY (agent key; read access to the tree).
 
 Fetches every work-context-v1 child of the root (cursor pagination) and checks:
   1. exactly one `initial` checkpoint;
@@ -24,7 +24,7 @@ Fetches every work-context-v1 child of the root (cursor pagination) and checks:
   6. a `final` checkpoint, if present, is the terminus.
 
 Exit 0 iff all checks pass. A fork is not tamper: every branch is genuinely
-signed. It is two occupants that raced; the fix is a new checkpoint that
+signed. It is two sessions that raced; the fix is a new checkpoint that
 supersedes the branch you are keeping (record the merge, don't rewrite).
 """
 import json, os, sys, urllib.parse, urllib.request
