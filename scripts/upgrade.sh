@@ -5,8 +5,8 @@ set -euo pipefail
 # AGLedger — Upgrade Script
 # =============================================================================
 # Usage:
-#   ./deploy/scripts/upgrade.sh 1.3.0
-#   ./deploy/scripts/upgrade.sh 1.3.0 --skip-backup
+#   ./scripts/upgrade.sh 1.3.0
+#   ./scripts/upgrade.sh 1.3.0 --skip-backup
 # =============================================================================
 
 # --- Shared Helpers ---
@@ -59,6 +59,11 @@ while [[ $# -gt 0 ]]; do
       echo "Options:"
       echo "  --skip-backup        Skip pre-upgrade backup (not recommended)"
       echo "  --skip-verify        Skip image signature verification (dev/local ONLY)"
+      echo ""
+      echo "Environment:"
+      echo "  AGLEDGER_REQUIRE_VERIFY=true   Refuse to upgrade when the image cannot be verified."
+      echo "                       Without it an upgrade proceeds unverified (with a warning) on a"
+      echo "                       host that has no cosign."
       echo "  -h, --help           Show this help message"
       exit 0
       ;;
@@ -99,7 +104,7 @@ source "$ENV_FILE"
 # which is the TARGET; reported as the current version it made the equality
 # check below true, and the upgrade exited "Nothing to do" without upgrading
 # anything. It also never returns empty, so the docker probe underneath it was
-# unreachable (#1170).
+# unreachable.
 #
 # What is running is either written down (.env, set by install.sh and by this
 # script) or readable off the running container. Nothing else is evidence.
@@ -137,7 +142,7 @@ info "Target version:  ${TARGET_VERSION}"
 # and `+`, so on macOS both the detection and the rewrite below silently match
 # nothing, so the line would survive an upgrade that reported success.
 #
-# The Server ignores the variable rather than rejecting it: src/config.ts reads
+# The Server ignores the variable rather than rejecting it: the config loader reads
 # AGLEDGER_LICENSE / AGLEDGER_LICENSE_KEY / AGLEDGER_LICENSE_KEY_FILE and
 # nothing else. Commenting it out keeps .env honest about what is actually
 # live; it is tidying, not a boot prerequisite.
@@ -166,26 +171,20 @@ detect_db_mode
 
 # --- Configuration State Check ---
 # Surface known-broken-state conditions from v0.19.16 before the customer
-# confirms. Don't auto-flip security-sensitive values. (F-415)
+# confirms. Don't auto-flip security-sensitive values.
 
 step "Checking configuration state"
 
 if ! grep -qE '^COMPOSE_FILE=' "$ENV_FILE" 2>/dev/null; then
   warn "COMPOSE_FILE not persisted in .env — manual 'docker compose' commands will drop overlays."
-  warn "Auto-adding based on current deployment (F-410 fix)."
-  OVERLAY_LIST="docker-compose.yml"
-  if [[ "${USES_BUNDLED_PG}" == "true" ]] && [[ -f "${COMPOSE_DIR}/docker-compose.postgres.yml" ]]; then
-    OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.postgres.yml"
-  fi
-  if [[ -f "${COMPOSE_DIR}/docker-compose.prod.yml" ]]; then
-    OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.prod.yml"
-  fi
+  warn "Auto-adding based on current deployment."
+  build_overlay_list
   upsert_env_var COMPOSE_FILE "${OVERLAY_LIST}" "$ENV_FILE"
   info "Added COMPOSE_FILE=${OVERLAY_LIST}"
 fi
 
 # --- Federation Identity ---
-# #1193: the same gap install.sh now closes, reached from the other direction.
+# The same gap install.sh now closes, reached from the other direction.
 # An install stood up before that fix has no AGLEDGER_INSTANCE_ID, so its
 # operator is told the Server's id is the literal "default" and the peer's
 # handshake refuses it. `federation_hub_id_action` will not touch a Server that
@@ -202,7 +201,7 @@ if [[ "$(federation_hub_id_action "$ENV_FILE")" == "generate" ]]; then
 fi
 
 # --- Monitoring Profile ---
-# #1180: an install stood up with --with-monitoring before COMPOSE_PROFILES was
+# An install stood up with --with-monitoring before COMPOSE_PROFILES was
 # persisted has monitoring containers running and nothing in .env that selects
 # them. Every compose command here, including the `up -d` below, would then skip
 # the profile: the containers keep running on the OLD image with the OLD port
@@ -230,7 +229,7 @@ fi
 # an exported environment or a secrets manager rather than the file. Refusing
 # would block a working customer's upgrade over a variable that is in fact set.
 #
-# Warning still buys the whole point of #1163: if the new image does fail to
+# Warning still buys the point: if the new image does fail to
 # boot, the operator already has the variable name in front of them instead of
 # "container is unhealthy". CONFIG_GAPS is re-reported on that failure below.
 CONFIG_GAPS=()
@@ -262,6 +261,114 @@ else
   info "Non-interactive mode detected. Proceeding with upgrade."
 fi
 
+# --- Image Registry ---
+
+if [[ "${AGLEDGER_IMAGE}" != "agledger/agledger" ]]; then
+  step "Authenticating with private registry"
+  ecr_login
+fi
+
+# --- Verify + Pull New Image ---
+# Verify the new image's signature BEFORE anything runs it. The digest it
+# resolves is what the rest of the upgrade runs and, at the end, what .env
+# records.
+
+# Captured, not read from `$?` after a bare call: under `set -e` a non-zero
+# return from a function invoked as its own command exits the script at that
+# line, so the two tailored messages below never printed and an operator whose
+# pull failed for missing registry credentials got only the EXIT trap's generic
+# "Upgrade failed".
+#
+# Exit 2 is a failed pull, not a failed signature.
+VERIFY_STATUS=0
+verify_image "$AGLEDGER_IMAGE" "$TARGET_VERSION" || VERIFY_STATUS=$?
+case $VERIFY_STATUS in
+  0) ;;
+  2) fatal "Could not pull ${AGLEDGER_IMAGE}:${TARGET_VERSION} — see the authentication guidance above. The running install is untouched." ;;
+  *) fatal "Image signature verification failed — aborting upgrade before running an unverified image." ;;
+esac
+# The verified digest for the rest of this upgrade, carried in a variable and
+# handed to each command that has to run the target image, rather than written
+# to .env.
+#
+# .env is the file a plain `docker compose up` reads, and it is also where
+# AGLEDGER_VERSION lives. Writing the new digest there while that version still
+# says the old one describes a stack that does not exist: any restart between
+# the two, a `--force-recreate` or a rebooted host, starts the new image against
+# a database this upgrade has not migrated yet. So the pin and the version move
+# together, at the end, once every step that could still abort has passed.
+#
+# Empty when no digest resolved (verification skipped, or cosign absent). That
+# also neutralises a stale pin left in .env by a prior upgrade: compose reads
+# `${AGLEDGER_IMAGE_PIN:-...}`, an empty value takes the fallback, and a value
+# in the process environment beats the one in .env.
+TARGET_IMAGE_PIN=""
+if [[ -n "${RESOLVED_DIGEST:-}" ]]; then
+  TARGET_IMAGE_PIN="${AGLEDGER_IMAGE}@${RESOLVED_DIGEST}"
+fi
+
+# --- Runtime Role Gate ---
+#
+# Everything past this point talks to the database as the role in DATABASE_URL,
+# and on an external database that role can stop being able to serve without
+# anything in this install changing: a credential-rotation policy that drops
+# and recreates the role brings it back without its `agledger_app` membership,
+# because a GRANT does not survive a DROP ROLE.
+#
+# Nothing downstream says so. pg_dump reports the first table it was refused
+# and prints its whole LOCK TABLE statement; `compose up --wait` reports an
+# unhealthy container. Neither names the role, the grant, or agledger_app, and
+# the preflight run that does is at the end of the script, past both.
+#
+# So it runs here, twice: once before the backup, where the answer is still
+# "nothing has happened yet", and again after migrations, because a migration
+# that adds tables grants them to agledger_app and a role holding a one-time
+# blanket GRANT rather than membership does not receive them.
+#
+# The image is the TARGET version, not the running one: `--only` reaches back
+# only as far as the release that added it, so asking the old image would run
+# every check instead of these two and fail the upgrade on something unrelated.
+# AGLEDGER_VERSION and AGLEDGER_IMAGE_PIN are passed explicitly because .env
+# still names the old version, and may still carry a previous upgrade's digest,
+# until the steps below update it. The pull and signature verification above are
+# what make running those bytes here safe.
+#
+# --no-deps: agledger-api depends on agledger-migrate completing, and the
+# migration is a `run --rm` that leaves no container behind, so without it
+# compose re-runs the whole migration to satisfy the dependency.
+runtime_role_gate() {
+  local when="$1" recovery="$2"
+  # External database only. The bundled path runs one role that owns and serves
+  # everything, which carries every privilege by ownership, so there is nothing
+  # here to catch. It is also the path where this could refuse a good upgrade:
+  # its database is a container, `--no-deps` will not start one, and an operator
+  # upgrading a stopped stack would be told the role cannot connect.
+  if [[ "${USES_BUNDLED_PG}" == "true" ]]; then
+    return 0
+  fi
+  step "Checking runtime role privileges (${when})"
+  if AGLEDGER_VERSION="${TARGET_VERSION}" AGLEDGER_IMAGE_PIN="${TARGET_IMAGE_PIN}" \
+      "${COMPOSE[@]}" run --rm --no-deps \
+      --entrypoint /nodejs/bin/node agledger-api \
+      dist/scripts/preflight.js --only=runtime-role,pgboss; then
+    return 0
+  fi
+  echo ""
+  error "The role in DATABASE_URL is not ready to serve. The report above is the diagnosis: a"
+  error "privilege failure names the role and the exact grant to run; a connection failure names"
+  error "what the connection attempt returned, which no grant will fix."
+  local line
+  while IFS= read -r line; do
+    error "$line"
+  done <<< "$recovery"
+  fatal "Fix what the check reported and re-run."
+}
+
+build_compose_cmd
+runtime_role_gate "before the backup" \
+"Nothing has changed yet: no backup has been taken, no migration has run, and .env still
+names the version you are on, so your install is serving exactly as it was."
+
 # --- Pre-Upgrade Backup ---
 
 step "Pre-upgrade backup"
@@ -283,28 +390,6 @@ fi
 BACKUP_ROOT="${BACKUP_DIR:-${REPO_ROOT}/backup}"
 if [[ -d "$BACKUP_ROOT" ]] && [[ -n "$CURRENT_VERSION" ]]; then
   echo "$CURRENT_VERSION" > "${BACKUP_ROOT}/.pre-upgrade-version"
-fi
-
-# --- Image Registry ---
-
-if [[ "${AGLEDGER_IMAGE}" != "agledger/agledger" ]]; then
-  step "Authenticating with private registry"
-  ecr_login
-fi
-
-# --- Verify + Pull New Image ---
-# Verify the new image's signature BEFORE migrations run against it
-# (cross-repo #667). Pins the upgraded stack to the verified digest.
-
-verify_image "$AGLEDGER_IMAGE" "$TARGET_VERSION" \
-  || fatal "Image signature verification failed — aborting upgrade before running an unverified image."
-if [[ -n "${RESOLVED_DIGEST:-}" ]]; then
-  upsert_env_var AGLEDGER_IMAGE_PIN "${AGLEDGER_IMAGE}@${RESOLVED_DIGEST}" "${COMPOSE_DIR}/.env"
-  info "Pinned upgrade to verified digest: ${RESOLVED_DIGEST}"
-else
-  # No digest resolved (verification skipped / cosign absent). Drop any stale pin
-  # from a prior version so migrate + restart run the NEW target, not the old digest.
-  sedi '/^AGLEDGER_IMAGE_PIN=/d' "${COMPOSE_DIR}/.env"
 fi
 
 # --- Stop Worker ---
@@ -329,8 +414,21 @@ step "Running database migrations with new image"
 # since the install that did check.
 verify_sibling_reachability
 
-AGLEDGER_VERSION="${TARGET_VERSION}" "${COMPOSE[@]}" run --rm agledger-migrate
+AGLEDGER_VERSION="${TARGET_VERSION}" AGLEDGER_IMAGE_PIN="${TARGET_IMAGE_PIN}" \
+  "${COMPOSE[@]}" run --rm agledger-migrate
 info "Migrations complete"
+
+# Again, because the migration that just ran may have added tables. The schema
+# grants those to agledger_app, so a member role receives them and a role
+# carrying a one-time blanket GRANT does not. Asking now is the difference
+# between naming the tables and watching the restart below report "unhealthy".
+runtime_role_gate "after migrations" \
+"Read this one carefully, because the upgrade is part-done. The migrations for ${TARGET_VERSION}
+are applied, and they are not rolled back by stopping here. The worker is stopped and stays
+stopped until the upgrade finishes, so nothing is processing jobs, dispatching webhooks or
+sweeping deadlines right now. The API is still serving the previous version against the new
+schema. Grant what the report asks for and re-run this script to finish; the migrations it
+already applied will be skipped."
 
 # --- Update Version in .env ---
 
@@ -339,12 +437,30 @@ step "Updating configuration"
 upsert_env_var AGLEDGER_VERSION "${TARGET_VERSION}" "$ENV_FILE"
 info "Updated AGLEDGER_VERSION=${TARGET_VERSION} in .env"
 
+# The digest, in the same breath as the version it belongs to. Everything that
+# had to run the target image before this point was handed it directly.
+if [[ -n "$TARGET_IMAGE_PIN" ]]; then
+  upsert_env_var AGLEDGER_IMAGE_PIN "$TARGET_IMAGE_PIN" "${COMPOSE_DIR}/.env"
+  # Verified or not, the digest is what the upgrade runs. Only the run that
+  # verified it may say so: on a host without cosign this upgrade already
+  # printed "Proceeding UNVERIFIED", and the two lines have to agree.
+  if [[ "${SIGNATURE_VERIFIED:-false}" == "true" ]]; then
+    info "Pinned upgrade to signature-verified digest: ${RESOLVED_DIGEST}"
+  else
+    warn "Pinned upgrade to UNVERIFIED digest (${UNVERIFIED_REASON:-not verified}): ${RESOLVED_DIGEST}"
+  fi
+else
+  # Drop any stale pin from a prior version so the restart runs the NEW target,
+  # not the old digest.
+  delete_env_var AGLEDGER_IMAGE_PIN "${COMPOSE_DIR}/.env"
+fi
+
 # --- Restart All Services ---
 
 step "Restarting all services"
 
 # --wait fails the upgrade if the new image crashloops at boot (e.g. a
-# missing runtime asset like F-447). Without it, `up -d` returns as soon as
+# missing runtime asset). Without it, `up -d` returns as soon as
 # the container is created, the preflight loop below logs a soft WARN, and
 # the script exits 0 — handing the customer a broken upgrade with no
 # visible signal anything went wrong.
@@ -365,7 +481,7 @@ fi
 info "All services restarted"
 
 # --- Grafana Credential State ---
-# #1180: the installer generates GRAFANA_ADMIN_PASSWORD on a fresh monitoring
+# The installer generates GRAFANA_ADMIN_PASSWORD on a fresh monitoring
 # install, and warns when a Grafana volume already exists because the password
 # is applied only when the admin user is created and ignored on every later
 # boot. Neither ran on the upgrade path, so an install that predates the change

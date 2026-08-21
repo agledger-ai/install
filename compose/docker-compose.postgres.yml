@@ -58,7 +58,7 @@ services:
       # postgres:18-alpine refuses to initialize when data is mounted at the
       # legacy /var/lib/postgresql/data path; the new entrypoint expects the
       # parent dir so it can place data under a major-version-specific subdir.
-      # Reverting this breaks every fresh install (testbed F-442 / agledger-api#309).
+      # Reverting this breaks every fresh install.
       - pgdata:/var/lib/postgresql
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-agledger}']
@@ -95,7 +95,7 @@ services:
       - ALLOW_DB_WITHOUT_SSL=true
       # Bundled PG ships with max_connections=100. The app default (20) already
       # fits a single host (API pool + worker pool + pg-boss). Pinned explicitly
-      # here so the bundled-PG sizing is visible and overridable. (F-395)
+      # here so the bundled-PG sizing is visible and overridable.
       - DATABASE_POOL_MAX=${DATABASE_POOL_MAX:-20}
     depends_on:
       postgres:

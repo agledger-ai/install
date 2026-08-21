@@ -27,7 +27,7 @@ services:
   # --- Database migrations ---
 
   agledger-migrate:
-    image: ${AGLEDGER_IMAGE_PIN:-agledger/agledger:${AGLEDGER_VERSION:-latest}}
+    image: ${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest}}
     init: true
     command: ['dist/src/db/migrate.js']
     restart: 'no'
@@ -42,17 +42,33 @@ services:
       # whole branch is discarded, breaking every external-database install.
       # (The overlay avoids `:?` for a different reason, in its own comment:
       # parse-time resolution would kill `down`/`ps`/`logs` too.) Both are
-      # pinned by guards in deploy/tests/install-preflight.test.sh that run
+      # pinned by install-preflight guards in the API build that run
       # real `docker compose config`.
       - DATABASE_URL=${DATABASE_URL_MIGRATE:-${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-agledger}}}
       - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-}
       # Post-v1.0: shipped migrations are immutable; refuse any baseline checksum rebase.
       - AGLEDGER_LAUNCH_FROZEN=${AGLEDGER_LAUNCH_FROZEN:-true}
+      # Knobs for the migration run. This service carries no env_file, so a
+      # value in .env reaches it only by being named here, and .env.example
+      # documents all five as settable, so name every one of them or the
+      # documentation is unfollowable on this path (the chart has this same gap).
+      # (api and worker do carry env_file, so they see them
+      # too, and the api honours them under RUN_MIGRATIONS=true.) These render
+      # as EMPTY strings when unset, which applySessionSafety treats as unset
+      # via `||`; see the warning there.
+      - MIGRATION_STATEMENT_TIMEOUT=${MIGRATION_STATEMENT_TIMEOUT:-}
+      - MIGRATION_LOCK_TIMEOUT=${MIGRATION_LOCK_TIMEOUT:-}
+      - MIGRATION_IDLE_IN_TX_TIMEOUT=${MIGRATION_IDLE_IN_TX_TIMEOUT:-}
+      # Sizing lever for an index-building migration, and the recovery lever
+      # for an install left holding an invalid index. Without these two named
+      # here, an operator who sets them in .env gets no error and no effect.
+      - MIGRATION_MAINTENANCE_WORK_MEM=${MIGRATION_MAINTENANCE_WORK_MEM:-}
+      - AGLEDGER_ALLOW_INVALID_INDEXES=${AGLEDGER_ALLOW_INVALID_INDEXES:-}
 
   # --- API server ---
 
   agledger-api:
-    image: ${AGLEDGER_IMAGE_PIN:-agledger/agledger:${AGLEDGER_VERSION:-latest}}
+    image: ${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest}}
     init: true
     ports:
       # Host side is a variable so a second stack can run beside the first on
@@ -79,7 +95,7 @@ services:
   # --- Background worker ---
 
   agledger-worker:
-    image: ${AGLEDGER_IMAGE_PIN:-agledger/agledger:${AGLEDGER_VERSION:-latest}}
+    image: ${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest}}
     init: true
     # The worker overrides the image CMD, so it must carry the Node 24
     # Permission Model flags itself (the API inherits them from the Dockerfile
@@ -112,7 +128,7 @@ services:
   # --- Monitoring (optional, enable with --profile monitoring) ---
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.157.0-386
+    image: otel/opentelemetry-collector-contrib:0.159.0
     profiles: [monitoring]
     # Same restart policy the app services carry in docker-compose.prod.yml. The
     # app is configured to export at this collector permanently, so a collector
@@ -149,7 +165,7 @@ services:
       - '4318'         # OTLP HTTP (internal)
 
   prometheus:
-    image: prom/prometheus:v3.13.2
+    image: prom/prometheus:v3.14.0
     profiles: [monitoring]
     restart: unless-stopped
     command:
@@ -157,13 +173,13 @@ services:
       - '--storage.tsdb.retention.time=30d'
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      # Rule files are referenced by prometheus.yml `rule_files` (#1186).
+      # Rule files are referenced by prometheus.yml `rule_files`.
       - ../monitoring/alerts:/etc/prometheus/alerts:ro
     ports:
       - '127.0.0.1:${PROMETHEUS_HOST_PORT:-9090}:9090'
 
   grafana:
-    image: grafana/grafana:13.1.1
+    image: grafana/grafana:13.2.0
     profiles: [monitoring]
     restart: unless-stopped
     environment:

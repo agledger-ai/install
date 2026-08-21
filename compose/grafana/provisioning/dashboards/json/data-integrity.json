@@ -303,7 +303,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Does what leaves this Server arrive, and is anything permanently lost? `dead-lettered` is the one that matters: those jobs exhausted the pg-boss retry budget, so the peer will never receive that projection without an operator redrive from GET /federation/v1/admin/dlq. `post failed` is per-attempt and self-heals through retries, so a rising line there with a flat dead-lettered line is a slow peer, not data loss. `inbound conflict` counts peer projections that collided with a record already here (stale = ours won and theirs was discarded). Replaces a panel that queried agledger_federation_sequence_gaps_total and agledger_federation_sequence_reconciled_total, which no process has ever registered (#1185).",
+      "description": "Does what leaves this Server arrive, and is anything permanently lost? `dead-lettered` is the one that matters: those jobs exhausted the pg-boss retry budget, so the peer will never receive that projection without an operator redrive from GET /federation/v1/admin/dlq. `post failed` is per-attempt and self-heals through retries, so a rising line there with a flat dead-lettered line is a slow peer, not data loss. `inbound conflict` counts peer projections that collided with a record already here (stale = ours won and theirs was discarded). Replaces a panel that queried agledger_federation_sequence_gaps_total and agledger_federation_sequence_reconciled_total, which no process has ever registered.",
       "fieldConfig": {
         "defaults": {
           "color": {

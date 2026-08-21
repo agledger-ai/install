@@ -56,9 +56,12 @@ spec:
             {{- with .Values.extraEnvFrom }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- if (include "agledger.chartSuppliesDatabaseUrl" .) }}
+          {{- include "agledger.assertNoDuplicateDatabaseUrl" (dict "envList" .Values.extraEnv "field" "extraEnv" "source" "the chart's Secret") }}
+          {{- end }}
           {{- if .Values.extraEnv }}
           env:
-            {{- include "agledger.extraEnv" . | nindent 12 }}
+            {{- include "agledger.extraEnv" . | trim | nindent 12 }}
           {{- end }}
           livenessProbe:
             httpGet:
@@ -83,7 +86,7 @@ spec:
             periodSeconds: 10
             failureThreshold: 30
           {{- if and .Values.api.preStopSleepSeconds (eq .Values.api.strategy.type "RollingUpdate") }}
-          # #967: hold the container fully serving while LB/endpoint
+          # Hold the container fully serving while LB/endpoint
           # deregistration propagates, THEN deliver SIGTERM for the in-flight
           # drain. Kubelet runs exec hooks via the container runtime, not as a
           # child of the Node process, so Node's --permission sandbox does not

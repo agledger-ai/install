@@ -15,7 +15,7 @@
 # `severity` labels below are the only hook the rules assume.
 #
 # Every `expr` here is checked against the live metric registry by
-# `src/test/dashboard-metric-coverage.test.ts`. An alert on a metric nobody
+# a coverage test in the API build. An alert on a metric nobody
 # emits never fires, which is indistinguishable from a healthy system and is
 # strictly worse than a blank panel.
 
@@ -203,7 +203,7 @@ groups:
 
   # ---------------------------------------------------------------------------
   # Availability and saturation. Ordinary service health, included because
-  # nothing else in deploy/ carried it.
+  # nothing else here carried it.
   # ---------------------------------------------------------------------------
   - name: agledger-availability
     rules:

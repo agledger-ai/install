@@ -75,13 +75,13 @@ rendered against, and it is what ongoing / perpetual re-screening references.
    band and would silently auto-clear a hit past human review.
 
    ```
-   screening orchestrator ──> 02 sanctions-screen (notarize the engine's disposition)
-                          ──> 03 screening-gate (auto)
+   screening orchestrator --> 02 sanctions-screen (notarize the engine's disposition)
+                          --> 03 screening-gate (auto)
                                criteria.clearThreshold  vs  completion.observedScore
                                rule: number:max-inclusive
-                             ├─ score <= clearThreshold ->  FULFILLED  (auto-clear, no human)
-                             └─ score  > clearThreshold ->  FAILED     (escalate to a human)
-                                                                │
+                             |- score <= clearThreshold ->  FULFILLED  (auto-clear, no human)
+                             `- score  > clearThreshold ->  FAILED     (escalate to a human)
+                                                                |
                                                                 v
                                  04 alert-disposition (L1) -> 05 onboarding-decision (L2/MLRO)
    ```

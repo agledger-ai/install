@@ -29,7 +29,7 @@ rather than WHAT the work is, and they compose with any vertical above.
 
 | Recipe | What it covers | Directory |
 |--------|----------------|-----------|
-| Agent Work Context | Durable work state for AI agents: one root record per piece of work, immutable signed checkpoints as children, schema-enforced supersedes lineage, cold-start resume and handoff with tamper-evident succession, and a client-side lineage-coherence checker. Ships both a `register.sh` path and an importable manifest (`manifests/`, publisher `agledger-recipes`) for digest-matched distribution across Servers. | [`work-context/`](work-context/) |
+| Agent Work Context | Durable work state for AI agents: one root record per piece of work, immutable signed checkpoints as children, first-class signed supersession so the current head is one query (`?superseded=false`) rather than a guess at the newest row, cold-start resume and handoff with tamper-evident succession, and a client-side lineage-coherence checker. Ships both a `register.sh` path and an importable manifest (`manifests/`, publisher `agledger-recipes`) for digest-matched distribution across Servers. | [`work-context/`](work-context/) |
 
 We add and exercise new verticals over time. If you need one that is not here yet,
 contact sales@agledger.ai.

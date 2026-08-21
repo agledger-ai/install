@@ -26,6 +26,14 @@ The API is reachable at `http://localhost:3001` once startup completes. Swagger 
 
 `install.sh` generates cryptographic secrets locally, writes `compose/.env`, starts PostgreSQL, runs migrations, creates a platform API key (printed once, so save it), and starts the API and worker.
 
+A fresh install with no `--version` takes the latest release from Docker Hub and records it in `compose/.env`. Every later run of `install.sh` stays on that version, so re-running it is safe: it reconciles configuration and never moves the install between releases. Changing releases is `upgrade.sh`, which backs up first and writes the marker that says what to roll back to:
+
+```bash
+./scripts/upgrade.sh 1.4.0
+```
+
+`install.sh --version X.Y.Z` on an install already at another version is honored, because you asked for it by name, but it takes no backup and warns you to use `upgrade.sh` instead.
+
 ## Deployment Paths
 
 ### Docker Compose (default)
@@ -97,7 +105,25 @@ Requirements:
 
 - Direct connections only. RDS Proxy and PgBouncer (transaction mode) are incompatible, because pg-boss requires `LISTEN`/`NOTIFY`.
 - The migration user needs schema-creation privileges. See `compose/.env.example`.
+- The runtime user (`DATABASE_URL`) needs DML plus `CREATE` on the database. Migrations grant DML to the role named `agledger_app` specifically, so a non-owner role called anything else receives nothing; make yours a member instead, with `GRANT agledger_app TO "your_role" WITH INHERIT TRUE`. The `CREATE` grant is what pg-boss uses to install its own schema on first start, and can be revoked once the Server has booted successfully.
 - Set `DATABASE_POOL_MAX` to match your database's connection limits.
+
+Both installers check that runtime role after migrating and before anything starts serving, so a role that cannot serve stops the install with the missing grant named instead of leaving crash-looping workloads behind a success message. On Compose the check is a step in `install.sh`. On the chart it is a `pre-install`/`pre-upgrade` hook Job, so `helm install` exits non-zero and creates no workload; migrations have run by then, and so have the release's ConfigMap and Secret, which are hook resources and outlive a `helm uninstall`, but the API and Worker are still unmade. Read the hook's report with:
+
+```bash
+kubectl logs -n <namespace> --tail=-1 \
+  -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=preflight
+```
+
+`scripts/helm-install.sh` prints it for you. Apply what it asks for and re-run; a failed release keeps its name, so clear it with `helm uninstall <release>` first if it still appears in `helm list`.
+
+`restore.sh` asks it too, after the restore and before it starts anything. A restore rebuilds the database the runtime role's access rests on, so it is the same question at a different moment: your rows are back, and the check answers whether the role can read them. Stopping there leaves the data restored and the API and Worker still stopped, rather than a stack coming up unhealthy with nothing naming the reason.
+
+`restore.sh` also asks the migration question, and asks it first, before it stops anything or drops the database. The schema carries the `agledger_block_audit_drop` event trigger, `CREATE EVENT TRIGGER` is superuser-only, and `pg_restore` does not stop when it is refused: it reports the refusal among its own "errors ignored on restore", puts every row back and exits 1. That is the one failure that costs you something, because the database it would go back to was dropped at the top of the run. Asked first, the refusal is free, and it prints the same provider grants `install.sh` does. This matters more on a restore than on an install: DR routinely runs against a rebuilt server whose roles were recreated by whatever provisioning ran, which is exactly how the grant goes missing.
+
+The gate asks whether the role holds a superuser-equivalent role, which is not quite the same question as whether the server will accept the statement. So `restore.sh` also checks, after the restore, that the trigger is actually there, and if it is not it names what is missing and prints the single `CREATE EVENT TRIGGER` statement that repairs it. Your rows and the signature chain are unaffected either way: what the trigger provides is layer 2 of the tamper model, the DDL guard that refuses an in-band `DROP` of `audit_vault`, its partitions, the `org_admin_read*` tables and `vault_signing_keys`. The row-level DML triggers, the signed checkpoints and the external anchors are all independent of it.
+
+`upgrade.sh` asks the same question twice, because the grant can lapse between installs: a role dropped and recreated by a rotation policy comes back without its `agledger_app` membership. The first check runs before the pre-upgrade backup, which is otherwise the first thing to fail, as `pg_dump` reporting a table it was refused and printing its whole `LOCK TABLE` statement without naming the role. Stopping there costs nothing: no backup, no migration, and `.env` still names the version you are on. The second runs after migrations, for the tables a new migration just added, and reports what stopping at that point means: the migrations are applied, the worker is stopped until the upgrade finishes, and re-running after fixing the grant completes it.
 
 ### Air-Gapped / Restricted-Network Installs
 
@@ -195,6 +221,10 @@ Commands: `bootstrap install upgrade status health key logs tunnel shell uninsta
 
 The upgrade script creates a backup before upgrading. Rollback with `./scripts/restore.sh <backup>`.
 
+On an external database, `restore.sh` restores into the database `DATABASE_URL` names, and drops and recreates that one — `POSTGRES_DB` configures the bundled PostgreSQL container and has no bearing on an external install. Before dropping, it checks the database looks like an AGLedger one (a `public.records` table); on a shared managed instance, where a database of the same name may belong to something else, that check is what stands between a restore and an unrecoverable drop. Pass `--force` to restore into a database that does not have the table yet.
+
+The dump's privileges are restored with it — the DML grants, the `ALTER DEFAULT PRIVILEGES`, and the append-only `REVOKE`s on the audit chain — so a least-privilege role comes back able to serve. Restoring onto a server that does not carry the same roles (a cross-server DR) reports the grants it could not apply and continues; the runtime-role check that follows decides whether the Server starts.
+
 ## Uninstalling
 
 ```bash
@@ -225,6 +255,14 @@ cosign verify --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issue
 ```
 
 The complete recipe (Helm chart signature, SBOM/OpenVEX/malware-scan attestations, SLSA Build L3 provenance, and the signed conformance corpus) is in [SECURITY.md](SECURITY.md). The CycloneDX SBOM and OpenVEX documents are also attached to each release for direct download.
+
+**Make verification mandatory.** `install.sh`, `upgrade.sh` and `helm-install.sh` verify signatures when cosign is present, and proceed with a warning when it is not, which is the right default for an evaluation and the wrong one for production. Set `AGLEDGER_REQUIRE_VERIFY=true` and a run that cannot verify refuses to install instead:
+
+```bash
+AGLEDGER_REQUIRE_VERIFY=true ./scripts/install.sh --version <version>
+```
+
+Set it in CI and on production hosts. The lever in the other direction, `--skip-verify`, exists for local development and should never reach either.
 
 ## Licensing
 

@@ -8,7 +8,7 @@ set -euo pipefail
 # consumes: one file per audit table (audit_vault, vault_checkpoints,
 # vault_signing_keys, org_admin_reads, org_admin_reads_checkpoints), each row
 # carrying its canonical COSE_Sign1 bytes. This is the customer-runnable
-# equivalent of the monorepo dev script `pnpm vault:dump` — it runs the dump
+# equivalent of the API repo's dev-only dump script — it runs the dump
 # tool that already ships inside the AGLedger image (dist/scripts/dump-vault.js),
 # so no source checkout, Node.js, or pnpm is required on the host.
 #
@@ -98,8 +98,12 @@ for f in "${ABS_OUT}"/*.ndjson; do
   log "  $(basename "$f"): $(wc -l < "$f") rows"
 done
 log ""
-log "Verify this dump offline. The supported verification paths (stock RFC 9052"
-log "libraries against the per-row cose_sign1 bytes, and the @agledger/cli"
-log "'verify' subcommand which consumes this dump format) are documented under"
-log "'Offline cryptographic verification' in GET <your-server>/llms-full.txt."
+log "Verify this dump offline:"
+log "  npx -y @agledger/verify ${ABS_OUT}"
+log ""
+log "@agledger/verify is the verifier that reads this dump format. @agledger/cli's"
+log "'verify' subcommand is a different tool: it checks one record's audit export"
+log "and cannot read a dump directory. The stock path (any RFC 9052 library against"
+log "the per-row cose_sign1 bytes) and both tools are documented under 'Offline"
+log "cryptographic verification' in GET <your-server>/llms-full.txt."
 log "========================================="
