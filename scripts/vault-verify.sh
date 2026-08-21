@@ -9,7 +9,7 @@ set -euo pipefail
 # SHA-256 of its COSE_Sign1 envelope, the genesis entry has no previous_hash,
 # and each previous_hash links to the prior entry. Exits 0 if intact, 1 if any
 # break is found. This is the customer-runnable equivalent of the monorepo dev
-# script `pnpm vault:verify` — it runs the checker that already ships inside the
+# dev-only verify script — it runs the checker that already ships inside the
 # AGLedger image (dist/scripts/verify-vault.js), so no source checkout, Node.js,
 # or pnpm is required on the host.
 #

@@ -45,8 +45,8 @@ delegated-workflow-v1 (root; seeded starter, notarize-only)
   criteria.workContext   = navigation hint (see below)      <- load-bearing
     |
     +-- work-context-v1 (checkpointReason: initial)
-    +-- work-context-v1 (supersedes the initial)             <- head = newest
-    +-- work-context-v1 (supersedes the previous head)
+    +-- work-context-v1 (supersedes the initial)
+    +-- work-context-v1 (supersedes the previous head)       <- head = nothing supersedes it
     +-- ... siblings, never children of each other
     +-- notarize-generic-v1 / your types: work artifacts, decisions
 ```
@@ -55,54 +55,104 @@ delegated-workflow-v1 (root; seeded starter, notarize-only)
   `parentRecordId`. Siblings, never chained checkpoint-to-checkpoint: the
   delegation depth cap (default 5) kills a naive chain at its 6th link, and
   nothing warns earlier.
-- **Head = newest checkpoint**, one call:
-  `GET /v1/records/search?parentRecordId=<root>&type=work-context-v1`
-  (newest first).
+- **Head = the checkpoint nothing supersedes**, one call:
+  `GET /v1/records/search?parentRecordId=<root>&type=work-context-v1&superseded=false`.
+  Prefer this over reading the newest row: on an append-only ledger every state
+  a piece of work ever held keeps matching a filter forever, so
+  `&criteria[state]=blocked` without `&superseded=false` returns work that was
+  unblocked three checkpoints ago. It also tells the truth about forks by
+  returning two rows instead of picking one (see below). Drop
+  `&parentRecordId=` to sweep every piece of work at once, which is how a
+  resuming session triages a portfolio in one call rather than one call per
+  root.
 - **The root carries the map.** Put this in the root's criteria (the schema
   accepts extra fields); cold-start models read the root first and some never
   read schema descriptions:
 
   ```json
-  "workContext": "Durable work state lives in work-context-v1 CHILD records of this root. Head = newest one: GET /v1/records/search?parentRecordId=<thisRecordId>&type=work-context-v1 (newest first). Read the head, then follow its resumeInstructions."
+  "workContext": "Durable work state lives in work-context-v1 CHILD records of this root. Head = the one nothing supersedes: GET /v1/records/search?parentRecordId=<thisRecordId>&type=work-context-v1&superseded=false. Read the head, then follow its resumeInstructions. When you write your own checkpoint, pass the head's id as the top-level supersedesRecordId field on POST /v1/records (a record field, not a criteria field). Omit it and the old head stays current, so the next session sees two heads."
   ```
 
-- **Lineage is schema-enforced.** The first checkpoint uses
-  `checkpointReason: "initial"`; every later checkpoint MUST carry
-  `supersedesRecordId` (400 otherwise). This is the highest-value guard in
-  the recipe: a resumer that misidentified the head gets a refusal instead of
-  silently forking the chain with a stale head. `final` requires empty
-  `pendingWork`, also in-schema.
+- **Supersession is a record field, not criteria.** Pass `supersedesRecordId`
+  at the top level of `POST /v1/records`, naming the head you read. The engine
+  resolves the target and refuses the create with 404 if it does not exist in
+  your org, so a checkpoint can never carry a dangling lineage claim onto the
+  chain. It is inside the create-time signature and immutable, so an offline
+  verifier rebuilds the same lineage the API reports. `final` requires empty
+  `pendingWork`, enforced in-schema.
+
+  The first checkpoint (`checkpointReason: "initial"`) supersedes nothing.
+  Omitting `supersedesRecordId` on a later one is not a 400: the head you
+  failed to supersede stays un-superseded, so the head query returns both rows
+  on the very next read. That catches the omission, which a refusal on a
+  MISSING claim also caught, and it additionally catches a WRONG one.
+
+  Zero rows back is its own condition, and it is not always "no checkpoints
+  yet": if this root's only head was superseded by a checkpoint written under a
+  different parent, the view empties for good. The response's `nextSteps` says
+  which of the two it is, and dropping `&superseded=false` settles it in one
+  call.
+
+  Two rows back is one signal for two different conditions, and the counts are
+  what separate them. Read `supersedesRecordId` on both rows: if they name the
+  SAME record (`supersededByCount: 2` on it), two writers raced over one head
+  and you have a genuine fork to merge. If one of them supersedes nothing, that
+  writer omitted the field and the old head simply stayed current; write the
+  next checkpoint superseding the row you keep. "Neither row supersedes the
+  other" is true in both cases and tells you nothing.
+  `verify-lineage.py` makes the same distinction: `every non-initial checkpoint
+  supersedes something` fails on the omission, `no record superseded twice
+  (fork)` fails on the fork.
 
 ## Lineage coherence is the client's job (and the tool that does it)
 
-The server notarizes what it is told; `supersedesRecordId` is signed content,
-not checked semantics. All of the following land as ordinary 201s that verify
-clean offline:
+The server resolves `supersedesRecordId` (a create naming a record outside your
+org is refused), but it does not judge whether the lineage makes sense for this
+recipe. All of the following land as ordinary 201s that verify clean offline:
 
 - **A fork**: two sessions of the same agent resume concurrently, both read
-  the same head, both write successors superseding it. Both land. The head
-  query silently returns whichever got the later server timestamp; the other
-  branch is invisible unless you look for it.
-- A `supersedesRecordId` naming a **nonexistent record**, or a checkpoint
-  under a **different root**.
+  the same head, both write successors superseding it. Both land, and the head
+  query returns **both**, with `supersededByCount: 2` on the record they
+  raced over. That is the intended behaviour: there really are two branches,
+  and picking one for you would be the engine inventing an answer.
+- A checkpoint superseding one under a **different root**. Read the reader-side
+  cost before you shrug at this one: supersession is global and the head query
+  is scoped to direct children of a parent, so the successor is not in the
+  other root's view and the head it replaced is superseded by something that
+  view cannot see. If that root held no other current checkpoint, its
+  `&superseded=false` query returns **zero rows, permanently**, which looks
+  exactly like a piece of work with no checkpoints yet. The engine now says so
+  on both sides: the create response carries a `nextSteps` entry naming the
+  parent whose view it just emptied, and the empty head query carries one
+  saying how many rows match without the flag and pointing at
+  `?supersedesRecordId=`, which is the only surface that finds the successor.
+  Run against the WRITING root, `verify-lineage.py` reports it as
+  `every supersedesRecordId resolves under this root` (or, when the writer was
+  that root's first checkpoint, as `the initial checkpoint supersedes
+  nothing`, the likeliest shape, since a session opening work on a new root is
+  the one holding a head id read from somewhere else); run against the emptied
+  one it reports nothing, because from there the tree looks coherent and simply
+  ends.
 - A **second `initial`** under one root.
 
-`verify-lineage.py` (this directory) is the check the schema guards cannot
-provide: given a root id it fetches every checkpoint (cursor pagination) and
-proves exactly one initial, every supersedes resolves under the root, no
-record superseded twice, a single chain covering all checkpoints, and
-terminus == head-query answer. Run it at every resume if two sessions of the
+`verify-lineage.py` (this directory) walks the whole tree: given a root id it
+fetches every checkpoint (cursor pagination) and proves exactly one initial,
+that initial supersedes nothing, every non-initial supersedes something, every
+supersedes resolves under the root, no record superseded twice, a single chain
+covering all checkpoints, and terminus == head-query answer. The head query alone tells you THAT the tree
+forked; this tells you where. Run it at every resume if two sessions of the
 same agent can run concurrently in your deployment.
 
 A detected fork is not tamper: every branch is genuinely signed by the agent.
 Recover by writing a new checkpoint that supersedes the branch you keep and
 records the merge; never try to un-write the other branch.
 
-Concurrency detail worth knowing: the head query orders by **server**
-`createdAt`. Under same-millisecond concurrent writes this can invert the
-order the ids were minted in (UUIDv7 timestamps), so two racing sessions can
-each believe they wrote the newest checkpoint. The lineage check is what
-turns that race from silent divergence into a visible fork.
+Concurrency detail worth knowing: `createdAt` ordering is **server** time, and
+under same-millisecond concurrent writes it can invert the order the ids were
+minted in (UUIDv7 timestamps), so two racing sessions can each believe they
+wrote the newest checkpoint. This is exactly why the head query filters on
+`superseded=false` rather than taking the newest row: supersession is a claim
+the writer signed, so it does not depend on whose clock won.
 
 ## Registration
 
@@ -162,24 +212,30 @@ conversation, one generic HTTP tool, a brief of base URL + agent key + root id
 ## A2A
 
 The server speaks A2A 0.3 and 1.0 on `/a2a` (dialect via the `A2A-Version`
-header), and an A2A-native session can hold an agent's key. Probed live
-against this recipe on both dialects:
+header), and an A2A-native session can hold an agent's key. The recipe drives
+from either door, and the fields below are covered by integration tests on
+both dialects:
 
-- **On current releases the spine is REST-only.** The A2A `create_record`
-  action does not carry `parentRecordId`, and no A2A action answers the head
-  query, so checkpoints cannot be written under a root or found from A2A.
-- **The schema guards do carry over**: a non-initial checkpoint without
-  `supersedesRecordId` sent via A2A is refused with the full
-  `google.rpc.ErrorInfo` envelope (detail, validationErrors, schemaUrl), so
-  the highest-value guard is dialect-independent.
-- **The pattern that works is hybrid**: agents coordinate over A2A; the
-  session currently acting as the work's agent writes and reads checkpoints
-  over REST with that agent's key. Put the work-context ROOT id in the A2A
-  task or message
-  metadata so a fleet coordinating over A2A can find the ledger tree, and
-  record A2A task ids in checkpoint `references`
-  (`{system: "a2a", refType: "task", refId: <taskId>}`) so the A2A side of a
-  handoff is checkable from the chain.
+- **The whole spine drives over A2A.** `create_record` carries both
+  `parentRecordId` and `supersedesRecordId`, so a checkpoint lands under the
+  root and retires the head it replaced in one call. The Task's metadata
+  reports the result (`agledger:parentRecordId`, `agledger:supersedesRecordId`,
+  `agledger:supersededByCount`), so a writer can tell a live head from a
+  record something already replaced without a REST read.
+- **The head query is `ListTasks`** with
+  `filter: 'parentRecordId = "<root>" AND type = "work-context-v1" AND superseded = false'`.
+  Same answer as the REST head query, same reason for the `superseded` term:
+  do not read `tasks[0]` instead, which is the newest row rather than the
+  current one.
+- **The in-schema guards carry over** (the `checkpointReason` enum, `final`
+  requiring empty `pendingWork`), refused with the full `google.rpc.ErrorInfo`
+  envelope (detail, validationErrors, schemaUrl). So does the create-time
+  resolution of `supersedesRecordId`: a target outside your org is a refusal,
+  not a dangling claim on the chain.
+- **What A2A still does not carry** is `references`, `metadata`, `dependsOn`
+  and `riskClassification`, so a fleet that wants A2A task ids checkable from
+  the chain writes those checkpoints over REST. Nothing else about the recipe
+  changes with the door.
 
 ## Limits
 

@@ -1,0 +1,123 @@
+{{- if not .Values.postgres.bundled.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # The runtime-role gate, between migrations and the first workload start.
+  #
+  # Everything Helm creates after this hook runs as the role in DATABASE_URL,
+  # and two ways of provisioning that role leave it unable to serve: the
+  # migration grants DML to the literal name `agledger_app`, so a
+  # differently-named non-owner role receives nothing on public, and pg-boss
+  # installs its own schema on first start, which needs CREATE on the database.
+  # Neither is visible in the migration output, and neither stops `helm
+  # install` on its own. The API and Worker Deployments apply cleanly and then
+  # crash-loop on "permission denied", while Helm reports "Install complete"
+  # and exits 0, so a scripted install records a pass.
+  #
+  # A pre-install/pre-upgrade hook at the next weight after the migration Job
+  # is the one place in a Helm install where those two questions can still
+  # change the outcome: the tables exist and the grants have been applied, and
+  # nothing has tried to serve yet. A failing hook aborts the release, so the
+  # install exits non-zero and no workload is ever created.
+  #
+  # Bundled Postgres has no ordered pre-start phase to hook into (see
+  # migration-job.yaml: its migration is a normal resource, because Helm
+  # creates the bundled database only after every pre-install hook has
+  # finished) and one role owns and serves everything there, which carries
+  # every privilege by ownership. So this gate is external-database only,
+  # which is also the only path that can misprovision the role.
+  name: {{ include "agledger.fullname" . }}-preflight
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: preflight
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    # Not hook-failed: the Job's pod log IS the diagnosis, and Helm never reads
+    # it. All Helm prints is one line saying this Job failed, so the pod has to
+    # survive for the operator (or helm-install.sh, which prints the log for
+    # them) to read the report. Deleting on failure would take it with them.
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  # One retry, not the migration Job's three. Nothing this check reports clears
+  # on a second attempt (grants are grants), so retries buy nothing there and
+  # only delay the failure. What the single retry is for is the pod dying for
+  # reasons that are not the answer: a preempted spot node or a drained node
+  # takes a two-second pod with it, and at backoffLimit 0 that node event would
+  # abort the install under a message about database privileges.
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        {{- include "agledger.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: preflight
+    spec:
+      serviceAccountName: {{ include "agledger.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if not (.Values.openshift).enabled }}
+      {{- with .Values.api.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      restartPolicy: Never
+      containers:
+        - name: preflight
+          image: {{ include "agledger.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Only the two checks that decide whether the runtime role can serve.
+          # The rest of preflight's report is about a running Server (migration
+          # state, connection headroom, the federation keys) and belongs to a
+          # started stack, not to a gate that has to answer before one exists.
+          command: ["/nodejs/bin/node", "dist/scripts/preflight.js", "--only=runtime-role,pgboss"]
+          # Deliberately the API's env, not the migration's: this pod has to
+          # connect as the role the API will connect as, so it reads
+          # DATABASE_URL from the same Secret and never the DATABASE_URL_MIGRATE
+          # override the migration Job applies over it. extraEnvFrom/extraEnv
+          # come along for the same reason, since either can carry the TLS or
+          # connection env the API connects with, and a gate that connects
+          # differently from the workload it is clearing is a gate that lies.
+          # The cost is that those refs are now read during the hook phase: see
+          # the note on `extraEnvFrom` in values.yaml.
+          envFrom:
+            - configMapRef:
+                name: {{ include "agledger.fullname" . }}
+            - secretRef:
+                name: {{ include "agledger.secretName" . }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if (include "agledger.chartSuppliesDatabaseUrl" .) }}
+          {{- include "agledger.assertNoDuplicateDatabaseUrl" (dict "envList" .Values.extraEnv "field" "extraEnv" "source" "the chart's Secret") }}
+          {{- end }}
+          {{- if .Values.extraEnv }}
+          env:
+            {{- include "agledger.extraEnv" . | trim | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.api.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml (.Values.migrate.resources | default .Values.api.resources) | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with (.Values.migrate.nodeSelector | default .Values.api.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.migrate.tolerations | default .Values.api.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.migrate.affinity | default .Values.api.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

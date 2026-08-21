@@ -6,6 +6,11 @@ Releases here are tagged to match the AGLedger server version they ship against.
 
 ## Unreleased
 
+## v1.5.0 — 2026-08-21
+
+Scripts, Compose files, and Helm chart synced to AGLedger server v1.5.0.
+
+
 - New horizontal recipe: `examples/recipes/work-context/` (Agent Work Context). Durable work state for AI agents: signed checkpoint records under a root, schema-enforced supersedes lineage, cold-start resume/handoff, a client-side lineage checker, and an importable manifest (publisher `agledger-recipes`) alongside the `register.sh` path. Validated against a live v1.4.0 Compose install.
 
 ## v1.4.0 — 2026-08-09

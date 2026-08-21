@@ -61,7 +61,10 @@ are blocked from substitution.
 
 ## Kubernetes ConfigMap
 
-Mount the provisioning directory as a ConfigMap:
+Mount the provisioning directory as a ConfigMap. Only the four subdirectories
+below are read, and a ConfigMap key cannot contain `/`. The key names the file;
+`items[].path` puts it in its subdirectory. A file mounted at the provisioning
+root instead is never opened, and the Server starts with nothing provisioned:
 
 ```yaml
 apiVersion: v1
@@ -69,10 +72,9 @@ kind: ConfigMap
 metadata:
   name: agledger-provisioning
 data:
-  orgs.yaml: |
+  my-org.yaml: |
     orgs:
       - name: My Org
-        ...
 ```
 
 > Using the AGLedger Helm chart? Don't hand-roll the ConfigMap — declare
@@ -94,6 +96,11 @@ volumes:
   - name: provisioning
     configMap:
       name: agledger-provisioning
+      items:
+        # `path` is what creates the subdirectory. Without it the file lands at
+        # /etc/agledger/provisioning/my-org.yaml, which nothing reads.
+        - key: my-org.yaml
+          path: orgs/my-org.yaml
 ```
 
 ## Directory Structure

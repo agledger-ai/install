@@ -72,7 +72,7 @@ if [[ "$NON_INTERACTIVE" != "true" ]]; then
   fi
   # Fail loud when stdin isn't a TTY — otherwise `read` returns empty, confirm
   # is empty, and we silently abort with exit 0 (looks like success in
-  # automation logs). (F-399)
+  # automation logs).
   if [[ ! -t 0 ]]; then
     echo "ERROR: uninstall prompt requires an interactive TTY. Re-run with --non-interactive to skip the prompt." >&2
     exit 2
@@ -109,5 +109,5 @@ fi
 echo ""
 echo "AGLedger uninstalled."
 if [[ "$PURGE" != "true" && -f "$ENV_FILE" ]]; then
-  echo "Secrets are preserved in ${ENV_FILE}. Run install.sh to reinstall."
+  echo "Secrets are preserved in ${ENV_FILE}. Run ./scripts/install.sh to reinstall."
 fi

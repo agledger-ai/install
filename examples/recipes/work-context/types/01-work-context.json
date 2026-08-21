@@ -1,7 +1,7 @@
 {
   "type": "work-context-v1",
   "displayName": "Agent Work Context (checkpoint)",
-  "description": "Notarize-only contract for durable Agent Work Context. A registered agent is a durable identity; the sessions that do its work (any model, any harness) are ephemeral. Each record of this type is an immutable, signed checkpoint of the state of a piece of work, so a new session holding the agent's key resumes without the prior conversation. Pattern: ONE root record represents the work; every checkpoint is a CHILD of that root via parentRecordId (checkpoints are siblings, never children of each other). FIND THE CURRENT STATE with one call: GET /v1/records/search?parentRecordId=<rootId>&type=work-context-v1 returns the checkpoints newest first; the head is the newest one, and its supersedesRecordId chain lets you confirm lineage. The first checkpoint uses checkpointReason 'initial'; every later checkpoint must set supersedesRecordId to the id of the head it replaces. Resume by reading the head's resumeInstructions and pendingWork (first entry = next action), then write your own checkpoint under the same root superseding the head. Large artifacts belong in references entries (system/refType/refId, digest in attributes), not inline; criteria is capped at 10KB, so keep completedWork summarized rather than unbounded.",
+  "description": "Notarize-only contract for durable Agent Work Context. A registered agent is a durable identity; the sessions that do its work (any model, any harness) are ephemeral. Each record of this type is an immutable, signed checkpoint of the state of a piece of work, so a new session holding the agent's key resumes without the prior conversation. Pattern: ONE root record represents the work; every checkpoint is a CHILD of that root via parentRecordId (checkpoints are siblings, never children of each other) and SUPERSEDES the checkpoint it replaces via the top-level supersedesRecordId field on POST /v1/records. supersedesRecordId is a first-class record field, NOT a criteria field: the engine validates that the target exists in your org, refuses the create with 404 when it does not, and indexes the relation. FIND THE CURRENT STATE with one call: GET /v1/records/search?parentRecordId=<rootId>&type=work-context-v1&superseded=false returns the live head. It returns more than one row only when sessions forked, which is the honest answer rather than a guess. The first checkpoint uses checkpointReason 'initial' and supersedes nothing; every later checkpoint sets supersedesRecordId to the id of the head it replaces, and forgetting to means the old head stays current too, so the omission surfaces as two current heads instead of passing silently. Resume by reading the head's resumeInstructions and pendingWork (first entry = next action), then write your own checkpoint under the same root superseding the head. Large artifacts belong in references entries (system/refType/refId, digest in attributes), not inline; criteria is capped at 10KB, so keep completedWork summarized rather than unbounded.",
   "category": "general",
   "compatibilityMode": "none",
   "recordSchema": {
@@ -118,33 +118,14 @@
           "milestone",
           "final"
         ],
-        "description": "Why this checkpoint was written. `initial` is the first checkpoint under a root and the only one allowed to omit supersedesRecordId; every later checkpoint MUST name the checkpoint it supersedes. `handoff` signals a different process is expected to resume; `final` marks the work complete (pendingWork must be empty)."
+        "description": "Why this checkpoint was written. `initial` is the first checkpoint under a root and the only one that supersedes nothing; every later checkpoint sets the top-level `supersedesRecordId` on the create call (a record field, not a criteria field). `handoff` signals a different session is expected to resume; `final` marks the work complete (pendingWork must be empty)."
       },
       "resumeInstructions": {
         "type": "string",
         "description": "Direct instructions to whoever resumes: what to do first, what to read, what not to redo. The single highest-value field for a cold start; write it every checkpoint."
-      },
-      "supersedesRecordId": {
-        "type": "string",
-        "description": "Record id of the checkpoint this one supersedes (usually the previous newest child under the same root). The newest child of this type under the root is always the authoritative head; this field makes lineage explicit for offline verification."
       }
     },
     "additionalProperties": true,
-    "if": {
-      "properties": {
-        "checkpointReason": {
-          "const": "initial"
-        }
-      },
-      "required": [
-        "checkpointReason"
-      ]
-    },
-    "else": {
-      "required": [
-        "supersedesRecordId"
-      ]
-    },
     "allOf": [
       {
         "if": {

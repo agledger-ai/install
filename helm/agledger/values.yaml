@@ -4,8 +4,9 @@
 # OpenShift
 # ---
 # Set this on OpenShift (or any cluster admitting pods with `MustRunAsRange`).
-# It drops the pod-level uid/gid REQUEST from the api Deployment, the worker
-# Deployment and the migrate Job, letting the platform assign one instead:
+# It drops the pod-level uid/gid REQUEST from every pod the chart creates (the
+# api and worker Deployments, the migrate Job, and on the external-database
+# path the runtime-role gate Job), letting the platform assign one instead:
 #
 #   helm install agledger oci://registry-1.docker.io/agledger/agledger-chart \
 #     --set openshift.enabled=true --values your-values.yaml
@@ -85,7 +86,7 @@ image:
 #     enable autoscaling, and bump resources. RollingUpdate creates new pods before
 #     terminating old ones, so the cluster needs ~2x per-pod CPU/memory headroom
 #     during a rollout. On a single 2 vCPU node this fails to schedule and
-#     `helm upgrade` hangs (issue #241 / testbed F-366).
+#     `helm upgrade` hangs.
 # Node 24 Permission Model runtime hardening (--permission, stable in Node 24).
 # Applied to both the API and worker. Denies filesystem WRITES, child processes,
 # worker threads, native addons, WASI, and the inspector — the primitives a
@@ -113,7 +114,7 @@ api:
     limits:
       memory: 512Mi
       cpu: "1"
-  # Rolling restarts behind a load balancer (#967): pod endpoint removal and
+  # Rolling restarts behind a load balancer: pod endpoint removal and
   # ALB target deregistration are asynchronous, so without a preStop delay the
   # old pod starts shutting down while the ALB is still routing to it (a hard
   # window of timeouts then 502/503 that `kubectl rollout status` never sees).
@@ -218,6 +219,79 @@ migrate:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # Environment for the migration pod ONLY. Deliberately NOT a fallback to the
+  # top-level `extraEnv`: every knob below is read by dist/src/db/migrate.js and
+  # by nothing else, so routing them through the shared list would set variables
+  # on the api and worker pods that are inert there, and would make the reverse
+  # true too — every runtime knob an operator adds for the API would land on a
+  # Job that only runs DDL. Two lists, each carrying what its workload reads.
+  # (The Job does still get the release ConfigMap and Secret via envFrom; this
+  # is about the operator-supplied list, not about withholding credentials the
+  # migrator needs.)
+  #
+  # Sizing a maintenance window is the reason this exists. A migration that adds
+  # a column and builds an index in one transaction holds ACCESS EXCLUSIVE on
+  # the table until COMMIT (the ALTER TABLE takes it; a plain CREATE INDEX on
+  # its own would take the weaker SHARE), so reads as well as writes stop for
+  # the whole file. The header of the migration in question is where the
+  # numbers live — read it before picking values. Defaults (the first four are
+  # applied by applySessionSafety at the start of the run; the last is read by
+  # assertNoInvalidIndexes at the end of it):
+  #
+  #   MIGRATION_STATEMENT_TIMEOUT       15min  raise past your expected index
+  #                                            build time, or the migration
+  #                                            aborts. It rolls back cleanly,
+  #                                            and what you see next depends on
+  #                                            the path: external-DB upgrade,
+  #                                            the hook fails and the previous
+  #                                            version keeps serving;
+  #                                            external-DB fresh install, no
+  #                                            pods are created at all; bundled
+  #                                            PG, nothing gates api/worker (the
+  #                                            Job is a normal resource there),
+  #                                            so they start and crashloop until
+  #                                            you retry with a larger value
+  #   MIGRATION_LOCK_TIMEOUT              30s  how long to wait FOR the lock
+  #   MIGRATION_IDLE_IN_TX_TIMEOUT       5min  idle sessions only; an executing
+  #                                            index build is not idle
+  #   MIGRATION_MAINTENANCE_WORK_MEM   (unset) shortens the window rather than
+  #                                            permitting a longer one. Postgres
+  #                                            takes it PER maintenance
+  #                                            operation, so a value sized for a
+  #                                            large install can OOM a small
+  #                                            containerised PG. Set it
+  #                                            deliberately or leave it alone.
+  #   AGLEDGER_ALLOW_INVALID_INDEXES   (unset) "true" starts anyway when an
+  #                                            invalid index is present, instead
+  #                                            of refusing. Recovery lever, not
+  #                                            a steady-state setting.
+  #
+  # extraEnv:
+  #   - name: MIGRATION_STATEMENT_TIMEOUT
+  #     value: "60min"
+  #   - name: MIGRATION_MAINTENANCE_WORK_MEM
+  #     value: "256MB"
+  #
+  # DATABASE_URL is refused here on the managed paths, and it is the one knob
+  # people reach for: the Job already receives it from the chart's Secret
+  # through envFrom, so a second entry of the same name is two channels
+  # supplying one variable with nothing in the render saying which wins. Point
+  # the migration at its own role with `secrets.databaseUrlMigrate` instead,
+  # which is the supported single channel and is injected on this Job only.
+  extraEnv: []
+  # Same shape as the top-level extraEnvFrom: load every key of a Secret or
+  # ConfigMap. The Job already picks up the release ConfigMap and Secret, so
+  # this is for env you keep in an object of your own.
+  #
+  # That object must ALREADY EXIST in the namespace. On the external-DB path
+  # this Job is a pre-install/pre-upgrade hook, and Helm creates hooks before
+  # every normal resource in the release — so an object created by this same
+  # release (an umbrella chart's sibling Secret, say) is not there yet when the
+  # Job runs. The pod then sits in CreateContainerConfigError, burns
+  # backoffLimit, and fails the install. `helm template` and `helm lint` both
+  # pass, so this only shows up at install time. Add `optional: true` to the
+  # ref if you would rather the Job start without it than not start at all.
+  extraEnvFrom: []
 
 # ---
 # Database (PostgreSQL)
@@ -232,11 +306,59 @@ database:
                    # the audit chain), and event triggers require superuser;
                    # object-ownership / CREATE privileges alone are NOT enough
                    # and the migration fails with "permission denied to create
-                   # event trigger" (F-679 / api#591). The API/Worker role
-                   # (this URL when databaseUrlMigrate is set) only needs DML.
+                   # event trigger". The API/Worker role (this URL when
+                   # databaseUrlMigrate is set) needs DML plus CREATE on the
+                   # database (see the pg-boss note below), and must be NAMED
+                   # agledger_app, unless it also owns the schema objects (one
+                   # role migrating and serving carries every privilege by
+                   # ownership). The migration grants DML to that exact role
+                   # name, so a non-owner role called anything else receives no
+                   # privileges at all and the API fails at boot with
+                   # "permission denied for table ...". If your naming standard
+                   # forbids it, make your role a member of that one after
+                   # migrating:
+                   #   GRANT agledger_app TO "your_role" WITH INHERIT TRUE;
+                   # Spell out WITH INHERIT TRUE: PostgreSQL 16+ defaults that
+                   # clause to the member role's own setting, so a NOINHERIT
+                   # role receives nothing from a bare grant. Membership carries
+                   # the privilege set the schema intends, including the
+                   # append-only revokes that leave audit_vault insert-only and
+                   # the ALTER DEFAULT PRIVILEGES that keep later migrations
+                   # reachable. Do NOT substitute a blanket
+                   # GRANT ... ON ALL TABLES IN SCHEMA public: it also hands the
+                   # runtime role UPDATE and DELETE on audit_vault, which is the
+                   # write the chain is protected against. If agledger_app does
+                   # not exist, the migrating role could not create it and the
+                   # schema granted nothing to anyone: grant your role USAGE on
+                   # schema public, SELECT/INSERT/UPDATE/DELETE on all tables
+                   # and the matching ALTER DEFAULT PRIVILEGES, then re-apply
+                   # the append-only revokes. The preflight check names the role
+                   # it connected as and reports both directions.
+                   # Separately from anything the migration grants, the runtime
+                   # role needs CREATE on the database:
+                   #   GRANT CREATE ON DATABASE agledger TO agledger_app;
+                   # pg-boss keeps its queue tables in a schema it installs on
+                   # first start and the API starts pg-boss, so without this the
+                   # API exits at boot with "permission denied for database
+                   # ...". Creating the schema by hand does not substitute:
+                   # pg-boss reads the absence of its own version table as "not
+                   # installed" and issues CREATE SCHEMA IF NOT EXISTS
+                   # regardless, which PostgreSQL refuses without the
+                   # database-level privilege. The grant can be revoked after
+                   # the first successful boot; later pg-boss upgrades stay
+                   # inside the schema it owns by then.
+                   # Both requirements are checked for you: on this path the
+                   # chart runs a pre-install/pre-upgrade hook Job after
+                   # migrating and before any workload starts, and a role that
+                   # cannot serve fails the install with the grant named rather
+                   # than leaving the API and Worker to crash-loop. Read its
+                   # report by label (the Job's name is the release's fullname
+                   # plus -preflight, so select rather than construct it):
+                   #   kubectl logs -n <namespace> --tail=-1 \
+                   #     -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=preflight
   poolMax: 20
   # Auto-rollback any idle-in-transaction backend that exceeds this many ms.
-  # Closes the F-507 deadlock class where a stalled handler holds an advisory
+  # Closes the deadlock class where a stalled handler holds an advisory
   # lock indefinitely. 30s tolerates legitimate slow handlers while keeping
   # deadlock recovery within livez/readyz windows. Set to 0 to disable.
   idleInTxTimeoutMs: 30000
@@ -250,7 +372,7 @@ postgres:
     # storageClassName for the bundled-PG data PVC. Leave empty ("") to use the
     # cluster's DEFAULT storageclass. Bundled PG REQUIRES either a default
     # storageclass or an explicit value here — otherwise the PVC stays Pending
-    # forever and the install hangs (F-727). Modern EKS (1.30+) ships NO default
+    # forever and the install hangs. Modern EKS (1.30+) ships NO default
     # storageclass (the in-tree gp2 default is gone; the EBS CSI addon does not
     # mark one default) — on EKS set this to your provisioner's class, e.g. "gp3".
     storageClassName: ""
@@ -284,14 +406,33 @@ postgres:
 #
 # `GET /federation/v1/admin/instance` reports `configured: false` and names
 # every missing piece until this and both federation keys are set.
+#
+# DATABASE_URL is not settable here on the managed paths: the chart's own
+# Secret already supplies it to every workload through envFrom, and a second
+# entry of the same name would win silently. The render refuses instead. Point
+# the release at another database with `database.externalUrl`, or at another
+# role for the migration with `secrets.databaseUrlMigrate`.
 extraEnv: []
   # - name: WEBHOOK_ACME_SECRET
   #   valueFrom:
   #     secretKeyRef:
   #       name: agledger-webhook-secrets
   #       key: acme
-# Load every key of a Secret/ConfigMap as env — cleanest when you have several
+# Load every key of a Secret/ConfigMap as env, cleanest when you have several
 # provisioning secrets at once.
+#
+# On the external-database path these two lists reach one more pod than the
+# api/worker Deployments: the runtime-role gate below, which is a pre-install
+# hook and so runs before Helm creates any normal resource in the release. It
+# carries them because either can hold the TLS or connection env the Server
+# talks to the database with, and a gate that connects differently from the
+# workload proves nothing. The consequence is that a Secret or ConfigMap
+# referenced here (or by a `valueFrom` in extraEnv) must ALREADY EXIST in the
+# namespace: one created by this same release, such as an umbrella chart's
+# sibling Secret, is not there yet when the hook runs, and the pod sits in
+# CreateContainerConfigError until the install times out. `helm template` and
+# `helm lint` both pass, so this only shows up at install time. Add
+# `optional: true` to the ref if you would rather the gate start without it.
 extraEnvFrom: []
   # - secretRef:
   #     name: agledger-webhook-secrets
@@ -306,7 +447,7 @@ secrets:
                              #     --image=agledger/agledger:<same tag this chart deploys> \
                              #     --command -- /nodejs/bin/node dist/scripts/generate-signing-key.js
                              # --command is required: it replaces the image's
-                             # ENTRYPOINT instead of appending to it (api#1135).
+                             # ENTRYPOINT instead of appending to it.
                              # Install without this value set and the chart
                              # prints the same command with the image already
                              # filled in. Add --algorithm es256 for FIPS hosts.
@@ -400,7 +541,7 @@ ingress:
   #   kubectl label namespace <ns> elbv2.k8s.aws/pod-readiness-gate-inject=enabled
   # Without it, a rolling update counts a new pod Ready as soon as the
   # readinessProbe passes, even though the ALB target is still registering:
-  # the old pod is torn down before the new one receives traffic (#967).
+  # the old pod is torn down before the new one receives traffic.
   # Pair with api.preStopSleepSeconds for the shutdown half of the same race,
   # and consider alb.ingress.kubernetes.io/target-group-attributes:
   #   deregistration_delay.timeout_seconds=30
@@ -464,7 +605,6 @@ serviceAccount:
 # Provisioning (YAML config-as-code)
 # ---
 # Mounts YAML files at startup for declarative resource management.
-# See: docs/engineering/DESIGN-PROVISIONING.md
 provisioning:
   enabled: false
   configPath: /etc/agledger/provisioning  # Mount path inside container
@@ -484,25 +624,48 @@ provisioning:
 
   # Inline YAML content — a ConfigMap is created automatically.
   # Each key becomes a file in the corresponding subdirectory.
+  #
+  # The commented examples below are read back out of this file and validated
+  # against the provisioning loader on every build, so what you uncomment is
+  # what the reconciler accepts. Keep the `  #  ` comment prefix and the
+  # two-space file-key indent if you edit them, or that check stops seeing
+  # them. `examples/provisioning/` carries the fuller versions, including API
+  # keys and field mappings.
   orgs: {}
   #  my-corp.yaml: |
   #    orgs:
   #      - name: My Corp
-  #        slug: my-corp
 
+  # A standalone agent names its owning org. That org must be declared under
+  # `orgs` above, or already exist from an earlier reconcile.
   agents: {}
   #  my-agent.yaml: |
   #    agents:
-  #      - slug: my-agent
-  #        displayName: My Agent
+  #      - displayName: My Agent
+  #        orgName: My Corp
+  #        agentClass: system
 
+  # `ownerName` is an org name (ownerType: org) or an agent displayName
+  # (ownerType: agent, plus `ownerOrgName` to say which org's agent).
   webhooks: {}
   #  notifications.yaml: |
   #    webhooks:
-  #      - url: https://hooks.example.com/agledger
+  #      - ownerName: My Corp
+  #        ownerType: org
+  #        url: https://hooks.example.com/agledger
+  #        eventTypes:
+  #          - record.created
 
+  # A type with a structured completionSchema runs the completion phase; `{}`
+  # makes it notarize-only, terminal at RECORDED on create.
   schemas: {}
   #  custom-type.yaml: |
   #    schemas:
-  #      - type_name: CUSTOM-TYPE-v1
+  #      - type: CUSTOM-TYPE-v1
+  #        displayName: Custom Type
   #        category: custom
+  #        recordSchema:
+  #          type: object
+  #          properties:
+  #            reference: { type: string }
+  #        completionSchema: {}
