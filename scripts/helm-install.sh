@@ -13,6 +13,14 @@
 #     --ca-cert <path>   override the cert path (must exist inside the container)
 #     --no-ca-cert       skip the cert (only safe for DBs that don't require TLS)
 #
+# Supply-chain verification:
+#   Signatures are checked when cosign is present, and skipped with a warning
+#   when it is not. The two levers, in opposite directions:
+#     --skip-verify                 skip the check even where cosign exists (dev ONLY)
+#     AGLEDGER_REQUIRE_VERIFY=true  refuse to install when it cannot be checked
+#   Set AGLEDGER_REQUIRE_VERIFY for production and in CI: it is what makes
+#   verification mandatory rather than best-effort.
+#
 set -euo pipefail
 
 CHART="oci://registry-1.docker.io/agledger/agledger-chart"
@@ -92,7 +100,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Keyless signature verification (cross-repo #667). The release pipeline signs
+# Keyless signature verification. The release pipeline signs
 # the chart + image via GitHub OIDC -> Fulcio -> public Rekor. This bootstrap is
 # advertised as curl|bash, so it MUST verify before it installs/runs anything.
 AGLEDGER_SIGNER_IDENTITY_REGEXP='^https://github\.com/agledger-ai/agledger-api/\.github/workflows/.+@refs/tags/v.+$'
@@ -184,7 +192,7 @@ if [[ -z "$VERSION" ]] && [[ "${AGLEDGER_SKIP_VERIFY:-false}" != "true" ]]; then
   [[ -z "$VERSION" ]] && info "Could not resolve a concrete version to verify — pass --version X.Y.Z to enable verification."
 fi
 
-# Verify the chart (#667-C2) and the image before installing / running them.
+# Verify the chart and the image before installing / running them.
 # Resolve the image to a digest and verify THAT (not the mutable tag), so the
 # keygen pod below runs exactly the bytes we verified — no verify-then-repoint gap.
 IMG_REF="agledger/agledger${VERSION:+:$VERSION}"
@@ -243,47 +251,108 @@ case "$SIGNING_ALGORITHM" in
   ed25519|es256) ;;
   *) fatal "AGLEDGER_SIGNING_ALGORITHM must be ed25519 or es256, got: ${SIGNING_ALGORITHM}" ;;
 esac
-info "Generating ${SIGNING_ALGORITHM} vault signing key..."
-# POSIX sed to read the key, not `grep -oP`: PCRE lookbehind is GNU-only and
-# BSD grep (macOS) rejects -P outright. This script is piped straight from
-# curl to bash, so it stands alone and cannot use lib-compose's helper.
-# `--attach`, never `-it`. Under `curl ... | bash` the script's source is stdin,
-# and `-i` hands that pipe to the pod, which drains the rest of the script.
-# `--attach` streams the pod's output and waits for it to exit (what `--rm`
-# needs) without claiming stdin; `</dev/null` closes the door behind it.
-VAULT_KEY=$(kubectl run agledger-keygen --rm --attach --restart=Never \
-  --image="$IMG_REF" \
-  --command -- /nodejs/bin/node dist/scripts/generate-signing-key.js --algorithm "$SIGNING_ALGORITHM" 2>/dev/null </dev/null \
-  | sed -n 's/^VAULT_SIGNING_KEY=\([^[:space:]][^[:space:]]*\).*/\1/p' | head -1 || true)
+# Whether the operator named this value themselves in their own arguments.
+#
+# `--set-file` below is not "a --set that reads from a file": helm merges ALL
+# FileValues AFTER all Values (MergeValues, pkg/cli/values/options.go),
+# whatever order the flags appear in, so it beats an operator's own
+# `--set secrets.vaultSigningKey=...` even though EXTRA_ARGS is appended after
+# it. Their value winning is exactly what this script's own keygen-failure
+# message and the chart's secret.yaml guard both tell them to rely on, so when
+# they name one we stay out of the way entirely: no keygen pod, no flag of
+# ours, and no "save this key" line naming a key they never asked for.
+#
+# Only their `--set*` forms are checked, not a values file: `--set` already
+# beat `-f` before this change, so values-file behaviour is unchanged and there
+# is nothing here to restore. The two key paths are specific enough that the
+# substring collisions `operator_set_openshift` guards against do not apply.
+operator_named() {
+  [[ "$EXTRA_ARGS" == *"$1"* ]]
+}
 
-if [[ -z "$VAULT_KEY" ]]; then
-  # Fallback: generate locally with openssl if available.
-  #
-  # `openssl base64 -A` for the single-line encode, NOT `base64 -w0 || base64`.
-  # -w0 is GNU-only, and that fallback is a trap in this script specifically:
-  # `A | B || C` groups as `(A|B) || C`, so on macOS the bare `base64` runs with
-  # the SCRIPT'S stdin, which under `curl ... | bash` is the rest of the script.
-  # It swallows the remainder and the run dies silently, having already created
-  # the keygen pod. openssl is guaranteed here (it is this branch's condition)
-  # and -A is portable.
-  if command -v openssl >/dev/null 2>&1; then
-    info "Generating key locally with openssl..."
-    if [[ "$SIGNING_ALGORITHM" == "es256" ]]; then
-      VAULT_KEY=$(openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/null | openssl pkcs8 -topk8 -nocrypt -outform DER 2>/dev/null | openssl base64 -A 2>/dev/null)
-    else
-      VAULT_KEY=$(openssl genpkey -algorithm ed25519 2>/dev/null | openssl pkey -outform DER 2>/dev/null | openssl base64 -A 2>/dev/null)
+VAULT_KEY=""
+if operator_named secrets.vaultSigningKey; then
+  info "Using the vault signing key from your own --set; not generating one."
+else
+  info "Generating ${SIGNING_ALGORITHM} vault signing key..."
+  # POSIX sed to read the key, not `grep -oP`: PCRE lookbehind is GNU-only and
+  # BSD grep (macOS) rejects -P outright. This script is piped straight from
+  # curl to bash, so it stands alone and cannot use lib-compose's helper.
+  # `--attach`, never `-it`. Under `curl ... | bash` the script's source is stdin,
+  # and `-i` hands that pipe to the pod, which drains the rest of the script.
+  # `--attach` streams the pod's output and waits for it to exit (what `--rm`
+  # needs) without claiming stdin; `</dev/null` closes the door behind it.
+  VAULT_KEY=$(kubectl run agledger-keygen --rm --attach --restart=Never \
+    --image="$IMG_REF" \
+    --command -- /nodejs/bin/node dist/scripts/generate-signing-key.js --algorithm "$SIGNING_ALGORITHM" 2>/dev/null </dev/null \
+    | sed -n 's/^VAULT_SIGNING_KEY=\([^[:space:]][^[:space:]]*\).*/\1/p' | head -1 || true)
+
+  if [[ -z "$VAULT_KEY" ]]; then
+    # Fallback: generate locally with openssl if available.
+    #
+    # `openssl base64 -A` for the single-line encode, NOT `base64 -w0 || base64`.
+    # -w0 is GNU-only, and that fallback is a trap in this script specifically:
+    # `A | B || C` groups as `(A|B) || C`, so on macOS the bare `base64` runs with
+    # the SCRIPT'S stdin, which under `curl ... | bash` is the rest of the script.
+    # It swallows the remainder and the run dies silently, having already created
+    # the keygen pod. openssl is guaranteed here (it is this branch's condition)
+    # and -A is portable.
+    if command -v openssl >/dev/null 2>&1; then
+      info "Generating key locally with openssl..."
+      if [[ "$SIGNING_ALGORITHM" == "es256" ]]; then
+        VAULT_KEY=$(openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/null | openssl pkcs8 -topk8 -nocrypt -outform DER 2>/dev/null | openssl base64 -A 2>/dev/null)
+      else
+        VAULT_KEY=$(openssl genpkey -algorithm ed25519 2>/dev/null | openssl pkey -outform DER 2>/dev/null | openssl base64 -A 2>/dev/null)
+      fi
     fi
   fi
+
+  # --set-file, not --set: an argument is world-readable through `ps` and
+  # /proc for the length of the install, and this is the private key every
+  # record on the chain is signed with.
+  [[ -n "$VAULT_KEY" ]] || fatal "Could not generate vault signing key. Generate one and pass it as a file:
+    umask 077
+    openssl genpkey -algorithm ed25519 | openssl pkey -outform DER | openssl base64 -A > vault-signing-key
+    ${0##*/} --set-file secrets.vaultSigningKey=./vault-signing-key ..."
+
+  info "Vault signing key generated"
 fi
 
-[[ -n "$VAULT_KEY" ]] || fatal "Could not generate vault signing key. Generate manually and pass via --set secrets.vaultSigningKey=..."
-
-info "Vault signing key generated"
+# Secret values go to helm through files, not the command line. `eval` puts
+# the whole command in the helm process's argv, where `ps` shows it to every
+# other user on the box for the length of the install: the vault signing key
+# is the private key every record is signed with, and an external DB URL
+# carries its password.
+#
+# `--set-file` and not a `-f` values file: it keeps the same standing relative
+# to an operator's `-f` that `--set` had, so values-file behaviour does not
+# change. It does NOT keep the same standing relative to their `--set`, which is
+# what `operator_named` above exists to handle. It also sidesteps `--set` value
+# parsing, which splits on commas: a database password containing one used to be
+# truncated silently.
+SECRET_DIR=$(mktemp -d)
+trap 'rm -rf "$SECRET_DIR"' EXIT
+chmod 700 "$SECRET_DIR"
+# mktemp honours TMPDIR, and the path ends up inside a string this script runs
+# through `eval`. A quote or a space would re-split it there, and a comma
+# cannot be quoted around at all: helm's own --set-file parser splits its
+# argument on commas. Refuse with the cause named rather than emit
+# "unexpected arguments" from helm.
+case "$SECRET_DIR" in
+  *[,\'\"[:space:]]*) fatal "TMPDIR path contains a space, quote or comma (${SECRET_DIR}); helm cannot read a secret from it. Set TMPDIR to a simple path and re-run." ;;
+esac
+if [[ -n "$VAULT_KEY" ]]; then
+  # No trailing newline: --set-file uses the file's bytes verbatim as the value.
+  printf '%s' "$VAULT_KEY" > "${SECRET_DIR}/vault-signing-key"
+  chmod 600 "${SECRET_DIR}/vault-signing-key"
+fi
 
 # Build helm install command
 HELM_CMD="helm install $RELEASE $CHART"
 HELM_CMD="$HELM_CMD --namespace $NAMESPACE --create-namespace"
-HELM_CMD="$HELM_CMD --set secrets.vaultSigningKey=$VAULT_KEY"
+if [[ -n "$VAULT_KEY" ]]; then
+  HELM_CMD="$HELM_CMD --set-file 'secrets.vaultSigningKey=${SECRET_DIR}/vault-signing-key'"
+fi
 if [[ "$SIGNING_ALGORITHM" == "es256" ]]; then
   # Dedicated chart value; never claim an extraEnv index an operator's own
   # values file or --set could collide with.
@@ -306,7 +375,7 @@ operator_set_openshift() {
   # worth guarding.
   #
   # Helm accepts six spellings of the values flag and all six render, so all
-  # six have to be recognised here (api#1136). The attached forms
+  # six have to be recognised here. The attached forms
   # (--values=F, -f=F, -fF) arrive as a SINGLE token, so a lookahead on the
   # previous token never sees a filename: the guard fell through and appended
   # --set openshift.enabled=true, beating the explicit `false` the operator
@@ -358,7 +427,13 @@ fi
 if [[ "$BUNDLED" == "true" ]]; then
   HELM_CMD="$HELM_CMD --set postgres.bundled.enabled=true"
 elif [[ -n "$DB_URL" ]]; then
-  HELM_CMD="$HELM_CMD --set database.externalUrl=$DB_URL"
+  if operator_named database.externalUrl; then
+    info "Using the database URL from your own --set; ignoring --db."
+  else
+    printf '%s' "$DB_URL" > "${SECRET_DIR}/database-url"
+    chmod 600 "${SECRET_DIR}/database-url"
+    HELM_CMD="$HELM_CMD --set-file 'database.externalUrl=${SECRET_DIR}/database-url'"
+  fi
   if [[ -n "$CA_CERT" && "$CA_CERT" != "none" ]]; then
     HELM_CMD="$HELM_CMD --set config.nodeExtraCaCerts=$CA_CERT"
     info "Using TLS CA cert: $CA_CERT"
@@ -368,28 +443,116 @@ fi
 [[ -n "$EXTRA_VALUES" ]] && HELM_CMD="$HELM_CMD -f $EXTRA_VALUES"
 HELM_CMD="$HELM_CMD $EXTRA_ARGS"
 
+# `helm install` reports a failed hook as a single line naming the Job, and it
+# never reads that Job's log. On the runtime-role gate the log IS the diagnosis
+# (the role it connected as, the privilege that is missing, and the GRANT that
+# supplies it), so print it here, in the same output as the failure, rather than
+# leaving the operator to work out that a failed install left a Job behind worth
+# looking at.
+#
+# Speaks only about a gate run THIS invocation started. Every other install
+# failure falls through to helm's own message, which already says what it was.
+
+# Identity of the gate Job that already exists, read before helm runs.
+#
+# The chart keeps a failed gate Job for 24h on purpose, so one is often still
+# lying around from an earlier attempt. Without this, a re-run that helm
+# refuses outright ("cannot re-use a name that is still in use") would find the
+# old Job, and the operator would be told the database role cannot serve, under
+# a report naming grants they have already applied, while helm's actual message
+# scrolled off the top. `before-hook-creation` deletes and recreates the Job
+# whenever the hook really runs, so a changed uid is exactly "this run got that
+# far".
+preflight_job_uid() {
+  kubectl get job --namespace "$NAMESPACE" \
+      -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=preflight" \
+      -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null || true
+}
+
+report_preflight() {
+  local uid succeeded failed job pod
+  uid="$(preflight_job_uid)"
+  if [[ -z "$uid" || "$uid" == "$PREFLIGHT_UID_BEFORE" ]]; then return 0; fi
+
+  job="$(kubectl get job --namespace "$NAMESPACE" \
+      -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=preflight" \
+      -o name 2>/dev/null | head -1 || true)"
+  if [[ -z "$job" ]]; then return 0; fi
+  succeeded="$(kubectl get "$job" --namespace "$NAMESPACE" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+  if [[ "$succeeded" == "1" ]]; then return 0; fi
+  failed="$(kubectl get "$job" --namespace "$NAMESPACE" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+
+  # The newest pod, by name, rather than `kubectl logs <job>`. The Job retries
+  # once, so there can be two, and asked for the Job kubectl prints "Found 2
+  # pods, using ..." into the middle of the report and then picks one for
+  # itself. Sorting takes the last attempt deliberately.
+  pod="$(kubectl get pod --namespace "$NAMESPACE" \
+      -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=preflight" \
+      --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | tail -1 || true)"
+
+  echo "" >&2
+  if [[ -n "$failed" && "$failed" != "0" ]]; then
+    # What ran is preflight, and a privilege failure is only its most likely
+    # verdict: it also reports a database it cannot reach and a PostgreSQL too
+    # old to run on. Let the report say which; do not put a diagnosis in the
+    # header that the exit status does not establish.
+    echo "  The database check that runs before anything serves did not pass. Its report:" >&2
+  else
+    echo "  The database check that runs before anything serves did not finish." >&2
+    echo "  What it printed before it stopped:" >&2
+  fi
+  echo "" >&2
+  # --tail=-1 because a selector-resolved read defaults to the last 10 lines,
+  # and the half that gets truncated is the remedy.
+  kubectl logs "${pod:-$job}" --namespace "$NAMESPACE" --tail=-1 2>&1 | sed 's/^/  /' >&2 || true
+  echo "" >&2
+  echo "  Migrations are applied and no workload was created, so fixing this costs" >&2
+  echo "  nothing but a re-run. Apply what the report asks for, then run this" >&2
+  echo "  installer again. A failed release keeps its name, so if" >&2
+  echo "  \`helm list --namespace $NAMESPACE\` still shows it, clear it first:" >&2
+  echo "    helm uninstall $RELEASE --namespace $NAMESPACE" >&2
+}
+
 info "Installing AGLedger..."
 echo ""
-eval "$HELM_CMD"
+PREFLIGHT_UID_BEFORE="$(preflight_job_uid)"
+if ! eval "$HELM_CMD"; then
+  report_preflight
+  fatal "Install failed. See the error above."
+fi
 
 echo ""
 info "AGLedger installed. Waiting for pods..."
 
-# Don't swallow the rollout status — a crashlooping image (F-447 class) would
+# Resource names come from the chart's fullname template, which is
+# "<release>-<chart name>" and the chart is named agledger-chart: a name built
+# here from the release alone never resolves, and a fullnameOverride would
+# defeat any construction anyway. Ask the cluster instead. Every chart resource
+# carries the standard instance + component labels, so this holds through a
+# rename of either.
+API_SELECTOR="app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=api"
+API_DEPLOY="$(kubectl get deployment --namespace "$NAMESPACE" -l "$API_SELECTOR" -o name 2>/dev/null | head -1)"
+API_SVC="$(kubectl get service --namespace "$NAMESPACE" -l "$API_SELECTOR" -o name 2>/dev/null | head -1)"
+
+if [[ -z "$API_DEPLOY" ]]; then
+  fatal "helm reported success, but no deployment in namespace '$NAMESPACE' carries the labels $API_SELECTOR. Check: helm status $RELEASE -n $NAMESPACE && kubectl get all -n $NAMESPACE"
+fi
+
+# Don't swallow the rollout status: a crashlooping image would
 # otherwise pass through silently and the script prints "Next steps:" as if
 # the install succeeded. Surface the real exit so the customer sees the bad
 # install before they try to use it.
-if ! kubectl rollout status deployment/"$RELEASE"-agledger-api --namespace "$NAMESPACE" --timeout=120s; then
-  fatal "Pod did not become ready within 120s. Check: kubectl logs deploy/$RELEASE-agledger-api -n $NAMESPACE --previous"
+if ! kubectl rollout status "$API_DEPLOY" --namespace "$NAMESPACE" --timeout=120s; then
+  fatal "Pod did not become ready within 120s. Check: kubectl logs $API_DEPLOY -n $NAMESPACE --previous"
 fi
 
 echo ""
 echo "  Next steps:"
 echo "    1. Create platform API key:"
-echo "       kubectl exec deploy/$RELEASE-agledger-api -n $NAMESPACE -- /nodejs/bin/node dist/scripts/init.js --non-interactive"
+echo "       kubectl exec $API_DEPLOY -n $NAMESPACE -- /nodejs/bin/node dist/scripts/init.js --non-interactive"
 echo ""
 echo "    2. Port-forward to access API:"
-echo "       kubectl port-forward svc/$RELEASE-agledger -n $NAMESPACE 3001:80"
+echo "       kubectl port-forward ${API_SVC:-svc/<name from: kubectl get svc -n $NAMESPACE>} -n $NAMESPACE 3001:80"
 echo "       curl http://localhost:3001/health"
 echo ""
 echo "    3. View license status:"

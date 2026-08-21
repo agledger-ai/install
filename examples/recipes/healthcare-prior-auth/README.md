@@ -27,10 +27,10 @@ Da Vinci PAS / X12 278; AGLedger captures it at the seam rather than re-deriving
 
 ```
   Provider           Payer system of record (Da Vinci PAS / X12 278)     AGLedger (notary + gate)
-  ────────           ───────────────────────────────────────────────    ────────────────────────
-  submit PA   ─────▶  $submit → ClaimResponse (X12 review action)
-                      A1 certified / A3 not-required  ───────────────▶  notarize disposition (terminal)
-                      A2 denied / A4 pended (contested) ──────────────▶  notarize disposition
+  --------           -----------------------------------------------    ------------------------
+  submit PA   -----▶  $submit → ClaimResponse (X12 review action)
+                      A1 certified / A3 not-required  ---------------▶  notarize disposition (terminal)
+                      A2 denied / A4 pended (contested) --------------▶  notarize disposition
                                                                           → medical director renders
                                                                             the verdict via the Gate
                                                                           → signed, offline-verifiable chain

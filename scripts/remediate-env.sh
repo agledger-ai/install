@@ -4,18 +4,18 @@ set -euo pipefail
 # =============================================================================
 # AGLedger — .env Remediation Script
 # =============================================================================
-# Applies the F-410 (missing COMPOSE_FILE) fix to an existing .env. Safe to run
+# Applies the missing-COMPOSE_FILE fix to an existing .env. Safe to run
 # multiple times.
 #
 # Context: v0.19.16 shipped an install.sh that omitted COMPOSE_FILE. v0.19.17
 # fixed the fresh-install path but did not rewrite existing .env files. This
 # script closes that gap for customers who installed at v0.19.16 and have since
-# upgraded. (F-415)
+# upgraded.
 #
 # Usage:
-#   ./deploy/scripts/remediate-env.sh
-#   ./deploy/scripts/remediate-env.sh --non-interactive
-#   ./deploy/scripts/remediate-env.sh --dry-run
+#   ./scripts/remediate-env.sh
+#   ./scripts/remediate-env.sh --non-interactive
+#   ./scripts/remediate-env.sh --dry-run
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,7 +43,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 ENV_FILE="${COMPOSE_DIR}/.env"
-[[ -f "$ENV_FILE" ]] || fatal "No .env at ${ENV_FILE}. Run install.sh first."
+[[ -f "$ENV_FILE" ]] || fatal "No .env at ${ENV_FILE}. Run ./scripts/install.sh first."
 
 load_env
 detect_db_mode
@@ -52,16 +52,10 @@ detect_db_mode
 
 PROPOSED=()
 
-# F-410: missing COMPOSE_FILE
+# Missing COMPOSE_FILE
 if ! grep -qE '^COMPOSE_FILE=' "$ENV_FILE" 2>/dev/null; then
-  OVERLAY_LIST="docker-compose.yml"
-  if [[ "${USES_BUNDLED_PG}" == "true" ]] && [[ -f "${COMPOSE_DIR}/docker-compose.postgres.yml" ]]; then
-    OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.postgres.yml"
-  fi
-  if [[ -f "${COMPOSE_DIR}/docker-compose.prod.yml" ]]; then
-    OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.prod.yml"
-  fi
-  PROPOSED+=("F-410|add|COMPOSE_FILE=${OVERLAY_LIST}|${OVERLAY_LIST}")
+  build_overlay_list
+  PROPOSED+=("COMPOSE_FILE|add|COMPOSE_FILE=${OVERLAY_LIST}|${OVERLAY_LIST}")
 fi
 
 if [[ ${#PROPOSED[@]} -eq 0 ]]; then
@@ -117,9 +111,15 @@ for p in "${PROPOSED[@]}"; do
   summary=${rest%%|*}
   value=${rest#*|}
   case "$tag" in
-    F-410)
+    COMPOSE_FILE)
       upsert_env_var COMPOSE_FILE "${value}" "$ENV_FILE"
-      info "[F-410] Added ${summary}"
+      info "[COMPOSE_FILE] Added ${summary}"
+      ;;
+    *)
+      # A tag added to PROPOSED without an apply arm would print its plan
+      # line and then silently do nothing. Fail loudly so the gap is a
+      # script error, not a no-op the operator trusts.
+      fatal "remediate-env.sh: no apply arm for proposed change '${tag}' (${action} ${summary}). This is a script bug."
       ;;
   esac
 done

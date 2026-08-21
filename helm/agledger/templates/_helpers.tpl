@@ -142,8 +142,8 @@ without `--set-string`.
 alongside a `valueFrom` is rejected as "may not have more than one field
 specified". EnvVar carries exactly name/value/valueFrom, so this covers the type.
 */}}
-{{- define "agledger.extraEnv" -}}
-{{- range .Values.extraEnv }}
+{{- define "agledger.envList" -}}
+{{- range . }}
 - name: {{ .name | quote }}
   {{- if hasKey . "value" }}
   value: {{ .value | quote }}
@@ -152,6 +152,53 @@ specified". EnvVar carries exactly name/value/valueFrom, so this covers the type
   valueFrom:
     {{- toYaml . | nindent 4 }}
   {{- end }}
+{{- end }}
+{{- end }}
+
+{{/* The api/worker list. `migrate.extraEnv` renders through the same helper —
+the migration pod's env is a separate list (its knobs are migrate-only) but it
+must not be a separate implementation of the quoting rule above.
+
+Call sites pipe through `trim` before `nindent`: the range above opens each
+entry with a newline, so `nindent` alone leaves a whitespace-only line under
+`env:`. Valid YAML, but it shows up in every `helm template` an operator reads.
+*/}}
+{{- define "agledger.extraEnv" -}}
+{{- include "agledger.envList" .Values.extraEnv -}}
+{{- end }}
+
+{{/*
+Refuse a DATABASE_URL that arrives through two channels at once.
+
+Every workload consumes the chart's Secret through `envFrom`, and that Secret
+carries DATABASE_URL on both managed paths (`database.externalUrl` and bundled
+Postgres). An `extraEnv` entry of the same name is then a second channel:
+Kubernetes does not reject the duplicate, an explicit `env` entry beats
+`envFrom`, and the render says none of it, so the workload quietly talks to a
+database no other part of the release names.
+
+Only fires where the chart KNOWS the Secret supplies the variable. Under
+`secrets.existingSecret` the operator owns those keys, and `extraEnv` may be
+the only channel there, so the guard stays out of the way.
+
+Usage: {{- include "agledger.assertNoDuplicateDatabaseUrl" (dict "envList" .Values.extraEnv "field" "extraEnv" "source" "the chart's Secret") }}
+*/}}
+{{- define "agledger.assertNoDuplicateDatabaseUrl" -}}
+{{- $field := .field -}}
+{{- $source := .source -}}
+{{- range .envList }}
+{{- if eq .name "DATABASE_URL" }}
+{{- fail (printf "%s sets DATABASE_URL while %s also supplies it. Kubernetes keeps both, an explicit env entry wins over envFrom, and nothing in the rendered manifest says so. This workload would run against a database the rest of the release never names. Pick one channel: drop the DATABASE_URL entry from %s, or set the connection string where the release already reads it (database.externalUrl, or secrets.databaseUrlMigrate for the migration Job)." $field $source $field) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+True (non-empty) when the chart's own Secret carries DATABASE_URL.
+*/}}
+{{- define "agledger.chartSuppliesDatabaseUrl" -}}
+{{- if not .Values.secrets.existingSecret }}
+{{- if or .Values.database.externalUrl .Values.postgres.bundled.enabled }}true{{ end }}
 {{- end }}
 {{- end }}
 
@@ -169,7 +216,7 @@ Mounts each subdirectory from its ConfigMap.
 {{- define "agledger.provisioningVolumeMounts" -}}
 {{- if .Values.provisioning.enabled }}
 {{- /* Keep in sync with provisioningVolumes and provisioning-configmap.yaml */ -}}
-{{- $subdirs := list "enterprises" "agents" "webhooks" "schemas" }}
+{{- $subdirs := list "orgs" "agents" "webhooks" "schemas" }}
 {{- range $subdir := $subdirs }}
 - name: provisioning-{{ $subdir }}
   mountPath: {{ $.Values.provisioning.configPath }}/{{ $subdir }}
@@ -190,25 +237,39 @@ Two modes per subdirectory:
 {{- if .Values.provisioning.enabled }}
 {{- $chartCM := include "agledger.provisioningConfigMapName" . }}
 {{- /* Keep in sync with provisioningVolumeMounts and provisioning-configmap.yaml */ -}}
-{{- $subdirs := list "enterprises" "agents" "webhooks" "schemas" }}
+{{- $subdirs := list "orgs" "agents" "webhooks" "schemas" }}
 {{- range $subdir := $subdirs }}
 {{- $existingCM := index $.Values.provisioning.existingConfigMaps $subdir }}
+{{- $inline := index $.Values.provisioning $subdir }}
 - name: provisioning-{{ $subdir }}
+  {{- if $existingCM }}
   configMap:
-    {{- if $existingCM }}
     name: {{ $existingCM }}
-    {{- else }}
-    name: {{ $chartCM }}
-    {{- end }}
     defaultMode: 292  # 0444
     optional: true
-    {{- if and (not $existingCM) (index $.Values.provisioning $subdir) }}
+  {{- else if $inline }}
+  configMap:
+    name: {{ $chartCM }}
+    defaultMode: 292  # 0444
+    optional: true
     items:
-      {{- range $key, $_ := index $.Values.provisioning $subdir }}
+      {{- range $key, $_ := $inline }}
       - key: {{ $subdir }}--{{ $key }}
         path: {{ $key }}
       {{- end }}
-    {{- end }}
+  {{- else }}
+  {{- /*
+    Nothing to project into this subdirectory. It still has to EXIST, because
+    the loader is pointed at the parent and a missing parent is a boot error —
+    but it must be empty. Mounting the chart ConfigMap here without an `items`
+    filter projects EVERY key into it: `kubelet` treats an empty items list the
+    same as an absent one, so a chart with orgs and nothing else wrote
+    orgs--my-corp.yaml into agents/, webhooks/ and schemas/ as well, and the
+    Server booted "completed with errors" reporting three missing-array
+    failures against files the operator never wrote.
+  */}}
+  emptyDir: {}
+  {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

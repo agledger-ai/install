@@ -27,11 +27,11 @@ set -euo pipefail
 #           openssl, git, and cosign; `install` runs it for you.
 #
 # Quick start:
-#   ./agl-deploy.sh -H agl@HOST -i ~/.ssh/agl install
-#   ./agl-deploy.sh -H agl@HOST -i ~/.ssh/agl tunnel    # then curl localhost:3001/health
+#   ./scripts/agl-deploy.sh -H agl@HOST -i ~/.ssh/agl install
+#   ./scripts/agl-deploy.sh -H agl@HOST -i ~/.ssh/agl tunnel    # then curl localhost:3001/health
 # =============================================================================
 
-# --- Inline helpers (kept in lockstep with deploy/scripts/lib-compose.sh) ---
+# --- Inline helpers (kept in lockstep with scripts/lib-compose.sh) ---
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

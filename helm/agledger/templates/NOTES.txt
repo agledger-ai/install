@@ -18,7 +18,7 @@ Database:   Bundled PostgreSQL (not recommended for production)
 
   NOTE: bundled PG provisions a PersistentVolumeClaim using your cluster's
   DEFAULT storageclass. If your cluster has none (e.g. EKS 1.30+, which ships
-  no default), the PVC stays Pending and this install hangs (F-727). Check:
+  no default), the PVC stays Pending and this install hangs. Check:
     kubectl get storageclass            # one row must be marked (default)
     kubectl get pvc {{ include "agledger.fullname" . }}-pgdata   # should be Bound, not Pending
   If there is no default, set an explicit class and re-run:
@@ -91,8 +91,9 @@ Image pin (production hardening):
 {{- if (.Values.openshift).enabled }}
 
 OpenShift mode is ON:
-  The pod-level securityContext is omitted from the api Deployment, the worker
-  Deployment and the migrate Job, so the SCC assigns the uid. Non-root now comes
+  The pod-level securityContext is omitted from every pod the chart creates
+  (api, worker, the migrate Job, and on the external-database path the
+  runtime-role gate Job), so the SCC assigns the uid. Non-root now comes
   from the image's own USER 65532 and, on OpenShift, from restricted-v2 itself.
   Container hardening is unchanged (read-only root filesystem, no privilege
   escalation, all capabilities dropped).

@@ -6,7 +6,8 @@
 # Automatically resolves paths relative to this script's location.
 # =============================================================================
 
-# Resolve paths relative to deploy/ directory
+# DEPLOY_DIR is the checkout root (the directory holding scripts/); REPO_ROOT is
+# its PARENT, which is where backups and support bundles land
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "${DEPLOY_DIR}/.." && pwd)"
 COMPOSE_DIR="${DEPLOY_DIR}/compose"
@@ -228,9 +229,61 @@ pgdata_volume_state() {
 # Read KEY=VALUE from an env file, stripping inline comments (whitespace + '#')
 # and surrounding whitespace — matching docker-compose's native parser. Naive
 # `cut -d= -f2-` leaves inline comments in place and defeats equality checks
-# against values like "true" (.env.example ships trailing comments). (F-415)
+# against values like "true" (.env.example ships trailing comments).
 # Returns empty string if the key is absent.
 # Usage: VALUE=$(get_env_value KEY FILE)
+# Which version an install.sh run should use, and where that came from.
+# Echoes "<version>|<source>", source one of: requested, installed, latest.
+# An empty version with source `latest` means "go ask Docker Hub".
+#
+# A version, like a registry, names an install for its life and not for one
+# process, so a run that passes no --version adopts what the last install
+# wrote and re-running the installer is idempotent. Resolving latest here
+# instead would make the flagless re-run a version change: it would rewrite
+# AGLEDGER_VERSION, re-pin the digest and apply migrations, with no backup taken
+# and without the word "upgrade" anywhere in the output. Moving between releases
+# is upgrade.sh's job, because upgrade.sh backs up first and writes
+# backup/.pre-upgrade-version, the one file that says what to roll back to.
+#
+# Extracted so the guards can drive every case with no network and no daemon.
+install_version_decision() {
+  local requested="$1" installed="$2" has_install_state="${3:-false}"
+  if [[ -n "$requested" ]]; then
+    printf '%s|requested' "$requested"
+    return 0
+  fi
+  # Two things have to be true before a recorded version is adopted, and each
+  # covers a case the other does not.
+  #
+  # `has_install_state` (env_file_carries_install_state: a PLATFORM_API_KEY or
+  # VAULT_SIGNING_KEY, which only a completed install writes) separates a real
+  # install from a .env that merely exists. install.sh copies .env.example over
+  # early and does not write the concrete version until much later, so every
+  # fatal in between leaves a file that looks installed and is not.
+  #
+  # The version also has to BE a version. .env.example ships the placeholder
+  # `AGLEDGER_VERSION=latest`, which the documented external-database onramp
+  # tells an operator to copy and edit before the first install. Adopting it
+  # would pin the install to a floating tag and record it: upgrade.sh then reads
+  # `latest` as CURRENT_VERSION and writes it into backup/.pre-upgrade-version,
+  # so the one file that says what to roll back to names the image you just
+  # upgraded to. A tag that is not a release number falls through to Docker Hub
+  # instead, which is what a first install should do.
+  if [[ "$has_install_state" == "true" ]] && is_concrete_version "$installed"; then
+    printf '%s|installed' "$installed"
+    return 0
+  fi
+  printf '|latest'
+}
+
+# True for something shaped like a release number (`1.4.0`, `v1.4.0`,
+# `1.4.0-rc.1`), false for a floating tag (`latest`, `stable`, `main`, `edge`)
+# or an empty value. Deliberately a shape test rather than a deny-list: a tag
+# nobody has thought of yet is still not a version to pin an install to.
+is_concrete_version() {
+  [[ "${1#v}" =~ ^[0-9] ]]
+}
+
 get_env_value() {
   local key="$1" file="$2"
   [[ -f "$file" ]] || return 0
@@ -260,11 +313,98 @@ get_env_value() {
   # a database password (fails loudly, locally, at connect) or the federation
   # identity peers have stored (fails silently, remotely, and only on their
   # side).
-  grep -E "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$file" 2>/dev/null \
-    | tail -1 \
-    | sed -E "s|^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=||; s|[[:space:]]+#.*$||" \
-    | tr -d '[:space:]' \
-    | sed -E "s|^\"(.*)\"$|\\1|; s|^'(.*)'$|\\1|" || true
+  #
+  # The decode itself is `dotenv_decode_value`, shared with `load_env` and with
+  # the file `docker run --env-file` is handed, so all three readers of one
+  # `.env` resolve a value to the same string.
+  local raw
+  raw=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$file" 2>/dev/null | tail -1 || true)
+  [[ -n "$raw" ]] || return 0
+  dotenv_decode_value "${raw#*=}"
+}
+
+# Decode the text to the right of the `=` in one env-file assignment, printing
+# what docker-compose's dotenv parser would hand a container.
+#
+# Three readers used to decode one file three different ways, and the three
+# disagreed on any `DATABASE_URL` carrying more than one query parameter --
+# which the pg driver's own startup warning tells operators to write, and which
+# `connect_timeout` or `application_name` produce too:
+#
+#   DATABASE_URL=...?sslmode=require&uselibpqcompat=true
+#     `source .env` read this as UNSET, because `&` backgrounds the assignment.
+#   DATABASE_URL="...?sslmode=require&uselibpqcompat=true"
+#     `docker run --env-file` read this WITH its quotes, because --env-file is
+#     not a dotenv parser: it splits on the first `=` and takes the rest
+#     literally.
+#
+# There was no third form that worked everywhere, and neither failure named
+# itself: the bare form made `detect_db_mode` report bundled and backup.sh dump
+# an empty container while the install served Aurora, and the quoted form ended
+# the install "installed, but NOT usable (no platform API key)".
+#
+# Quoting rules, matching compose: inside quotes the value ends at the closing
+# quote and the rest of the line is a comment, so `#` is ordinary text there.
+# Unquoted, a comment starts at whitespace + `#`, and surrounding whitespace is
+# not part of the value. Internal whitespace IS part of it (`ORG_NAME=Acme Corp`).
+dotenv_decode_value() {
+  local v="$1" body
+  # Whitespace around the `=` (`KEY = v`, from hand-editing) is not the value.
+  while [[ "$v" == [[:space:]]* ]]; do v="${v#[[:space:]]}"; done
+
+  if [[ "$v" == '"'* ]]; then
+    body="${v#\"}"
+    if [[ "$body" == *'"'* ]]; then
+      printf '%s' "${body%%\"*}"
+      return 0
+    fi
+  elif [[ "$v" == "'"* ]]; then
+    body="${v#\'}"
+    if [[ "$body" == *"'"* ]]; then
+      printf '%s' "${body%%\'*}"
+      return 0
+    fi
+  fi
+
+  # Unquoted (or an unterminated quote, which compose also treats as literal).
+  v=$(printf '%s' "$v" | sed -E 's|[[:space:]]+#.*$||')
+  while [[ "$v" == *[[:space:]] ]]; do v="${v%[[:space:]]}"; done
+  printf '%s' "$v"
+}
+
+# Every assignment SRC makes, decoded, written to DST as bare `KEY=value` --
+# no `export`, no quotes, no inline comments, one line each.
+#
+# This is the only form `docker run --env-file` reads the way compose does.
+# Handing it the operator's `.env` verbatim is what made `mint_platform_key`
+# pass a quoted URL through with its quotes still attached, so init dialled a
+# host named `"postgresql:` and the install ended with no credential.
+dotenv_normalize_file() {
+  local src="$1" dst="$2" line key
+  : > "$dst"
+  [[ -f "$src" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*= ]] || continue
+    key="${BASH_REMATCH[2]}"
+    printf '%s=%s\n' "$key" "$(dotenv_decode_value "${line#*=}")" >> "$dst"
+  done < "$src"
+}
+
+# True when FILE puts CONTENT on the right of `DATABASE_URL=`. The question
+# `detect_db_mode` needs is "does this install declare a database", which is
+# not the same as "can this reader make a value out of it" -- that difference
+# is exactly the case it must refuse to guess through.
+#
+# Quotes, whitespace and an inline comment are not content, so the deliberate
+# `DATABASE_URL=""` an operator writes for "bundled" answers no rather than
+# tripping the refusal.
+env_file_declares_database_url() {
+  local file="${1:-}" raw
+  [[ -f "$file" ]] || return 1
+  raw=$(grep -E "^[[:space:]]*(export[[:space:]]+)?DATABASE_URL[[:space:]]*=" "$file" 2>/dev/null | tail -1 || true)
+  [[ -n "$raw" ]] || return 1
+  raw=$(printf '%s' "${raw#*=}" | tr -d "[:space:]\"'" | sed -E 's|#.*$||')
+  [[ -n "$raw" ]]
 }
 
 # The bundled-Postgres connection string, built from an env file the way the
@@ -355,7 +495,7 @@ is_uuid() {
 # and 401 every message after the next restart. There is no such hazard in the
 # other direction: a Server whose id is absent or is the old literal "default"
 # cannot have completed a handshake, because the peer's schema declares
-# `peerHubId` as `format: uuid` and refuses it (#1193).
+# `peerHubId` as `format: uuid` and refuses it.
 federation_hub_id_action() {
   local file="$1"
   is_uuid "$(get_env_value AGLEDGER_INSTANCE_ID "$file")" && return 0
@@ -473,17 +613,17 @@ grafana_password_action() {
 # The Server refusing to boot is correct; what was not is where the operator
 # found out. Compose surfaces the refusal as "container is unhealthy", the
 # fatal naming the variable lands in the container log, and the keys came up
-# one per install run (#1163). This reports the whole set at once, on the host,
+# one per install run. This reports the whole set at once, on the host,
 # before the pull.
 #
 # Prints one gap per line: a headline, then remedy lines indented four spaces.
 # Empty output means nothing is missing. Mirrors the `if (isProd)` block in
-# src/config.ts; the two are kept in step by hand.
+# the Server's config loader; the two are kept in step by hand.
 #
 # Usage: while IFS= read -r gap; do ...; done < <(missing_prod_config FILE)
 missing_prod_config() {
   local file="$1" db_url node_env
-  # Every gate below is scoped to production, exactly as config.ts scopes them.
+  # Every gate below is scoped to production, exactly as the config loader scopes them.
   #
   # Absent counts as production: the image bakes `ENV NODE_ENV=production` and
   # compose does not override it, so a .env that omits the variable still boots
@@ -505,7 +645,7 @@ missing_prod_config() {
   fi
 
   # Only meaningful once a DATABASE_URL exists: the bundled path composes one
-  # from POSTGRES_* at container start, and config.ts skips the check when the
+  # from POSTGRES_* at container start, and the config loader skips the check when the
   # variable is empty for the same reason.
   db_url="$(get_env_value DATABASE_URL "$file")"
   if [[ -n "$db_url" ]] \
@@ -538,6 +678,324 @@ sort_semver() {
 parse_signing_key() {
   sed -n 's/^VAULT_SIGNING_KEY=\([^[:space:]][^[:space:]]*\).*/\1/p' | head -1
 }
+
+# --- External database: credentials, and a client old enough to refuse ---
+
+# Percent-decode one URI component.
+urldecode() {
+  local s="${1//+/ }"
+  case "$s" in
+    *%*) printf '%b' "${s//%/\\x}" ;;
+    *)   printf '%s' "$s" ;;
+  esac
+}
+
+# Decompose a postgres:// URL into the PG* environment variables libpq reads,
+# and export them.
+#
+# Every psql/pg_dump/pg_restore call on the external-database path used to take
+# the URL as an argument, which puts the password in the process's argv where
+# `ps` and /proc show it to every local user on the box. Backups run on a
+# schedule, and the external-database branch is exactly the one whose URL holds
+# a real managed-database password, so a scheduled backup re-exposes it on
+# every run.
+#
+# It also fixes a second thing. `psql URL -d postgres` does not connect to the
+# maintenance database on that server: psql takes positionals as [dbname
+# [username]], so with -d supplying the dbname the URL is consumed as a
+# *username* and host, port and password fall back to libpq defaults. Once the
+# connection lives in the environment, `-d postgres` means what it reads as.
+#
+# Usage: pg_env_from_url "$DATABASE_URL"   (exports; call in a subshell to scope)
+pg_env_from_url() {
+  local url="$1"
+  [[ "$url" == postgres://* || "$url" == postgresql://* ]] \
+    || { echo "Not a postgres URL: ${url%%://*}://..." >&2; return 1; }
+
+  local rest="${url#*://}" query="" userinfo="" hostport="" db=""
+  case "$rest" in *\?*) query="${rest#*\?}"; rest="${rest%%\?*}" ;; esac
+  # Split on the LAST @: a password may legally contain ':' but an unencoded
+  # '@' is not legal in userinfo, so the last one is the delimiter.
+  case "$rest" in *@*) userinfo="${rest%@*}"; rest="${rest##*@}" ;; esac
+  hostport="${rest%%/*}"
+  case "$rest" in */*) db="${rest#*/}" ;; esac
+
+  local user="${userinfo%%:*}" pass=""
+  case "$userinfo" in *:*) pass="${userinfo#*:}" ;; esac
+
+  local host="${hostport%%:*}" port=""
+  case "$hostport" in *:*) port="${hostport##*:}" ;; esac
+
+  PGHOST="$(urldecode "${host:-localhost}")"
+  export PGHOST
+  [[ -n "$port" ]] && export PGPORT="$port"
+  if [[ -n "$user" ]]; then PGUSER="$(urldecode "$user")"; export PGUSER; fi
+  if [[ -n "$pass" ]]; then PGPASSWORD="$(urldecode "$pass")"; export PGPASSWORD; fi
+  if [[ -n "$db" ]]; then PGDATABASE="$(urldecode "$db")"; export PGDATABASE; fi
+
+  # The two query parameters a managed database actually needs. Anything else
+  # in the query string is left behind rather than guessed at.
+  local param
+  for param in sslmode sslrootcert; do
+    case "&${query}" in
+      *"&${param}="*|*"?${param}="*)
+        local value="${query##*"${param}"=}"
+        value="${value%%&*}"
+        case "$param" in
+          sslmode)     PGSSLMODE="$(urldecode "$value")"; export PGSSLMODE ;;
+          sslrootcert) PGSSLROOTCERT="$(urldecode "$value")"; export PGSSLROOTCERT ;;
+        esac
+        ;;
+    esac
+  done
+}
+
+# psql used only to ASK the server its version. Unlike pg_dump/pg_restore,
+# psql does not refuse a version it does not match, so any recent one answers
+# and this needs no host client installed. Same image the bundled database
+# uses, so nothing new is pinned.
+PG_QUERY_IMAGE="${PG_QUERY_IMAGE:-postgres:18-alpine}"
+
+# Major version of the server the PG* environment points at, or nothing.
+pg_server_major() {
+  local num=""
+  if command -v psql >/dev/null 2>&1; then
+    num="$(psql -tAc 'SHOW server_version_num' 2>/dev/null | tr -d '[:space:]')"
+  elif command -v docker >/dev/null 2>&1; then
+    local net=()
+    case "${PGHOST:-}" in localhost|127.0.0.1|::1|"") net=(--network host) ;; esac
+    num="$(docker run --rm \
+      -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE \
+      "${net[@]}" "$PG_QUERY_IMAGE" psql -tAc 'SHOW server_version_num' 2>/dev/null | tr -d '[:space:]')"
+  fi
+  [[ "$num" =~ ^[0-9]+$ ]] || return 1
+  echo $(( num / 10000 ))
+}
+
+# Major version of a local client binary (pg_dump, psql, pg_restore).
+pg_client_major() {
+  local out
+  out="$("$1" --version 2>/dev/null)" || return 1
+  # "pg_dump (PostgreSQL) 16.14 (Ubuntu 16.14-0ubuntu0.24.04.1)" -> 16.
+  # The first number in the line is the version on every packaging of these
+  # tools; the distro suffix that follows also carries digits, so take the
+  # first match rather than the last.
+  [[ "$out" =~ ([0-9]+) ]] || return 1
+  echo "${BASH_REMATCH[1]}"
+}
+
+# Run a pg client tool against the external database with a version that the
+# server will accept.
+#
+# pg_dump refuses to dump a server newer than itself, and the host client is
+# routinely older than the server: this product ships PostgreSQL 18 and is
+# validated against Aurora 18, while Ubuntu 24.04 (a platform install.sh
+# recognises by name in its own preflight) carries client 16 in the default
+# repos. Without this, the default outcome on a supported host is no backup
+# at all.
+#
+# Prefer the host binary when it is new enough. Otherwise run the matching
+# client from a container, which needs no new pin because the version comes
+# from the server itself. Credentials pass as environment names only, never as
+# arguments.
+#
+# Usage: pg_client_run pg_dump -Fc          (stdout is the tool's stdout)
+pg_client_run() {
+  local tool="$1"; shift
+  local server_major client_major
+  server_major="$(pg_server_major || true)"
+  client_major="$(command -v "$tool" >/dev/null 2>&1 && pg_client_major "$tool" || true)"
+
+  if [[ -n "$client_major" && ( -z "$server_major" || "$client_major" -ge "$server_major" ) ]]; then
+    "$tool" "$@"
+    return
+  fi
+
+  if [[ -z "$server_major" ]]; then
+    fatal "Cannot reach the database to check its version, and no ${tool} is installed. Check DATABASE_URL and network reachability." >&2
+  fi
+
+  # Every notice this function emits goes to stderr, without exception. Its
+  # stdout is the tool's stdout and callers redirect it into the artifact
+  # (`pg_client_run pg_dump -Fc > db.dump`), so a status line written to stdout
+  # is not a status line: it is 118 bytes in front of PGDMP, and the dump it
+  # prefixes is unreadable by pg_restore while the backup still reports success.
+  if [[ -n "$client_major" ]]; then
+    info "Host ${tool} is ${client_major}; the server is ${server_major}. Using a matching client from a container." >&2
+  else
+    info "No ${tool} on this host. Using a PostgreSQL ${server_major} client from a container." >&2
+  fi
+
+  command -v docker >/dev/null 2>&1 || fatal >&2 \
+    "Need a PostgreSQL ${server_major} ${tool} and this host has $([[ -n "$client_major" ]] && echo "only ${client_major}" || echo "none"), with no docker to fall back on.
+  Install matching client tools, e.g. on Debian/Ubuntu:
+    sudo install -d /usr/share/postgresql-common/pgdg
+    sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    echo \"deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt \$(lsb_release -cs)-pgdg main\" | sudo tee /etc/apt/sources.list.d/pgdg.list
+    sudo apt-get update && sudo apt-get install -y postgresql-client-${server_major}"
+
+  # A host-local database is not reachable from inside a container's own
+  # network namespace, so join the host's. (Linux; on macOS set PGHOST to
+  # host.docker.internal instead.)
+  local net=()
+  case "$PGHOST" in
+    localhost|127.0.0.1|::1|"") net=(--network host) ;;
+  esac
+
+  docker run --rm -i \
+    -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE \
+    "${net[@]}" "postgres:${server_major}-alpine" "$tool" "$@"
+}
+
+# Do two connection endpoints name the same PostgreSQL server?
+#
+# Asked because a restore reads one URL and writes another: the backup comes
+# from DATABASE_URL and the DROP is issued on DATABASE_URL_MIGRATE. The database
+# NAME matches by accident on every install (the engine's default is `agledger`
+# everywhere), so the name is not the part worth comparing — the host is.
+#
+# An omitted port is 5432, and the loopback spellings are one host: those are
+# the two ways two identical endpoints are written differently, and a false
+# refusal here stops a restore that should run.
+#
+# Usage: pg_endpoints_match "$host_a" "$port_a" "$host_b" "$port_b"
+pg_endpoints_match() {
+  local host_a="$1" port_a="${2:-5432}" host_b="$3" port_b="${4:-5432}"
+  [[ -n "$port_a" ]] || port_a=5432
+  [[ -n "$port_b" ]] || port_b=5432
+  case "$host_a" in localhost|127.0.0.1|::1|"") host_a=localhost ;; esac
+  case "$host_b" in localhost|127.0.0.1|::1|"") host_b=localhost ;; esac
+  [[ "$host_a" == "$host_b" && "$port_a" == "$port_b" ]]
+}
+
+# Is this file a PostgreSQL custom-format archive?
+#
+# A backup that cannot be read is worth nothing, and the two ways this file has
+# been wrong are both silent: a status line written ahead of the archive (the
+# dump body is intact and pg_restore refuses the whole file), and a dump that
+# produced no bytes at all. Both leave a plausible-looking tarball behind and
+# both are only discovered by the restore, which by then has already dropped
+# the database.
+#
+# `PGDMP` is the magic at offset 0 of every custom-format archive, so this needs
+# no client, no server and no container, and it names WHICH way the file is
+# wrong. Callers pair it with the deeper check they can afford.
+#
+# Usage: pg_dump_magic_ok /path/to/db.dump
+pg_dump_magic_ok() {
+  local file="$1"
+  [[ -s "$file" ]] || return 1
+  [[ "$(head -c 5 "$file" 2>/dev/null)" == "PGDMP" ]]
+}
+
+# What is in front of the archive, for an operator who has to act on it.
+# Prints the first line, truncated; empty when the file is empty.
+pg_dump_prefix_hint() {
+  head -c 200 "$1" 2>/dev/null | head -1 | tr -d '\0'
+}
+
+# --- The audit-chain event trigger ---
+#
+# The baseline schema installs `agledger_block_audit_drop`, an sql_drop event
+# trigger that is layer 2 of the tamper model, the DDL guard: it blocks in-band
+# DROP of `audit_vault`, its partitions, the four `org_admin_read*` tables and
+# `vault_signing_keys`. CREATE EVENT TRIGGER is superuser-only, and
+# a managed database hands you an owner role with CREATEDB and not that, which
+# is the default shape on Aurora, RDS, Cloud SQL and Azure Database. So every
+# script that rebuilds this schema has to ask the question BEFORE it does
+# anything it cannot take back.
+#
+# One predicate, one verdict, one remedy, shared by install.sh (which asks
+# before it installs) and restore.sh (which asks before it drops the database).
+# They were separate and only install.sh asked, so a restore discovered it from
+# inside pg_restore, with the database already dropped.
+
+# The privilege probe, for the CONNECTED role: superuser, or a member of the
+# superuser-equivalent role each managed provider substitutes for it.
+#
+# A bare boolean EXPRESSION, deliberately: no leading SELECT, no trailing
+# semicolon. The two callers need it in different positions, and a fragment is
+# the only form that composes into both. restore.sh wraps it in a SELECT of its
+# own and feeds that to `psql -tA`, which answers `t`/`f`; install.sh drops it
+# into a select list that already opened with `SELECT current_user AS who,` and
+# reads the column through node. Shipping the SELECT inside the variable made
+# install.sh's query `SELECT current_user AS who, SELECT COALESCE(...)`, which
+# is a syntax error, and because the probe's failure is swallowed by `|| true`
+# the gate degraded from a refusal to a warning on every external install.
+# audit_event_trigger_probe_sql() is the standalone form; use it rather than
+# prepending SELECT by hand.
+# shellcheck disable=SC2034  # read by install.sh and restore.sh, which source this file
+AUDIT_EVENT_TRIGGER_PREDICATE="COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false)
+    OR COALESCE((SELECT bool_or(pg_has_role(current_user, oid, 'MEMBER')) FROM pg_roles
+                  WHERE rolname IN ('rds_superuser','cloudsqlsuperuser','azure_pg_admin')), false)"
+
+# The standalone statement, for a caller that wants the answer on its own.
+audit_event_trigger_probe_sql() {
+  printf 'SELECT %s;\n' "${AUDIT_EVENT_TRIGGER_PREDICATE}"
+}
+
+# Classify a probe answer. Three verdicts, not two: "answered no" and "could not
+# ask" are different, and only the first is worth refusing on. A probe that
+# never ran — a connection reset during the failover a restore happens in, a
+# role that cannot read pg_roles — must not read as permission granted, and
+# must not read as permission denied either. Same reason the DB_PRESENT probe
+# in restore.sh keeps its own failure separate from its answer.
+#
+# Takes the raw probe output, because the two producers spell it differently:
+# psql -tA prints `t`/`f`, the node probe prints `PRIV=true`/`PRIV=false`.
+#
+# Usage: verdict=$(audit_event_trigger_verdict "$probe_output")   # ok|refuse|unknown
+audit_event_trigger_verdict() {
+  local out="$1"
+  # Anchored to line start, which is what install.sh's grep did before this was
+  # a function. Unanchored, a probe that failed while echoing its own query back
+  # ("... WHERE PRIV=true ...") would read as a granted privilege, and on
+  # restore.sh that answer drops a database.
+  # A here-string, NOT `printf ... | grep -q`. Both callers run with
+  # `set -o pipefail`, and `grep -q` exits on the first match: once the probe
+  # output is bigger than a pipe buffer, printf's next write takes EPIPE, the
+  # pipeline reports 141, and a real answer on line 1 reads as no-match. That
+  # turns install.sh's `fatal` into a warn-and-continue on exactly the roles the
+  # gate exists to stop. Measured: correct up to ~100 KB, wrong 10 times out of
+  # 10 at 500 KB.
+  if grep -q '^PRIV=true' <<<"$out"; then echo ok; return 0; fi
+  if grep -q '^PRIV=false' <<<"$out"; then echo refuse; return 0; fi
+  out="$(printf '%s' "$out" | tr -d '[:space:]')"
+  case "$out" in
+    t|true|TRUE)   echo ok ;;
+    f|false|FALSE) echo refuse ;;
+    *)             echo unknown ;;
+  esac
+}
+
+# The remedy, one copy. Printed with no logger prefix so each caller can pipe it
+# through its own (install.sh has `error`, restore.sh has `log`).
+audit_event_trigger_remedy() {
+  local role="${1:-<migrate role>}"
+  cat <<REMEDY
+The schema installs 'agledger_block_audit_drop', which protects the audit chain, and
+CREATE EVENT TRIGGER is superuser-only. Grant by provider:
+  Amazon RDS / Aurora   GRANT rds_superuser TO ${role};
+  Google Cloud SQL      GRANT cloudsqlsuperuser TO ${role};
+  Azure Database        GRANT azure_pg_admin TO ${role};
+  Self-managed          ALTER ROLE ${role} SUPERUSER;   (or run migrations as one)
+REMEDY
+}
+
+# Is the trigger actually on the database? Asked AFTER a restore, because
+# pg_restore does not stop on a statement it cannot run: a refused CREATE EVENT
+# TRIGGER is reported among its own "errors ignored on restore" and the rows all
+# land anyway. That is the one outcome where the data looks complete and a layer
+# of the tamper model is missing, and nothing outside pg_restore's stderr said so.
+# shellcheck disable=SC2034  # read by install.sh and restore.sh, which source this file
+AUDIT_EVENT_TRIGGER_PRESENT_SQL="SELECT count(*) FROM pg_event_trigger WHERE evtname = 'agledger_block_audit_drop';"
+
+# The DDL that puts it back, and the whole repair: the function it calls is an
+# ordinary function that a non-superuser restores fine, so only the trigger
+# itself is ever the missing half.
+# shellcheck disable=SC2034  # read by install.sh and restore.sh, which source this file
+AUDIT_EVENT_TRIGGER_DDL="CREATE EVENT TRIGGER agledger_block_audit_drop ON sql_drop
+   EXECUTE FUNCTION public.agledger_block_audit_drop();"
 
 # --- Host ports ---
 
@@ -609,7 +1067,7 @@ host_port_held_by_this_project() {
   # A published mapping renders as `127.0.0.1:3001->3000/tcp`, so the host port
   # is what sits between the last ':' and the '->'.
   #
-  # #1180: docker COLLAPSES contiguous published ports into a single range
+  # docker COLLAPSES contiguous published ports into a single range
   # entry, `0.0.0.0:4317-4318->4317-4318/tcp`. The anchored `:PORT->` match
   # this used to be found every singly-rendered port and no port inside a
   # range, so the own-stack exemption worked for the API on 3001 and the
@@ -647,7 +1105,7 @@ MONITORING_SERVICES="otel-collector jaeger prometheus grafana"
 # True when this project currently has a monitoring container running, i.e. the
 # install was stood up with --with-monitoring whether or not .env says so.
 #
-# #1180: `install.sh` persists COMPOSE_PROFILES=monitoring so later compose
+# `install.sh` persists COMPOSE_PROFILES=monitoring so later compose
 # commands keep the profile, but an install predating that has no such line.
 # `upgrade.sh` then ran `up -d` with the profile unselected: compose left the
 # monitoring containers running, untouched, on their old image and old port
@@ -709,7 +1167,7 @@ next_free_host_port() {
 # Every suggested command line goes through this. Hardcoded literals are what
 # made the side-by-side recipe hand back the ports the stack it was installing
 # alongside already held, and the collision example repeat the two values it had
-# just rejected (#1129).
+# just rejected.
 #
 # The two scopes ask genuinely different questions, which is why "usable" is
 # measured differently in each:
@@ -794,7 +1252,7 @@ AGLEDGER_SIGNER_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 # Pull + cryptographically verify a Docker Hub image BEFORE anything runs it,
 # then expose its digest in the global RESOLVED_DIGEST. The image is executed to
 # mint the vault signing key, so an unverified/tampered image is silent RCE +
-# key exfiltration — this is the gate that closes that (cross-repo #667-C1).
+# key exfiltration; this is the gate that closes that.
 #
 # Policy (OOTB-first: a default install must still boot):
 #   AGLEDGER_SKIP_VERIFY=true      -> skip entirely (dev/local ONLY), warn.
@@ -805,16 +1263,42 @@ AGLEDGER_SIGNER_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 #                                     AGLEDGER_REQUIRE_VERIFY=true (then abort).
 # Returns non-zero only when the caller should abort. Sets RESOLVED_DIGEST
 # whenever the pull succeeded (verified or not) so callers can still digest-pin.
+#
+# Four of the five outcomes above return 0 and only one of them verified
+# anything, so the return code does not answer "was this image verified".
+# SIGNATURE_VERIFIED does, and callers that report on the digest have to read
+# it: pinning an unverified digest is right, and calling that digest verified
+# on the same run that printed "Proceeding UNVERIFIED" hands a log scraper
+# looking for evidence of supply-chain verification a false positive.
 verify_image() {
   local image="$1" version="$2"
   local ref="${image}:${version}"
   RESOLVED_DIGEST=""
+  # shellcheck disable=SC2034  # read by install.sh and upgrade.sh, which source this file
+  SIGNATURE_VERIFIED=false
+  # shellcheck disable=SC2034  # read by install.sh and upgrade.sh, which source this file
+  UNVERIFIED_REASON="not attempted"
 
   step "Verifying image signature"
 
   if ! docker pull "$ref"; then
     error "docker pull ${ref} failed — cannot verify or run an image that isn't present."
-    return 1
+    local pull_registry="${image%%/*}"
+    if [[ "$image" == */* && ( "$pull_registry" == *.* || "$pull_registry" == *:* ) ]]; then
+      error "Nothing is wrong with the signature: the image never arrived."
+      error "'${pull_registry}' is a private registry, and the daemon has no credentials for it"
+      error "if the output above says 'no basic auth credentials'. Authenticate, then re-run:"
+      if [[ "$pull_registry" == *.dkr.ecr.*.amazonaws.com ]]; then
+        local pull_region="${pull_registry#*.dkr.ecr.}"
+        pull_region="${pull_region%%.amazonaws.com}"
+        error "  aws ecr get-login-password --region ${pull_region} | docker login --username AWS --password-stdin ${pull_registry}"
+      else
+        error "  docker login ${pull_registry}"
+      fi
+    fi
+    # 2, not 1: the caller reports a signature failure on 1, and this is not
+    # one. An image that never downloaded was never verified either way.
+    return 2
   fi
   # Resolve the digest for THIS repo specifically — RepoDigests can carry entries
   # for other repos the same image ID was previously pulled under (mirror/ECR),
@@ -825,14 +1309,18 @@ verify_image() {
   [[ "$RESOLVED_DIGEST" == sha256:* ]] || RESOLVED_DIGEST=""
 
   if [[ "${AGLEDGER_SKIP_VERIFY:-false}" == "true" ]]; then
+    UNVERIFIED_REASON="AGLEDGER_SKIP_VERIFY=true"
     warn "AGLEDGER_SKIP_VERIFY=true — skipping image signature verification (dev/local ONLY, never production)."
     return 0
   fi
   if [[ "$image" != "agledger/agledger" ]]; then
+    UNVERIFIED_REASON="custom image, not signed by the AGLedger release pipeline"
     warn "Custom image '${image}' is not signed by the AGLedger release pipeline — skipping signature verification."
     return 0
   fi
   if ! command -v cosign &>/dev/null; then
+    # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+    UNVERIFIED_REASON="cosign not installed"
     if [[ "${AGLEDGER_REQUIRE_VERIFY:-false}" == "true" ]]; then
       error "cosign not installed and AGLEDGER_REQUIRE_VERIFY=true."
       error "Install cosign 3.x: https://docs.sigstore.dev/system_config/installation/"
@@ -849,6 +1337,8 @@ verify_image() {
        --certificate-identity-regexp "$AGLEDGER_SIGNER_IDENTITY_REGEXP" \
        --certificate-oidc-issuer "$AGLEDGER_SIGNER_OIDC_ISSUER" \
        "${image}@${RESOLVED_DIGEST}" >/dev/null 2>&1; then
+    # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+    SIGNATURE_VERIFIED=true
     info "Image signature verified (keyless, public Rekor): ${image}@${RESOLVED_DIGEST}"
     return 0
   fi
@@ -859,15 +1349,25 @@ verify_image() {
   return 1
 }
 
-# Verify a signed Helm OCI chart's keyless signature (cross-repo #667-C2).
+# Verify a signed Helm OCI chart's keyless signature.
 # Same policy as verify_image. The chart ref is the OCI image form
 # (registry-1.docker.io/agledger/agledger-chart:<version>).
 verify_chart() {
   local chart_ref="$1"   # e.g. registry-1.docker.io/agledger/agledger-chart:1.0.3
 
+  # Reset the same pair verify_image sets. A caller that verified an image and
+  # then a chart would otherwise report the chart under the image's verdict,
+  # which is the false-verified claim this pair exists to prevent.
+  # shellcheck disable=SC2034  # read by scripts that source this file
+  SIGNATURE_VERIFIED=false
+  # shellcheck disable=SC2034  # read by scripts that source this file
+  UNVERIFIED_REASON="not attempted"
+
   step "Verifying Helm chart signature"
 
   if [[ "${AGLEDGER_SKIP_VERIFY:-false}" == "true" ]]; then
+    # shellcheck disable=SC2034  # read by scripts that source this file
+    UNVERIFIED_REASON="AGLEDGER_SKIP_VERIFY=true"
     warn "AGLEDGER_SKIP_VERIFY=true — skipping chart signature verification (dev/local ONLY)."
     return 0
   fi
@@ -876,6 +1376,8 @@ verify_chart() {
       error "cosign not installed and AGLEDGER_REQUIRE_VERIFY=true. Install cosign 3.x."
       return 1
     fi
+    # shellcheck disable=SC2034  # read by scripts that source this file
+    UNVERIFIED_REASON="cosign not installed"
     warn "cosign not installed — cannot verify the chart signature before install."
     warn "Install cosign 3.x: https://docs.sigstore.dev/system_config/installation/"
     warn "Proceeding UNVERIFIED. Set AGLEDGER_REQUIRE_VERIFY=true to make this fatal."
@@ -886,6 +1388,8 @@ verify_chart() {
        --certificate-identity-regexp "$AGLEDGER_SIGNER_IDENTITY_REGEXP" \
        --certificate-oidc-issuer "$AGLEDGER_SIGNER_OIDC_ISSUER" \
        "$chart_ref" >/dev/null 2>&1; then
+    # shellcheck disable=SC2034  # read by scripts that source this file
+    SIGNATURE_VERIFIED=true
     info "Chart signature verified (keyless, public Rekor): ${chart_ref}"
     return 0
   fi
@@ -897,20 +1401,59 @@ verify_chart() {
 
 # --- ECR Authentication ---
 
+# Authenticate the docker daemon against the registry the install is pulling
+# from.
+#
+# The registry is the host part of the image reference, so `--image` already
+# names it and an operator should not have to know a second variable to make
+# that flag work. ECR_REGISTRY stays as an override for the case where the two
+# genuinely differ (a pull-through cache, an air-gap mirror).
+#
+# Only ECR hosts can be logged into unattended, because only ECR mints a
+# password from an existing AWS identity. Any other private registry needs a
+# `docker login` the operator performs; say so rather than warning about a
+# variable that would not have helped.
+registry_host_from_image() {
+  local first="${1%%/*}"
+  [[ "$1" == */* && ( "$first" == *.* || "$first" == *:* || "$first" == "localhost" ) ]] || return 1
+  echo "$first"
+}
+
 ecr_login() {
-  if [[ -z "$ECR_REGISTRY" ]]; then
-    warn "ECR_REGISTRY not set. Set it to authenticate with a private registry."
+  local registry="$ECR_REGISTRY"
+  if [[ -z "$registry" ]]; then
+    registry="$(registry_host_from_image "$AGLEDGER_IMAGE" || true)"
+    [[ -n "$registry" ]] && info "Registry read from the image reference: ${registry} (override with ECR_REGISTRY)"
+  fi
+
+  if [[ -z "$registry" ]]; then
+    info "Image '${AGLEDGER_IMAGE}' names no registry host, so it resolves on Docker Hub. No login attempted."
     return
   fi
-  if command -v aws &>/dev/null; then
-    local region="${AWS_REGION:-us-west-2}"
-    if aws ecr get-login-password --region "$region" 2>/dev/null | docker login --username AWS --password-stdin "$ECR_REGISTRY" 2>/dev/null; then
-      info "Authenticated with ECR (${ECR_REGISTRY})"
-    else
-      warn "ECR login failed. If using an air-gap bundle, this is expected."
-    fi
+
+  if [[ "$registry" != *.dkr.ecr.*.amazonaws.com ]]; then
+    info "'${registry}' is not an ECR host, so there is no unattended login for it."
+    info "If the pull below fails with 'no basic auth credentials', run: docker login ${registry}"
+    return
+  fi
+
+  if ! command -v aws &>/dev/null; then
+    warn "AWS CLI not found, so ECR login was skipped. Either install it, or run this first:"
+    warn "  aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin ${registry}"
+    return
+  fi
+
+  # The region is in the host (<account>.dkr.ecr.<region>.amazonaws.com), so
+  # read it there rather than defaulting to one and failing in another.
+  local region="${registry#*.dkr.ecr.}"
+  region="${region%%.amazonaws.com}"
+  [[ -n "$region" ]] || region="${AWS_REGION:-us-west-2}"
+
+  if aws ecr get-login-password --region "$region" 2>/dev/null | docker login --username AWS --password-stdin "$registry" 2>/dev/null; then
+    info "Authenticated with ECR (${registry}, region ${region})"
   else
-    warn "AWS CLI not found. Skipping ECR login."
+    warn "ECR login failed for ${registry} in ${region}. If using an air-gap bundle, this is expected."
+    warn "Otherwise check the caller identity: aws sts get-caller-identity"
   fi
 }
 
@@ -949,8 +1492,8 @@ resolve_latest_version() {
     fi
     if [[ $cache_age -lt $cache_max_age ]]; then
       # Validate the cached version still exists on Docker Hub before
-      # returning it — a published-then-deleted tag (rare but real: v0.21.1
-      # was pulled after F-447) leaves the cache pointing at a 404. Cheap
+      # returning it: a published-then-deleted tag (rare but real: v0.21.1
+      # was pulled after release) leaves the cache pointing at a 404. Cheap
       # HEAD; on failure or non-404 fall through to the freshness query.
       local cached
       cached=$(cat "$cache_file")
@@ -997,7 +1540,7 @@ resolve_latest_version() {
     local age_min=$(( ${cache_age:-0} / 60 ))
     # Warn to stderr (keeping stdout clean for the version string). Agents
     # piping this call into a variable still get the version back — they just
-    # also see the warning, which is the point. (F-397)
+    # also see the warning, which is the point.
     echo "WARN: Docker Hub unreachable; using cached latest-version (age: ~${age_min} min). Pin with --version X.Y.Z to be explicit, or check network and retry." >&2
     cat "$cache_file"
     return 0
@@ -1006,12 +1549,108 @@ resolve_latest_version() {
   return 1
 }
 
-# Source .env if present. Sets POSTGRES_USER, POSTGRES_DB, DATABASE_URL, etc.
-load_env() {
-  if [[ -f "${COMPOSE_DIR}/.env" ]]; then
-    # shellcheck disable=SC1091
-    source "${COMPOSE_DIR}/.env"
+# What the AGLEDGER_IMAGE line in .env should become, given the registry this
+# run resolved and the one the file already names. Prints `set`, `delete` or
+# `keep`.
+#
+# A function rather than an inline `if` so it can be driven directly: two of the
+# three outcomes are silent no-ops from outside, and the third writes .env, so a
+# wrong branch shows up only as a registry that did not move or containers that
+# recreate on every run.
+image_line_action() {
+  local resolved="$1" existing="$2"
+  if [[ "$resolved" != "agledger/agledger" ]]; then
+    # A private registry has to be recorded, or upgrade.sh falls back to Docker
+    # Hub and pulls the next version from the wrong place.
+    [[ "$existing" == "$resolved" ]] && { echo keep; return 0; }
+    echo set; return 0
   fi
+  # This run wants Docker Hub. A line naming another registry has to go, or the
+  # next upgrade authenticates to a registry this install has left. A line
+  # spelling out `agledger/agledger` names the same thing this run wants: it is
+  # redundant, not wrong, and deleting it recorded a Docker-Hub-to-Docker-Hub
+  # change on every run, which recreated every container for a no-op re-install.
+  if [[ -n "$existing" ]] && [[ "$existing" != "agledger/agledger" ]]; then
+    echo delete; return 0
+  fi
+  echo keep
+}
+
+# Delete every line that SETS key from an env file.
+#
+# The pattern has to match the same shapes `get_env_value` reads, or the two
+# disagree and the caller reports a change it did not make: a `.env` carrying
+# `export AGLEDGER_IMAGE=...` reads as set, survives a `/^AGLEDGER_IMAGE=/d`
+# delete untouched, and the operator is told the install moved registries while
+# `upgrade.sh` still authenticates to the old one.
+delete_env_var() {
+  local key="$1" file="$2"
+  [[ -f "$file" ]] || return 0
+  sedi -E "/^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=/d" "$file"
+}
+
+# --- Values this run resolved, held across a `source .env` ---
+#
+# Sourcing .env puts the persisted value of every variable it names back into
+# the shell, on top of whatever this run already resolved. For anything whose
+# precedence chain is flag > .env > default, that inverts the order: the flag
+# has already been applied and .env then overwrites it.
+#
+# It is not only the running value that is lost. install.sh reconciles .env by
+# comparing the resolved value against what the file holds, so a clobbered
+# variable compares equal to itself, nothing is written, and the run reports
+# success having changed nothing.
+#
+# Two parallel indexed arrays rather than one associative array: macOS ships
+# bash 3.2, which has none. `${!name-}` is scalar indirect expansion, which
+# 3.2 does have.
+RESOLVED_VAR_NAMES=()
+RESOLVED_VAR_VALUES=()
+
+snapshot_resolved_var() {
+  local name="$1"
+  RESOLVED_VAR_NAMES+=("$name")
+  RESOLVED_VAR_VALUES+=("${!name-}")
+}
+
+restore_resolved_vars() {
+  local i
+  [[ ${#RESOLVED_VAR_NAMES[@]} -eq 0 ]] && return 0
+  for i in "${!RESOLVED_VAR_NAMES[@]}"; do
+    printf -v "${RESOLVED_VAR_NAMES[$i]}" '%s' "${RESOLVED_VAR_VALUES[$i]}"
+  done
+}
+
+# Read FILE's assignments into this shell, decoded the way compose decodes them.
+#
+# Deliberately not `source`. The shell is a fourth parser with rules of its own,
+# and on the one value that matters most it disagreed with every other reader:
+# `DATABASE_URL=...?sslmode=require&uselibpqcompat=true` unquoted is two
+# commands to the shell, the first backgrounded at the `&`, so DATABASE_URL came
+# back UNSET from a file that plainly sets it. Everything downstream then read
+# the empty value as "bundled" and operated on the wrong database.
+#
+# Not sourcing also means an `.env` cannot run commands in the installer's
+# shell, which it could before by any of the usual `$(...)` routes.
+load_env_file() {
+  local file="$1" line key
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*= ]] || continue
+    key="${BASH_REMATCH[2]}"
+    printf -v "$key" '%s' "$(dotenv_decode_value "${line#*=}")"
+    # `export KEY=v` is a spelling operators reach for, and `source` honoured
+    # it. Compose passes the variable to containers either way; this keeps the
+    # host shell's behaviour the same as before, so a child process that used
+    # to inherit the value still does.
+    if [[ -n "${BASH_REMATCH[1]}" ]]; then export "${key?}"; fi
+  done < "$file"
+}
+
+# Read the install's .env if present. Sets POSTGRES_USER, POSTGRES_DB,
+# DATABASE_URL, etc.
+load_env() {
+  load_env_file "${COMPOSE_DIR}/.env"
   POSTGRES_USER="${POSTGRES_USER:-agledger}"
   POSTGRES_DB="${POSTGRES_DB:-agledger}"
 }
@@ -1029,7 +1668,23 @@ database_url_is_bundled() {
 # Detect whether DATABASE_URL points to the bundled postgres or an external host.
 # Sets USES_BUNDLED_PG=true (bundled) or USES_BUNDLED_PG=false (external).
 detect_db_mode() {
-  if database_url_is_bundled "${DATABASE_URL:-}"; then
+  local url="${DATABASE_URL:-}"
+  if [[ -z "$url" ]]; then
+    url="$(get_env_value DATABASE_URL "${COMPOSE_DIR}/.env")"
+    # The file declares a database and no reader here could make a value out of
+    # it. The empty-is-bundled default below would then point backup.sh and
+    # restore.sh at the bundled container while the install serves an external
+    # one: a backup that reports success, exit 0, over a database holding
+    # nothing, and a restore that skips the whole external-path apparatus (the
+    # pre-drop privilege gate, the runtime-role check, the pgboss ownership
+    # repair) because all of it sits behind `USES_BUNDLED_PG == false`.
+    # An install that cannot determine its own database mode has no safe
+    # default, so this refuses rather than guesses.
+    if [[ -z "$url" ]] && env_file_declares_database_url "${COMPOSE_DIR}/.env"; then
+      fatal "DATABASE_URL is set in ${COMPOSE_DIR}/.env but could not be read. Refusing to guess the database mode: every operator script would target the bundled container instead. Check the line for a stray quote or a line break."
+    fi
+  fi
+  if database_url_is_bundled "$url"; then
     USES_BUNDLED_PG=true
   else
     USES_BUNDLED_PG=false
@@ -1047,6 +1702,27 @@ detect_db_mode() {
 fips_overlay_enabled() {
   local value="${AGLEDGER_FIPS:-$(get_env_value AGLEDGER_FIPS "${COMPOSE_DIR}/.env")}"
   [[ "$value" == "true" ]]
+}
+
+# Build the colon-separated overlay list for the COMPOSE_FILE .env line, in
+# the same order and under the same conditions build_compose_cmd applies its
+# -f flags, so a manual `docker compose` from compose/ and the scripts agree.
+# Sets OVERLAY_LIST. install.sh, upgrade.sh and remediate-env.sh all call
+# this; per-script copies drifted (the rebuild paths dropped the FIPS
+# overlay, so a --fips install remediated by hand ran with the FIPS provider
+# inactive while .env still said AGLEDGER_FIPS=true).
+build_overlay_list() {
+  OVERLAY_LIST="docker-compose.yml"
+  if [[ "${USES_BUNDLED_PG}" == "true" ]] && [[ -f "${COMPOSE_DIR}/docker-compose.postgres.yml" ]]; then
+    OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.postgres.yml"
+  fi
+  if [[ -f "${COMPOSE_DIR}/docker-compose.prod.yml" ]]; then
+    OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.prod.yml"
+  fi
+  # Last, so its OPENSSL_CONF wins over anything an earlier overlay sets.
+  if fips_overlay_enabled && [[ -f "${COMPOSE_DIR}/docker-compose.fips.yml" ]]; then
+    OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.fips.yml"
+  fi
 }
 
 build_compose_cmd() {

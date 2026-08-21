@@ -37,8 +37,7 @@ every counter on the dashboard, which is now every drop-class counter the engine
 from the ones that fail loudly somewhere else (the webhook and federation DLQs, pool and rate-limit
 degradation).
 
-Nothing here is decorative: `src/test/dashboard-metric-coverage.test.ts` in the API repo fails the
-build if a dashboard or alert queries a metric no process registers, and if a new drop-class counter
+Nothing here is decorative: a coverage test in the API build fails if a dashboard or alert queries a metric no process registers, and if a new drop-class counter
 is added without either a panel or a written reason it does not belong on one. The class is a name
 rule, `_failures_total` / `_dropped_total` / `_drops_total` / `_failed_total` / `_exhausted_total` /
 `_lost_total` / `_unmapped_total`, so a counter is covered by the guard the moment it is named that
@@ -78,12 +77,11 @@ counters declare labels, and a labelled counter has no series at all until its f
 empty, and the rule cannot fire. `sum()` alone fixes only the narrower case where the terms exist on
 different label sets (the API and worker targets carry different `job` and `instance` values, and
 PromQL arithmetic matches on the full label set). If you add a term to one of these, wrap it the
-same way: `src/test/dashboard-metric-coverage.test.ts` in the API repo fails the build otherwise.
+same way: the API build fails that coverage test otherwise.
 
 Some of the rules are also unit-tested, because an alert is the one artifact whose defect is
 invisible from every direction except evaluation: one that can never fire parses cleanly and loads
-`health: ok`. The fixtures are in `deploy/tests/alert-rules.test.yml` and run under `promtool test
-rules`. They cover five rules, two of them with a negative case as well as a positive one; the
+`health: ok`. The fixtures live in the API repo and run under `promtool test rules`. They cover five rules, two of them with a negative case as well as a positive one; the
 other ten are checked statically for metric names and label values, not by evaluation.
 
 The bundled Prometheus loads them already (`rule_files` in `compose/prometheus.yml`). For your own:

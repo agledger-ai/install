@@ -8,7 +8,7 @@ set -euo pipefail
 # All secrets are automatically redacted.
 # Works with both bundled PostgreSQL and external databases.
 #
-# Usage: ./deploy/scripts/support-bundle.sh
+# Usage: ./scripts/support-bundle.sh
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

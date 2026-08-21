@@ -7,7 +7,7 @@ set -euo pipefail
 # Verifies that AGLedger is running and responding correctly.
 #
 # Phase 1 (unauthenticated): Health, readiness, conformance, schema seeding
-# Phase 2 (authenticated):   Record lifecycle — create enterprise, record,
+# Phase 2 (authenticated):   Record lifecycle — resolve org, create record,
 #                             completion, verify events. Requires platform API key.
 # Verify mode:               Read-only checks against previously created data.
 #                             Used after upgrade/restore to confirm data survived.
@@ -146,7 +146,7 @@ elif [[ -n "$VERIFY_STATE" ]]; then
         echo "FAIL: State file not found: $VERIFY_STATE"
         FAILURES=$((FAILURES+1))
     else
-        V_ENTERPRISE_ID=$(jq -r '.enterpriseId // empty' "$VERIFY_STATE" 2>/dev/null || true)
+        V_ORG_ID=$(jq -r '.orgId // empty' "$VERIFY_STATE" 2>/dev/null || true)
         V_RECORD_ID=$(jq -r '.recordId // empty' "$VERIFY_STATE" 2>/dev/null || true)
         V_EVENT_COUNT=$(jq -r '.eventCount // "0"' "$VERIFY_STATE" 2>/dev/null || true)
 
@@ -155,12 +155,12 @@ elif [[ -n "$VERIFY_STATE" ]]; then
             api GET "/v1/records/${V_RECORD_ID}"
             if [[ "$HTTP_CODE" == "200" ]]; then
                 V_STATUS=$(echo "$API_BODY" | jq -r '.status // empty' 2>/dev/null || true)
-                V_ENT=$(echo "$API_BODY" | jq -r '.enterpriseId // empty' 2>/dev/null || true)
+                V_ENT=$(echo "$API_BODY" | jq -r '.orgId // empty' 2>/dev/null || true)
                 V_SUBS=$(echo "$API_BODY" | jq -r '.submissionCount // 0' 2>/dev/null || true)
-                if [[ "$V_ENT" == "$V_ENTERPRISE_ID" ]]; then
+                if [[ "$V_ENT" == "$V_ORG_ID" ]]; then
                     echo "PASS: Record $V_RECORD_ID exists — status: $V_STATUS, submissions: $V_SUBS"
                 else
-                    echo "FAIL: Record enterprise mismatch — expected $V_ENTERPRISE_ID, got $V_ENT"
+                    echo "FAIL: Record org mismatch — expected $V_ORG_ID, got $V_ENT"
                     FAILURES=$((FAILURES+1))
                 fi
             else
@@ -206,29 +206,32 @@ else
     echo "-- Phase 2: Record Lifecycle --"
     echo ""
 
-    # Step 1: Create enterprise via admin API (no self-service registration)
-    api POST "/v1/admin/enterprises" '{"name":"Smoke Test Enterprise"}'
-    if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
-        ENTERPRISE_ID=$(echo "$API_BODY" | jq -r '.id // .enterpriseId // empty' 2>/dev/null || true)
-        if [[ -n "$ENTERPRISE_ID" ]]; then
-            echo "PASS: Created enterprise ($ENTERPRISE_ID)"
+    # Step 1: Resolve the Org. There is no create-org call on a production
+    # Server: it runs a single Org bootstrapped at boot from
+    # AGLEDGER_DEFAULT_ORG_NAME or the provisioning YAML, so the smoke test
+    # reads the one that is there rather than trying to make another.
+    api GET "/v1/admin/orgs"
+    if [[ "$HTTP_CODE" == "200" ]]; then
+        ORG_ID=$(echo "$API_BODY" | jq -r '.data[0].id // empty' 2>/dev/null || true)
+        if [[ -n "$ORG_ID" ]]; then
+            echo "PASS: Resolved org ($ORG_ID)"
         else
-            echo "FAIL: Create enterprise — no ID in response"
+            echo "FAIL: List orgs — no org on this install"
             echo "      Response: $(echo "$API_BODY" | head -c 200)"
             FAILURES=$((FAILURES+1))
         fi
     else
-        echo "FAIL: Create enterprise — HTTP $HTTP_CODE"
+        echo "FAIL: List orgs — HTTP $HTTP_CODE"
         echo "      Response: $(echo "$API_BODY" | head -c 200)"
         FAILURES=$((FAILURES+1))
-        ENTERPRISE_ID=""
+        ORG_ID=""
     fi
 
-    if [[ -n "${ENTERPRISE_ID:-}" ]]; then
+    if [[ -n "${ORG_ID:-}" ]]; then
 
         # Step 2: Create an agent via admin API (performer for the record).
-        # `enterpriseId` is required; `name` is the canonical field.
-        api POST "/v1/admin/agents" "{\"enterpriseId\":\"${ENTERPRISE_ID}\",\"name\":\"Smoke Test Agent\"}"
+        # `orgId` is required; `name` is the canonical field.
+        api POST "/v1/admin/agents" "{\"orgId\":\"${ORG_ID}\",\"name\":\"Smoke Test Agent\"}"
         if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
             AGENT_ID=$(echo "$API_BODY" | jq -r '.id // empty' 2>/dev/null || true)
             if [[ -n "$AGENT_ID" ]]; then
@@ -283,7 +286,7 @@ else
 
         # Step 3: Create record with autoActivate (DRAFT → REGISTERED → ACTIVE)
         api POST "/v1/records" "{
-            \"enterpriseId\": \"${ENTERPRISE_ID}\",
+            \"orgId\": \"${ORG_ID}\",
             \"performerAgentId\": \"${AGENT_ID}\",
             \"type\": \"${SMOKE_TYPE}\",
             \"platform\": \"smoke-test\",
@@ -375,12 +378,12 @@ else
         # Save state for verify mode (upgrade/restore tests)
         if [[ -n "$SAVE_STATE" && -n "${RECORD_ID:-}" ]]; then
             jq -n \
-                --arg eid "${ENTERPRISE_ID:-}" \
+                --arg eid "${ORG_ID:-}" \
                 --arg aid "${AGENT_ID:-}" \
                 --arg mid "${RECORD_ID:-}" \
                 --arg rid "${COMPLETION_ID:-}" \
                 --arg ec "$EVENT_COUNT" \
-                '{enterpriseId: $eid, agentId: $aid, recordId: $mid, completionId: $rid, eventCount: ($ec | tonumber)}' \
+                '{orgId: $eid, agentId: $aid, recordId: $mid, completionId: $rid, eventCount: ($ec | tonumber)}' \
                 > "$SAVE_STATE"
             echo ""
             echo "State saved to $SAVE_STATE"

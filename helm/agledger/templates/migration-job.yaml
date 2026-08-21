@@ -4,7 +4,7 @@ metadata:
   # Bundled Postgres is a normal chart resource, not a hook — Helm only creates it
   # AFTER all pre-install hooks succeed. If the migration ran as a pre-install hook
   # here, its wait-for-db init container would block forever waiting for a Postgres
-  # that does not yet exist → `helm install` deadlocks (F-678 / api#590). So on the
+  # that does not yet exist → `helm install` deadlocks. So on the
   # bundled path the migration is a normal resource too, applied alongside Postgres,
   # ordered by the wait-for-db init container below. The name is per-revision so
   # `helm upgrade` creates a fresh Job (a fixed-name normal Job is rejected on
@@ -57,13 +57,26 @@ spec:
                 name: {{ include "agledger.fullname" . }}
             - secretRef:
                 name: {{ include "agledger.secretName" . }}
+            {{- with .Values.migrate.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- if .Values.secrets.databaseUrlMigrate }}
+          {{- include "agledger.assertNoDuplicateDatabaseUrl" (dict "envList" .Values.migrate.extraEnv "field" "migrate.extraEnv" "source" "secrets.databaseUrlMigrate") }}
+          {{- else if (include "agledger.chartSuppliesDatabaseUrl" .) }}
+          {{- include "agledger.assertNoDuplicateDatabaseUrl" (dict "envList" .Values.migrate.extraEnv "field" "migrate.extraEnv" "source" "the chart's Secret") }}
+          {{- end }}
+          {{- if or .Values.secrets.databaseUrlMigrate .Values.migrate.extraEnv }}
           env:
+          {{- if .Values.secrets.databaseUrlMigrate }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ include "agledger.secretName" . }}
                   key: DATABASE_URL_MIGRATE
+          {{- end }}
+          {{- with .Values.migrate.extraEnv }}
+          {{- include "agledger.envList" . | trim | nindent 12 }}
+          {{- end }}
           {{- end }}
           securityContext:
             {{- toYaml .Values.api.securityContext | nindent 12 }}
