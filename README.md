@@ -179,6 +179,8 @@ You should see the new key `active` and the old one `retired`, with the retireme
 
 Rotation retires the old key, it does not delete it. `GET /v1/verification-keys` keeps serving every historical public key with the exact instants it was active (`activatedAt` / `retiredAt`), which is what lets a verifier check each entry against the key that actually signed it. Entries written before the rotation keep verifying under the retired Ed25519 key; entries after it use ES256. No re-signing, and the chain stays continuous.
 
+Rotating because a key leaked is a different job from rotating on schedule. Containment is the same restart; what follows it is scoping the window the key was exposed in and deciding what you can still stand behind. There is no `compromised` key status and no revocation: a retired key keeps verifying the entries it signed, which is correct for a routine rotation and means the Server will not flag records signed while the key was out. External anchors are what bound that span. [Signing-key compromise](https://agledger.ai/docs/operations/key-compromise) is the runbook.
+
 Re-running `install.sh` with `AGLEDGER_SIGNING_ALGORITHM` set does **not** change the algorithm of an existing install. The signing key is generated only alongside the other secrets, so a run that finds an existing `.env` keeps the key it already has; the installer says so rather than reporting a success that did not happen.
 
 **Verifying FIPS is actually on.** Ask the running container:
@@ -224,6 +226,53 @@ The upgrade script creates a backup before upgrading. Rollback with `./scripts/r
 On an external database, `restore.sh` restores into the database `DATABASE_URL` names, and drops and recreates that one — `POSTGRES_DB` configures the bundled PostgreSQL container and has no bearing on an external install. Before dropping, it checks the database looks like an AGLedger one (a `public.records` table); on a shared managed instance, where a database of the same name may belong to something else, that check is what stands between a restore and an unrecoverable drop. Pass `--force` to restore into a database that does not have the table yet.
 
 The dump's privileges are restored with it — the DML grants, the `ALTER DEFAULT PRIVILEGES`, and the append-only `REVOKE`s on the audit chain — so a least-privilege role comes back able to serve. Restoring onto a server that does not carry the same roles (a cross-server DR) reports the grants it could not apply and continues; the runtime-role check that follows decides whether the Server starts.
+
+## Backups and point-in-time recovery
+
+```bash
+./scripts/backup.sh                          # keep the last 7
+./scripts/backup.sh --keep 30
+BACKUP_DIR=/mnt/backups ./scripts/backup.sh
+```
+
+Each run writes one timestamped tarball holding a `pg_dump` custom-format dump of the whole database
+(`db.dump`) and a CSV export of the signing-key registry's **public** keys. Private signing keys are
+never in the database and never in a backup. Before the script reports success it checks that
+`db.dump` starts with the archive header `pg_restore` expects, so a dump that something else wrote
+to is deleted and reported now rather than discovered during a restore, after `restore.sh` has
+already dropped the database.
+
+**What ships is snapshot backup, not continuous archiving.** Nothing in the Compose files, the chart
+or the scripts sets `archive_mode` or an `archive_command`, and the bundled `postgres:18-alpine`
+runs stock configuration. So your recovery point is the last snapshot: run `backup.sh` on the
+cadence your RPO needs, and understand that everything notarized since it is not in any copy the
+product holds.
+
+Point-in-time recovery is a property of the database, and AGLedger neither provides nor prevents it:
+
+- **Bundled PostgreSQL.** Configure continuous WAL archiving on that instance yourself, the same way
+  you would for any PostgreSQL you own, and treat the archive as a second destination alongside the
+  `backup.sh` tarballs rather than a replacement for them. The tarball is what `restore.sh` reads.
+- **External or managed PostgreSQL** (Aurora, RDS, Cloud SQL, Azure). Use the provider's PITR. It is
+  the shorter path to a sub-minute RPO, and `backup.sh` on an external `DATABASE_URL` runs `pg_dump`
+  directly, so the two are independent of each other.
+
+**Verify the chain after any restore, and after a PITR restore in particular.** A recovery to an
+earlier point in time gives you a chain that ends earlier, and a chain truncated from the end still
+hash-links cleanly, so the walk alone will not tell you entries are missing. `./scripts/vault-verify.sh`
+checks hash, link and position integrity against the restored database and will report that chain
+healthy.
+
+Only evidence held **outside** the database can tell you where the chain used to end. `vault_checkpoints`
+cannot: it is an ordinary table in the same database, so a recovery to time T rolls the checkpoints
+back with the chain, and the restored checkpoint agrees with the restored truncated chain. External
+anchors are the exception, and the only one. With `VAULT_ANCHOR_ENABLED=true` each checkpoint is also
+written to S3-compatible storage under COMPLIANCE-mode object lock, where the database recovery cannot
+reach it, and `POST /v1/admin/vault/anchors/verify` compares the two. If you do not anchor, nothing in
+the product can distinguish a correct PITR restore from one that silently landed short: reconcile
+against your own external evidence instead, such as the SIEM stream of `system_audit_log`, delivered
+webhooks, or a counterparty Server's slice of a federated chain. The full sequence is in the
+[recovery runbook](https://agledger.ai/docs/operations/recovery).
 
 ## Uninstalling
 

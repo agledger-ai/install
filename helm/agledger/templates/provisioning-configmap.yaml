@@ -1,4 +1,4 @@
-{{- if .Values.provisioning.enabled }}
+{{- if (.Values.provisioning).enabled }}
 {{- /* Keep subdirs list in sync with _helpers.tpl provisioningVolumeMounts/provisioningVolumes */}}
 {{- $subdirs := list "orgs" "agents" "webhooks" "schemas" }}
 {{- $hasContent := false }}

@@ -70,6 +70,22 @@ services:
   agledger-api:
     image: ${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest}}
     init: true
+    # Docker's default grace period is 10s. Both processes meter their own
+    # shutdown against a 25s drain budget and force-exit at it, so the default
+    # SIGKILLs them two thirds of the way through: in-flight requests severed,
+    # the last SIEM export batch dropped, the database pool never released.
+    #
+    # 60s is well above the 30s that budget strictly needs. That headroom is
+    # close to free: this is a MAXIMUM wait, not a delay. An idle process still
+    # exits in well under a second, and the extra is spent only when a process
+    # is genuinely stuck, which is when you want to spend it. The cost of
+    # sizing it tight is a SIGKILL mid-drain; the cost of sizing it loose is a
+    # slower `compose down` on an already-broken container.
+    #
+    # Lowering it re-opens that gap, and unlike the Helm chart there is no
+    # render-time guard here to refuse a value that does not fit. Helm's
+    # equivalent is terminationGracePeriodSeconds (70 worker / 90 api).
+    stop_grace_period: 60s
     ports:
       # Host side is a variable so a second stack can run beside the first on
       # one host (COMPOSE_PROJECT_NAME isolates containers and volumes, not
@@ -97,6 +113,8 @@ services:
   agledger-worker:
     image: ${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest}}
     init: true
+    # See agledger-api above: 25s drain budget needs more than Docker's 10s default.
+    stop_grace_period: 60s
     # The worker overrides the image CMD, so it must carry the Node 24
     # Permission Model flags itself (the API inherits them from the Dockerfile
     # CMD). Same profile: deny writes + child-process/worker/addons/wasi/

@@ -1,4 +1,4 @@
-{{- if .Values.postgres.bundled.enabled }}
+{{- if ((.Values.postgres).bundled).enabled }}
 # Bundled PostgreSQL for development, evaluation, and small deployments.
 # For production with external databases, set postgres.bundled.enabled=false
 # and configure database.externalUrl.
@@ -60,6 +60,14 @@ spec:
       containers:
         - name: postgres
           image: {{ .Values.postgres.bundled.image }}
+          {{- with .Values.postgres.bundled.parameters }}
+          args:
+            - postgres
+            {{- range $key, $value := . }}
+            - -c
+            - {{ printf "%s=%s" $key (toString $value) | quote }}
+            {{- end }}
+          {{- end }}
           ports:
             - containerPort: 5432
           env:

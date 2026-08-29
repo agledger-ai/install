@@ -69,7 +69,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(sum(increase(agledger_api_key_last_used_update_failures_total[24h])) or vector(0)) + (sum(increase(agledger_auth_audit_persist_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cache_invalidation_drops_total[24h])) or vector(0)) + (sum(increase(agledger_cascade_cancel_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cascade_rollup_retry_exhausted_total[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_persist_event_failures_total[24h])) or vector(0)) + (sum(increase(agledger_federation_audit_vault_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_forensic_audit_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_enqueue_failed_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_event_persist_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_publish_failures_total[24h])) or vector(0)) + (sum(increase(agledger_federation_record_state_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_gate_dlq_advisory_pass_lost_total[24h])) or vector(0)) + (sum(increase(agledger_inline_phase2_failures_total[24h])) or vector(0)) + (sum(increase(agledger_llms_txt_customization_load_failures_total[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_persist_event_failures_total[24h])) or vector(0)) + (sum(increase(agledger_post_commit_callback_failures_total[24h])) or vector(0)) + (sum(increase(agledger_provisioning_reload_failures_total[24h])) or vector(0)) + (sum(increase(agledger_reputation_update_failures_total[24h])) or vector(0)) + (sum(increase(agledger_schema_warmcache_refresh_failures_total[24h])) or vector(0)) + (sum(increase(agledger_siem_file_lines_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_siem_http_batches_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_siem_mapper_failures_total[24h])) or vector(0)) + (sum(increase(agledger_siem_poll_failures_total[24h])) or vector(0)) + (sum(increase(agledger_support_bundle_audit_failures_total[24h])) or vector(0)) + (sum(increase(agledger_webhook_enqueue_failures_total[24h])) or vector(0))",
+          "expr": "(sum(increase(agledger_api_key_last_used_update_failures_total[24h])) or vector(0)) + (sum(increase(agledger_auth_audit_persist_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cache_invalidation_drops_total[24h])) or vector(0)) + (sum(increase(agledger_cascade_cancel_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cascade_rollup_retry_exhausted_total[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_persist_event_failures_total[24h])) or vector(0)) + (sum(increase(agledger_federation_audit_vault_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_forensic_audit_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_enqueue_failed_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_event_persist_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_publish_failures_total[24h])) or vector(0)) + (sum(increase(agledger_federation_record_state_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_gate_dlq_advisory_pass_lost_total[24h])) or vector(0)) + (sum(increase(agledger_inline_phase2_failures_total[24h])) or vector(0)) + (sum(increase(agledger_llms_txt_customization_load_failures_total[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_persist_event_failures_total[24h])) or vector(0)) + (sum(increase(agledger_post_commit_callback_failures_total[24h])) or vector(0)) + (sum(increase(agledger_provisioning_reload_failures_total[24h])) or vector(0)) + (sum(increase(agledger_reputation_update_failures_total[24h])) or vector(0)) + (sum(increase(agledger_schema_warmcache_refresh_failures_total[24h])) or vector(0)) + (sum(increase(agledger_siem_file_lines_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_siem_http_batches_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_siem_mapper_failures_total[24h])) or vector(0)) + (sum(increase(agledger_siem_poll_failures_total[24h])) or vector(0)) + (sum(increase(agledger_support_bundle_audit_failures_total[24h])) or vector(0)) + (sum(increase(agledger_webhook_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_webhook_audit_persist_failures_total[24h])) or vector(0))",
           "legendFormat": "drops in last 24h",
           "refId": "A"
         }
@@ -1408,7 +1408,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "SIEM HTTP batches dropped after delivery failure. The send retried, exhausted, and the batch is gone \u2014 customer's HTTP-mode SIEM is missing those events.",
+      "description": "SIEM HTTP batches dropped after delivery failure. BUS EVENTS ONLY: polled system_audit_log rows no longer pass through this sender's buffer, and a batch a collector refuses on that path is retried from an unadvanced cursor rather than dropped. So 0 here does NOT mean the compliance feed is complete. For the polled path read SIEM poll deliveries refused alongside it.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1471,7 +1471,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "SIEM file lines dropped after write failure. File-mode SIEM is missing those lines \u2014 file-tailing collectors won't pick them up.",
+      "description": "SIEM file lines dropped: a failed write, a line written after close, or the buffer capped while the stream was backed up. File-mode SIEM is missing those lines. A stalled disk now drops and counts here instead of growing the heap without bound, so this can move on a slow disk that used to look silent.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1594,12 +1594,76 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "A configured sink refused a polled batch, so the cursor did not advance and the next cycle re-reads the same rows. NOT a drop: nothing is lost and the backlog drains when the sink returns. This is the metric that separates a delivery stall from a watermark stall when agledger_siem_poll_lag_seconds climbs, and it is the first thing AGLedgerSiemPollerFallingBehind tells you to check. Labelled by sink.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 104
+      },
+      "id": 133,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (sink) (rate(agledger_siem_poll_delivery_retries_total[5m]))",
+          "legendFormat": "{{sink}}",
+          "refId": "A"
+        }
+      ],
+      "title": "SIEM poll deliveries refused",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 104
+        "y": 112
       },
       "id": 125,
       "panels": [],
@@ -1638,7 +1702,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 105
+        "y": 113
       },
       "id": 126,
       "options": {
@@ -1702,7 +1766,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 105
+        "y": 113
       },
       "id": 127,
       "options": {
@@ -1766,7 +1830,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 113
+        "y": 121
       },
       "id": 128,
       "options": {
@@ -1830,7 +1894,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 113
+        "y": 121
       },
       "id": 129,
       "options": {
@@ -1894,7 +1958,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 121
+        "y": 129
       },
       "id": 130,
       "options": {
@@ -1924,6 +1988,69 @@
         }
       ],
       "title": "api_keys.last_used_at update failures (drops/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Webhook subscription lifecycle changes (create, update, URL repoint, delete, secret rotation, pause, resume) whose audit row could not be persisted. The write is fire-and-forget by design, because the mutation has already committed and a failed audit must not fail the caller, so this counter is the only thing that reports a lost egress-config record. A URL repoint that lands here is an egress channel redirected with no trace.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 129
+      },
+      "id": 133,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(agledger_webhook_audit_persist_failures_total[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Webhook lifecycle audit drops",
       "type": "timeseries"
     }
   ],

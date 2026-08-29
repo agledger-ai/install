@@ -10,11 +10,11 @@ metadata:
   # `helm upgrade` creates a fresh Job (a fixed-name normal Job is rejected on
   # upgrade — Job pod templates are immutable); ttlSecondsAfterFinished GCs old ones.
   # External DB always pre-exists, so that path keeps the pre-install/pre-upgrade hook.
-  name: {{ include "agledger.fullname" . }}-migrate{{- if .Values.postgres.bundled.enabled }}-{{ .Release.Revision }}{{- end }}
+  name: {{ include "agledger.fullname" . }}-migrate{{- if ((.Values.postgres).bundled).enabled }}-{{ .Release.Revision }}{{- end }}
   labels:
     {{- include "agledger.labels" . | nindent 4 }}
     app.kubernetes.io/component: migrate
-  {{- if not .Values.postgres.bundled.enabled }}
+  {{- if not ((.Values.postgres).bundled).enabled }}
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-5"
@@ -41,7 +41,7 @@ spec:
       {{- end }}
       {{- end }}
       restartPolicy: Never
-      {{- if .Values.postgres.bundled.enabled }}
+      {{- if ((.Values.postgres).bundled).enabled }}
       initContainers:
         - name: wait-for-db
           image: {{ .Values.postgres.bundled.image }}

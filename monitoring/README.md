@@ -62,8 +62,8 @@ terminates TLS for the API.
 
 ## Alerting rules
 
-`monitoring/alerts/agledger.rules.yml` ships 15 rules in four groups: silent drops, chain integrity,
-federation delivery, and availability/saturation.
+`monitoring/alerts/agledger.rules.yml` ships 28 rules in five groups: silent drops, chain integrity,
+partition maintenance, federation delivery, and availability/saturation.
 
 A dashboard is the wrong delivery mechanism for the silent-drop class specifically, because that
 failure is defined by nobody looking. A dropped chain append or a lost audit-trail write returns
@@ -81,8 +81,14 @@ same way: the API build fails that coverage test otherwise.
 
 Some of the rules are also unit-tested, because an alert is the one artifact whose defect is
 invisible from every direction except evaluation: one that can never fire parses cleanly and loads
-`health: ok`. The fixtures live in the API repo and run under `promtool test rules`. They cover five rules, two of them with a negative case as well as a positive one; the
+`health: ok`. The fixtures live in the API repo and run under `promtool test rules`. They cover eleven rules, eight of them with a negative case as well as a positive one; the
 other ten are checked statically for metric names and label values, not by evaluation.
+
+The partition rules carry the heaviest fixtures, because their failure mode is the one a
+fixture is uniquely able to show: a wedged partition-management job leaves both runway gauges
+frozen at their last healthy value, so the thresholds stay correctly silent on a scrape that
+looks perfect. There is a fixture holding exactly that scrape flat for ten hours and asserting
+that the three threshold rules do NOT fire and the two liveness rules do.
 
 The bundled Prometheus loads them already (`rule_files` in `compose/prometheus.yml`). For your own:
 
