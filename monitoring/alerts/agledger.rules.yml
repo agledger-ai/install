@@ -120,8 +120,198 @@ groups:
         annotations:
           summary: "SIEM export is dropping records"
           description: >-
-            The SIEM feed is lossy. Poll failures retry from an unadvanced cursor and
-            recover; dropped batches and lines do not.
+            The SIEM feed is lossy. Poll failures and refused poll batches retry from an
+            unadvanced cursor and recover; dropped bus-event batches and file lines do
+            not. agledger_siem_poll_delivery_retries_total separates the two.
+
+      - alert: AGLedgerSiemPollerFallingBehind
+        # Age of the oldest system_audit_log row the poller has not forwarded,
+        # measured each cycle rather than inferred from how the cycle ended, so
+        # it reads the same whether the poller is saturated, blocked behind a
+        # long write transaction it must not page over, or simply stopped.
+        #
+        # `max_over_time`, not the bare gauge: a poller runs in the API and in
+        # the worker, only one holds the cursor row per cycle, and a process that
+        # spends a while losing that race publishes nothing new. Sampling the
+        # window's maximum keeps the alert on a series that goes quiet or dips
+        # between scrapes instead of resetting the `for:` hold every time it does.
+        expr: max_over_time(agledger_siem_poll_lag_seconds[5m]) > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SIEM poller is behind the audit write rate"
+          description: >-
+            The oldest audit row the SIEM poller has not forwarded is
+            {{ $value | printf "%.0f" }}s old on {{ $labels.instance }}. Detection
+            latency on auth failures, scope denials and credential changes is at
+            least that. A backlog defers rows rather than dropping them; the drop
+            counters in AGLedgerSiemExportDegraded cover the other case. Usual
+            causes, most likely first: a sink refusing the poll batch (the cursor
+            is ack-then-advance, so nothing is lost and nothing arrives, and
+            agledger_siem_poll_delivery_retries_total by sink is the first thing
+            to check), audit writes outrunning the poller's per-cycle cap, and a
+            long-lived transaction holding the visibility watermark back. Check
+            agledger_siem_poll_skipped_total and pg_stat_activity for the oldest
+            xact_start.
+
+            On the watermark cause specifically: it is min(xact_start) across
+            every backend on this DATABASE, any role, so a READ-ONLY transaction
+            holds it back just as hard as a writer, and this is expected to fire
+            during a routine maintenance window rather than indicating a poller
+            fault. pg_dump is the common one: it runs in a REPEATABLE READ
+            transaction for the length of the dump and sets its own
+            statement_timeout to 0, so no server cap bounds it. A long analytics
+            query or a forgotten psql BEGIN does the same. Export resumes on its
+            own the moment the transaction ends, and nothing is lost either way:
+            the cursor defers rows rather than passing them.
+            Confirm before escalating:
+
+              SELECT pid, usename, state, now() - xact_start AS age, left(query, 80)
+                FROM pg_stat_activity
+               WHERE datname = current_database() AND xact_start IS NOT NULL
+               ORDER BY xact_start LIMIT 5;
+
+            If the oldest row's age tracks the lag, that transaction is the
+            cause. Nothing bounds the transaction itself:
+            idle_in_transaction_session_timeout covers only an IDLE blocker, and
+            statement_timeout does not apply to a client that opts out of it.
+
+            Check agledger_siem_poll_ahead_rows_total before treating this as a
+            SIEM outage. Past SIEM_MAX_HOLDBACK_SECONDS (default 60) the poller
+            delivers the live tail from above the watermark while leaving its
+            cursor below it, so rows moving there mean the live tail IS reaching
+            the sink and what is behind is the in-order backlog. Auth failures,
+            scope denials and cert failures are each written by one autocommit
+            INSERT, so they are always in that tail; a row written inside a
+            longer transaction that committed after the tail had already moved
+            past its start time is not, and waits for the cursor. Those rows are sent a second time when the cursor
+            crosses them, which is why push delivery is at-least-once and a
+            collector must dedupe on the OCSF metadata.uid.
+
+            A flat counter is NOT by itself evidence that ahead delivery is off.
+            It also reads flat once the tail has been caught and nothing new has
+            been written above the watermark since, which is the ordinary shape
+            of a quiet period behind a long backup: this gauge keeps climbing
+            through that, because it measures the age of the oldest row the
+            CURSOR has not passed and the cursor is exactly what does not move.
+            Confirm SIEM_MAX_HOLDBACK_SECONDS is nonzero and compare against the
+            audit write rate before ruling the watermark out.
+
+      - alert: AGLedgerSiemPollerStatsBlanked
+        # Below pg_read_all_stats, Postgres blanks other roles' xact_start. The
+        # watermark then degrades to now() for that writer and its in-flight
+        # rows are skipped permanently, BEHIND the advanced cursor where
+        # measureBacklogSeconds cannot see them: the lag gauge reads 0 through
+        # the whole loss, so AGLedgerSiemPollerFallingBehind never fires. The
+        # poller halts rather than run unprotected, so this fires on the halt
+        # rather than on a skip that leaves no trace.
+        expr: increase(agledger_siem_poll_skipped_total{reason="stats_blanked"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SIEM poller cannot see an in-flight writer's transaction"
+          description: >-
+            The SIEM poller is running on a role without pg_read_all_stats while another
+            role holds a write transaction on the same database. It halted rather than
+            page over rows it cannot prove are visible. Grant the poller's role
+            pg_read_all_stats, or point DATABASE_URL at a role that already has it.
+
+      - alert: AGLedgerSiemStreamHalted
+        # The pull channel's equivalent of AGLedgerSiemPollerStatsBlanked, and
+        # NOT covered by it: an install that configured no push sink runs no
+        # poller at all, so the poller's series never appear while collectors
+        # pull GET /v1/siem/stream. The route answers 503 rather than serve a
+        # page it cannot prove is complete, so a halt is loud on the caller's
+        # side too; this is what tells the operator which database setting to
+        # change.
+        expr: increase(agledger_siem_stream_halted_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SIEM pull stream halted ({{ $labels.reason }})"
+          description: >-
+            GET /v1/siem/stream refused to serve on {{ $labels.instance }} because it
+            could not compute the visibility watermark it pages against
+            (reason={{ $labels.reason }}). SIEM collectors pulling this endpoint are
+            receiving 503 and are not ingesting. For track_activities_off, set
+            track_activities = on. For stats_blanked, grant the Server's role
+            pg_read_all_stats.
+
+      - alert: AGLedgerSiemStreamWatermarkStalled
+        # The DEFERRAL alarm, and the one AGLedgerSiemStreamHalted does not
+        # cover. The watermark is min(xact_start) over every backend with no
+        # write filter, so ANY long transaction on this database holds the
+        # ceiling back: pg_dump in deploy/scripts/backup.sh keeps one open for
+        # the whole dump, and so do a long anti-wraparound vacuum, a psql
+        # session left idle-in-transaction, and the SIEM poller's own drain
+        # transaction. The route then answers a well-formed EMPTY 200 that a
+        # collector cannot tell from "caught up", with no 503 and no halt
+        # counter. Rows are withheld and not lost, so this is a latency alarm:
+        # warning, and held long enough that a routine backup does not page.
+        expr: min_over_time(agledger_siem_stream_watermark_lag_seconds[10m]) > 600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SIEM pull stream is withholding rows behind a long transaction"
+          description: >-
+            The visibility ceiling on {{ $labels.instance }} has been
+            {{ $value | printf "%.0f" }}s behind for 10 minutes, so GET /v1/siem/stream
+            is serving empty pages while rows accumulate. Find the oldest transaction with
+            SELECT pid, usename, state, xact_start FROM pg_stat_activity
+            WHERE xact_start IS NOT NULL ORDER BY xact_start LIMIT 5, and end it. Nothing
+            is lost; export resumes when it does.
+
+      - alert: AGLedgerSiemStreamStatsRestricted
+        # Same pre-failure signal as AGLedgerSiemPollerStatsRestricted, on the
+        # gauge the pull channel publishes for itself.
+        expr: max_over_time(agledger_siem_stream_blanked_backends[15m]) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SIEM pull stream has restricted visibility into pg_stat_activity"
+          description: >-
+            {{ $value | printf "%.0f" }} same-database backend(s) are invisible to the
+            Server's role on {{ $labels.instance }}. GET /v1/siem/stream serves correctly
+            while they stay read-only and halts with 503 as soon as one writes. Grant
+            pg_read_all_stats.
+
+      - alert: AGLedgerSiemPollerStatsRestricted
+        # The pre-failure signal. Blanked backends alone are harmless, since a
+        # read-only session can skip nothing, but they say the poller is on a
+        # role that will halt the moment one of them writes. Warning with a long
+        # hold: this is a standing configuration fact, not an event.
+        expr: max_over_time(agledger_siem_poll_blanked_backends[15m]) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SIEM poller has restricted visibility into pg_stat_activity"
+          description: >-
+            {{ $value | printf "%.0f" }} same-database backend(s) are invisible to the
+            SIEM poller's role on {{ $labels.instance }}. Export is correct while they
+            stay read-only and halts as soon as one writes. Grant pg_read_all_stats.
+
+      - alert: AGLedgerRateLimitStoreFailing
+        # @fastify/rate-limit is configured with `skipOnError`, so a store query
+        # that throws lets the request through. Rate limiting is then off and
+        # every symptom of it being on is absent: no 429s, no errors, no latency
+        # change. The counter is the only thing that says so.
+        expr: increase(agledger_rate_limit_store_failures_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The rate-limit store is failing and requests are passing unlimited"
+          description: >-
+            {{ $value | printf "%.0f" }} store failure(s) in the last 15m on
+            {{ $labels.instance }}. With skipOnError the request is allowed through, so this
+            API is serving unthrottled. Usual causes are a missing `rate_limits` table, a
+            missing GRANT on it, or the table living in a schema off the search_path.
 
       - alert: AGLedgerConfigReloadFailing
         # Config that silently did not take. The operator edited a file, saw no
@@ -171,6 +361,129 @@ groups:
           description: >-
             Checkpointing refused rather than anchoring over a break. Every write after
             this point is unanchored until the break is resolved.
+
+  # ---------------------------------------------------------------------------
+  # Partition maintenance. The daily job (02:00 UTC) creates three months of
+  # monthly partitions ahead on audit_vault, events, webhook_deliveries and
+  # system_audit_log. If it stops, nothing degrades and nothing errors until the
+  # runway reaches zero, at which point INSERTs fail outright with
+  # `no partition of relation "audit_vault" found for row` and the chain stops
+  # accepting appends.
+  #
+  # The runway and default-rows gauges below answer "how much room is left".
+  # They do NOT answer "is the job still running": prom-client holds a gauge's
+  # last value for the life of the process, so a job that stopped extending
+  # anything keeps serving a healthy 92 on every scrape. That is why the two
+  # liveness rules come first. AGLedgerWorkerJobsFailing does not cover this
+  # either, at one daily failure against ~1440 successes a day.
+  # ---------------------------------------------------------------------------
+  - name: agledger-partitions
+    rules:
+      - alert: AGLedgerPartitionMaintenanceFailing
+        # The direct reading of the wedge. ensure_future_partitions() has no
+        # per-table exception handling and runs as one statement, so a single
+        # table it cannot extend rolls back the partitions already created for
+        # the other three: one failure stops maintenance for all four.
+        # 25h, not 15m, because the job runs once a day and a shorter window
+        # resolves the alert before anyone reads it.
+        expr: increase(agledger_partition_management_failures_total[25h]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The daily partition-management job is failing"
+          description: >-
+            No partitioned table gained runway on the last run, or the runway gauges could
+            not be refreshed. Runway is draining and the gauges may be reporting the last
+            healthy reading. Check the worker log for ensure_future_partitions();
+            the usual cause is a row in a DEFAULT partition blocking the CREATE for
+            its month.
+
+      - alert: AGLedgerPartitionMaintenanceNotRunning
+        # The other half: the job is not failing, it is not running. Covers a
+        # dead scheduler and a worker that has never completed a run. `for: 26h`
+        # clears the window after a restart, when the gauges are legitimately
+        # absent until the next 02:00.
+        expr: |
+          (time() - agledger_partition_gauges_updated_timestamp_seconds > 129600)
+          or absent(agledger_partition_runway_days)
+        for: 26h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Partition-management has not reported in over a day"
+          description: >-
+            The runway gauges have not been refreshed. Whatever they currently read is
+            stale, and on a restarted worker they are absent entirely. Confirm the worker
+            is up and its pg-boss schedule still holds the partition-management entry.
+
+      - alert: AGLedgerPartitionRunwayLow
+        # 31 days is the number the gauge's own help text names. A healthy
+        # install sits near 90: the job runs daily and creates three months
+        # ahead, so reaching 31 means it has not completed in about two months.
+        # `unless` rather than a bare `< 31`: the critical rule below is a
+        # strict subset, both `for` windows elapse together, and nothing here
+        # ships an Alertmanager inhibit rule, so without this the same table
+        # pages twice.
+        expr: |
+          (min by (table) (agledger_partition_runway_days) < 31)
+          unless (min by (table) (agledger_partition_runway_days) < 7)
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Partition runway on {{ $labels.table }} is under a month"
+          description: >-
+            {{ $value | printf "%.0f" }} days of future partitions remain on
+            {{ $labels.table }}. The daily partition-management job is not staying ahead.
+            Check the worker, then run SELECT ensure_future_partitions(3) to refill.
+
+      - alert: AGLedgerPartitionRunwayExhausted
+        # Same gauge, paging threshold. Under a week there is no longer room to
+        # schedule the fix, and on audit_vault the failure is a write outage.
+        expr: min by (table) (agledger_partition_runway_days) < 7
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Partition runway on {{ $labels.table }} runs out this week"
+          description: >-
+            {{ $value | printf "%.0f" }} days left on {{ $labels.table }}. When it reaches
+            zero, inserts fail with "no partition of relation found for row"; on audit_vault
+            that stops every chain append and with it every state transition. Run
+            SELECT ensure_future_partitions(3) now.
+
+      - alert: AGLedgerPartitionDefaultRowsPresent
+        # Only system_audit_log has a DEFAULT partition today, so this fires for
+        # it alone. Two different situations land a row there and they are not
+        # equally urgent, which is why this stays a warning and says both:
+        #
+        #   - A row for a month at or after the earliest monthly partition,
+        #     which ensure_future_partitions() would otherwise have covered.
+        #     That one wedges the job: CREATE TABLE ... PARTITION OF for the
+        #     month is refused ("would be violated by some row") and, because
+        #     the function has no per-table exception handling, the whole daily
+        #     run aborts for every table. AGLedgerPartitionMaintenanceFailing is
+        #     the rule that pages for it.
+        #   - A row backdated before the earliest monthly partition. Nothing is
+        #     blocked, because ensure_future_partitions() only ever creates
+        #     months from CURRENT_DATE forward and would never have created that
+        #     one. Migration 006 gave system_audit_log the MINVALUE partition its
+        #     siblings already had, so this is only reachable on an install
+        #     whose default already held such a row at upgrade time.
+        expr: max by (table) (agledger_partition_default_rows) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rows are landing in the DEFAULT partition of {{ $labels.table }}"
+          description: >-
+            {{ $value | printf "%.0f" }} row(s) in the catch-all partition of
+            {{ $labels.table }}, which should read zero. Check the created_at of those
+            rows. If any fall in a month at or after the earliest monthly partition,
+            partition maintenance is wedged for every table until the default is drained
+            and AGLedgerPartitionMaintenanceFailing will be firing alongside this. If they
+            are all older than that, nothing is blocked and the row is simply parked.
 
   # ---------------------------------------------------------------------------
   # Federation delivery. Retries are normal; exhausting them is not.
@@ -243,6 +556,32 @@ groups:
           description: >-
             {{ $value | printf "%.0f" }} waiter(s) for 5m. Sustained waiting is either an
             undersized pool or a query holding a client across an await.
+
+      - alert: AGLedgerDbConnectionsDropping
+        # Backends dying under checked-out clients. Each one now rejects the
+        # in-flight query and evicts the client rather than killing the process,
+        # so this counter is the only thing that reports it; before the client
+        # error listener existed the signal was a container restart.
+        #
+        # A failover is a burst that stops, and the `for:` hold rides over it.
+        # What this catches is the state that does not stop: a flapping network
+        # path to an external database, an OOM-killer cycling the Postgres
+        # process, or something terminating backends on a timer. Every trip
+        # costs the transaction that was open, which for a pg-boss job is a
+        # retry and for a request is a 500.
+        #
+        # Counts roughly double: one backend death raises both the FATAL
+        # message and the socket close.
+        expr: sum(rate(agledger_db_client_connection_errors_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database connections are being dropped under active clients"
+          description: >-
+            Backends have been dying under checked-out clients for 10m. Check the database
+            for restarts, failovers and OOM kills, and the network path if the database is
+            external. Open transactions are lost each time.
 
       - alert: AGLedgerQueueBacklogGrowing
         expr: sum by (queue) (agledger_pgboss_queue_size{state="queued"}) > 1000

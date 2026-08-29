@@ -124,9 +124,21 @@ api:
   # traffic handoff to drain and the sleep would just lengthen the outage.
   # Set 0 to disable.
   preStopSleepSeconds: 15
-  # Must cover preStopSleepSeconds + the app's own graceful shutdown (up to
-  # ~25s of in-flight drain) + headroom, or the kubelet SIGKILLs mid-drain.
-  terminationGracePeriodSeconds: 45
+  # Must cover preStopSleepSeconds + the app's own graceful shutdown (25s, from
+  # config.server.shutdownTimeout) + 5s headroom, or the kubelet SIGKILLs
+  # mid-drain. This is enforced: `agledger.assertApiGracePeriodFitsDrain` in
+  # _helpers.tpl refuses to render a value that does not fit, because nothing in
+  # the rendered manifest shows that the preStop sleep burns inside this number.
+  #
+  # 90 is well above the 45 that arithmetic strictly requires, and the headroom
+  # is close to free: this is a MAXIMUM wait, not a delay. A pod with nothing in
+  # flight terminates in well under a second either way, and the extra is spent
+  # only on a pod that is genuinely stuck. Sizing it tight buys a faster drain
+  # of a broken pod at the price of severing a healthy one's work.
+  #
+  # Under the default Recreate strategy no preStop sleep is rendered, so the
+  # process gets the full 90s; under RollingUpdate it gets 90 - 15 = 75s.
+  terminationGracePeriodSeconds: 90
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -361,12 +373,40 @@ database:
   # Closes the deadlock class where a stalled handler holds an advisory
   # lock indefinitely. 30s tolerates legitimate slow handlers while keeping
   # deadlock recovery within livez/readyz windows. Set to 0 to disable.
+  # A whole number of milliseconds, no unit suffix: 30000, not "30s". Anything
+  # else fails the render rather than casting to 0, which would disable the
+  # guard silently.
   idleInTxTimeoutMs: 30000
+  # Per-statement cap on app queries, in milliseconds, applied as
+  # `SET statement_timeout` on every pooled connection.
+  #
+  # 0 (the default) does NOT mean "no cap": the API sends no SET, so every
+  # session inherits the SERVER's statement_timeout — and postgres.bundled below
+  # sets one. Pin a value here to be independent of the server. Same format
+  # rules as idleInTxTimeoutMs: a whole number of milliseconds, no unit suffix.
+  statementTimeoutMs: 0
 
 postgres:
   bundled:
     enabled: false
     image: postgres:18-alpine
+    # Server-side guards for the bundled instance, matched to what the Compose
+    # bundled-PG overlay (deploy/compose/docker-compose.postgres.yml) already
+    # sets, so the two bundled paths behave the same way. Without these the
+    # bundled Helm Postgres ran stock: no statement cap and no idle-in-transaction
+    # cap, where the Compose path had both.
+    #
+    # `statement_timeout` is the cap every app session inherits when
+    # database.statementTimeoutMs is left at 0. The few engine statements that
+    # cannot survive any cap (the boot-time queue-policy advisory lock, the
+    # partition-creation DDL, and pg-boss's CONCURRENTLY index builds) lift it
+    # for themselves, so this bounds ordinary queries only. Rendered as
+    # `postgres -c key=value`, sorted by key.
+    parameters:
+      idle_in_transaction_session_timeout: 300s
+      log_statement: ddl
+      shared_buffers: 256MB
+      statement_timeout: 30s
     password: ""  # Empty = auto-generated 32-char random, preserved across upgrades (like apiKeySecret). Set to pin a specific password; also used in DATABASE_URL.
     storage: 10Gi
     # storageClassName for the bundled-PG data PVC. Leave empty ("") to use the

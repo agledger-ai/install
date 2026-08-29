@@ -19,6 +19,9 @@
 # compatibility mode and printed as friction (a finding, not a retry). Every
 # non-2xx prints the error envelope so you can see exactly what the Server said.
 #
+# Schema writes are rate-limited to 10/minute per key. A 429 is retried
+# automatically after the server-stated wait, up to 5 attempts.
+#
 # RECIPE_FORCE=1 (DESTRUCTIVE): disable + delete each type before POSTing, so the
 # recipe's exact schema lands as a fresh v1 regardless of what the org already has.
 # The engine refuses to delete a type that has live records. Use only to reset a
@@ -37,9 +40,19 @@ for f in "$HERE"/types/*.json; do
     curl -s -X PATCH  "$API/v1/schemas/$type/disable" -H "Authorization: Bearer $AK" >/dev/null 2>&1
     curl -s -X DELETE "$API/v1/schemas/$type"         -H "Authorization: Bearer $AK" >/dev/null 2>&1
   fi
-  resp=$(curl -s -w $'\n%{http_code}' -X POST "$API/v1/schemas" \
-      -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' --data-binary "@$f")
-  code="${resp##*$'\n'}"; json="${resp%$'\n'*}"
+  attempt=0
+  while :; do
+    resp=$(curl -s -w $'\n%{http_code}' -X POST "$API/v1/schemas" \
+        -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' --data-binary "@$f")
+    code="${resp##*$'\n'}"; json="${resp%$'\n'*}"
+    [[ "$code" != "429" ]] && break
+    attempt=$((attempt + 1))
+    if [[ $attempt -gt 5 ]]; then break; fi
+    wait=$(echo "$json" | jq -r '.retryAfterSeconds // 60' 2>/dev/null) || wait=60
+    [[ "$wait" =~ ^[0-9]+$ ]] || wait=60
+    echo "WAIT 429  $type  (rate limited; retrying in ${wait}s, attempt $attempt/5)"
+    sleep "$wait"
+  done
   if [[ "$code" == 2* ]]; then
     gate=$(jq -r 'if (.completionSchema // {} | length)>0 then (.defaultGateMode // "auto") else "notarize-only" end' "$f")
     echo "OK   $code  $type  (lifecycle=$gate, v$(echo "$json" | jq -r .version))"
