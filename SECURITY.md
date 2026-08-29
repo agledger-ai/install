@@ -13,16 +13,43 @@ Email **security@agledger.ai** with:
 - Environment details: version, deployment method (Compose or Helm), OS, relevant configuration
 - Proof of concept: screenshots, logs, or code snippets, if available
 
-For sensitive reports, request our PGP key by emailing **security@agledger.ai** and we will arrange an encrypted channel.
+If the report is sensitive enough that you do not want the details sitting in plain email, say so
+in your first message to **security@agledger.ai** and we will agree an encrypted channel before you
+send them.
 
 ## Severity and Response
 
-| Severity | Definition | Acknowledgment | Patch target |
-|---|---|---|---|
-| Critical | Immediate risk of data breach, auth bypass, or RCE | 24 hours | 72 hours |
-| High | Significant risk requiring prompt attention | 48 hours | 1 week |
-| Medium | Moderate risk or requiring specific conditions | 1 week | 30 days |
-| Low | Minor risk with minimal impact | 2 weeks | Next release |
+We acknowledge a report promptly and give you an initial assessment as soon as practicable. There
+is no fixed clock on those two steps, and we would rather say that than publish a number we cannot
+hold to.
+
+A **Security Fix** is a remediation for a vulnerability rated Critical or High under CVSS. Those two
+severities carry the release targets stated in the Support Terms:
+
+| Severity | Definition | Release target |
+|---|---|---|
+| Critical (CVSS 9.0+) | Immediate risk of data breach, auth bypass, or RCE | 7 days |
+| High (CVSS 7.0-8.9) | Significant risk requiring prompt attention | 30 days |
+
+These are targets pursued with commercially reasonable effort, not guarantees. Medium and Low
+findings are fixed in an ordinary release rather than as a Security Fix, and carry no target date.
+
+**Supported Versions** are the current major version and one prior major version (N and N-1), as
+the Support Terms define them, so a deployment does not fall out of the window by being some point
+releases behind. The declared **Security Update Support Period** for the Licensed Software is not
+less than sixty (60) months from first delivery under an Order Form, or longer where an Order Form
+says so.
+
+A Security Fix ships as an ordinary signed release: the image on Docker Hub and the artifacts on
+the public GitHub Releases page, neither of which is authenticated or entitlement-gated. There is
+no separate security channel to be enrolled in. What each edition is contractually owed is in the
+Software License Agreement (§ 6.2) and the Support Terms (§ 5); this file describes how fixes are
+built, scanned and published, not who is owed them.
+
+Our coordinated vulnerability disclosure policy asks for a 90-day window: please do not disclose
+publicly before a fix is available or 90 days have passed, whichever comes first. For anything under
+active exploitation we move faster and coordinate an accelerated timeline with you, and we are glad
+to coordinate CVE assignment and a joint disclosure.
 
 You will be kept informed of progress and credited in the advisory unless you ask to remain anonymous.
 
@@ -130,10 +157,12 @@ The SBOM, OpenVEX document, and the signed conformance corpus are attached to ev
 [GitHub Release on this public repo](https://github.com/agledger-ai/install/releases)
 for direct download (`agledger-<version>-sbom.cdx.json`,
 `agledger-<version>-vex.openvex.json`, `agledger-<version>-conformance-corpus.tar.gz`
-+ `.sha256` + `.sigstore.json`). The signing-key rotation procedure is documented at
-<https://agledger.ai/docs>; the separate audit-chain (vault) signing keys are
-published live at `GET /.well-known/agledger-vault-keys.json` and
-`GET /v1/verification-keys`.
++ `.sha256` + `.sigstore.json`). The release signing above is keyless: there is no
+long-lived signing key to steal, rotate or revoke, and nothing outside a run of our release workflow
+can obtain a certificate for that identity. It is not a defence against a runner compromised while
+that job is running, which holds the OIDC token the job was issued: the isolated SLSA Build L3
+builder and the public transparency log are what address build-machine compromise. The separate audit-chain (vault) signing keys, the ones your own Server holds, are
+published live at `GET /.well-known/agledger-vault-keys.json` and `GET /v1/verification-keys`.
 
 ## Mirrored registries (AWS Marketplace / ECR)
 
@@ -163,3 +192,25 @@ aws ecr describe-images \
 
 If the two digests match, the Marketplace image is the same bytes as the
 cryptographically verified public image, and inherits its full provenance.
+
+## If your vault signing key is compromised
+
+The full runbook is [Signing-key compromise](https://agledger.ai/docs/operations/key-compromise).
+The semantics it turns on, so you can plan against them before you need it:
+
+- **Rotation is the containment step, and a restart is what performs it.** On boot the Server
+  reconciles the key registry to the configured `VAULT_SIGNING_KEY`: it activates that key and
+  retires the previous one with a `retiredAt` instant.
+  `POST /v1/admin/vault/signing-keys/rotate` runs the same reconciliation on demand and answers
+  `already_active` against a Server that has already restarted.
+- **There is no revocation, by design.** A key is `active` or `retired`; there is no `compromised`
+  status, and a retired key keeps verifying the entries it signed. That is what makes routine
+  rotation non-destructive, and it means the product will not mark records signed inside your
+  compromise window. Rotation stops future signing with that key; it says nothing about what was
+  signed before it.
+- **External anchors are what bound the window.** Anchors written to Object Lock storage before the
+  exposure are ground truth an attacker holding the key could not rewrite, so they split your
+  history into a span that is provably intact and a span you have to corroborate from outside the
+  chain. Turn anchoring on (`VAULT_ANCHOR_ENABLED=true`; `VAULT_ANCHOR_INTERVAL_MINUTES` sets the
+  cadence, default 360) before you need it, because enabling it during an incident bounds nothing
+  already written.

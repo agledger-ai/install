@@ -62,25 +62,76 @@ collect "docker compose logs (last 1000 lines)" "compose-logs.txt" \
 
 # --- PostgreSQL diagnostics ---
 
+# Row counts and sizes per table, shared by the bundled-PG and external-psql
+# branches below so the two cannot drift apart.
+#
+# This covers every schema in the database, not only AGLedger's tables. That is
+# the point on a bundled PostgreSQL, which holds nothing else. On an external
+# database the operator is told what that means before it is collected (see the
+# notice in the external branch below); GET /v1/admin/support-bundle, which
+# customers can expose more widely, is allowlisted to our own tables instead.
+#
+# `pg_stat_user_tables` reports a partitioned parent's own heap, and a
+# partitioned table (relkind 'p') has no heap of its own, so audit_vault,
+# events, system_audit_log, webhook_deliveries, federation_reputation_contributions
+# and pgboss.job all read as 0 rows and 0 bytes no matter how full they are.
+# Roll each partition tree up into its parent and drop the leaf rows, so a
+# reader is not summing partitions by hand and the counts agree with
+# GET /v1/admin/support-bundle for the tables that endpoint covers.
+# Sizes come from the leaves for the same reason: a partitioned index
+# (relkind 'I') stores nothing either, and `pg_total_relation_size` on a leaf
+# already counts that leaf's indexes and TOAST.
+TABLE_STATS_SQL="
+SELECT s.schemaname,
+       s.relname,
+       COALESCE((SELECT SUM(st.n_live_tup) FROM pg_partition_tree(s.relid) pt
+                   JOIN pg_stat_all_tables st ON st.relid = pt.relid
+                  WHERE pt.isleaf), s.n_live_tup) AS n_live_tup,
+       COALESCE((SELECT SUM(pg_total_relation_size(pt.relid)) FROM pg_partition_tree(s.relid) pt
+                  WHERE pt.isleaf), pg_total_relation_size(s.relid)) AS total_bytes,
+       pg_size_pretty(COALESCE((SELECT SUM(pg_total_relation_size(pt.relid)) FROM pg_partition_tree(s.relid) pt
+                  WHERE pt.isleaf), pg_total_relation_size(s.relid))) AS total_size
+  FROM pg_stat_user_tables s
+  JOIN pg_class c ON c.oid = s.relid
+ WHERE NOT c.relispartition
+ ORDER BY n_live_tup DESC;"
+
 if [[ "${USES_BUNDLED_PG}" == "true" ]]; then
   collect "schema dump (no data)" "db-schema.sql" \
     "${COMPOSE[@]}" exec -T postgres pg_dump -U "${POSTGRES_USER}" --schema-only "${POSTGRES_DB}"
 
   collect "table row counts" "db-table-stats.txt" \
     "${COMPOSE[@]}" exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c \
-    "SELECT schemaname, relname, n_live_tup FROM pg_stat_user_tables ORDER BY n_live_tup DESC;"
+    "${TABLE_STATS_SQL}"
 
   collect "migration state" "db-migrations.txt" \
     "${COMPOSE[@]}" exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c \
     "SELECT * FROM _migrations ORDER BY id;"
 else
   if command -v psql &>/dev/null; then
+    # An external database can be shared with other applications, and both
+    # collections below read all of it. Say so in the tarball as well as on
+    # stdout: the file is what support and the operator read later.
+    {
+      echo "Scope of the database files in this bundle"
+      echo ""
+      echo "This install uses an EXTERNAL database, so db-schema.sql and"
+      echo "db-table-stats.txt cover every schema in it, not just AGLedger's"
+      echo "tables. If other applications share this database, their table and"
+      echo "column definitions are in db-schema.sql and their row counts and"
+      echo "sizes are in db-table-stats.txt."
+      echo ""
+      echo "Review both files before sending this tarball, and delete what does"
+      echo "not belong to AGLedger. Nothing here contains row data or secrets."
+    } > "${BUNDLE_DIR}/db-collection-scope.txt"
+    log "External database: db-schema.sql and db-table-stats.txt cover EVERY schema in it, including relations AGLedger did not create. Review both before sending the tarball (see db-collection-scope.txt)."
+
     collect "schema dump (no data)" "db-schema.sql" \
       pg_dump "${DATABASE_URL}" --schema-only
 
     collect "table row counts" "db-table-stats.txt" \
       psql "${DATABASE_URL}" -c \
-      "SELECT schemaname, relname, n_live_tup FROM pg_stat_user_tables ORDER BY n_live_tup DESC;"
+      "${TABLE_STATS_SQL}"
 
     collect "migration state" "db-migrations.txt" \
       psql "${DATABASE_URL}" -c \

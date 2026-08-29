@@ -1,3 +1,4 @@
+{{- include "agledger.validateValues" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,7 +36,11 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      terminationGracePeriodSeconds: 35
+      # Covers the worker's 25s drain budget (config.worker.shutdownTimeout)
+      # with headroom to spare. Not operator-facing: the worker takes no ingress
+      # traffic, so it renders no preStop sleep and nothing is deducted from
+      # this. A maximum wait, not a delay.
+      terminationGracePeriodSeconds: 70
       {{- if not (.Values.openshift).enabled }}
       {{- with .Values.worker.podSecurityContext }}
       securityContext:

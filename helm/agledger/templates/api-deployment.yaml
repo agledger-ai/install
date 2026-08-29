@@ -1,3 +1,4 @@
+{{- include "agledger.validateValues" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -30,6 +31,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- include "agledger.assertApiGracePeriodFitsDrain" . }}
       terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
       {{- if not (.Values.openshift).enabled }}
       {{- with .Values.api.podSecurityContext }}
@@ -85,7 +87,7 @@ spec:
               port: http
             periodSeconds: 10
             failureThreshold: 30
-          {{- if and .Values.api.preStopSleepSeconds (eq .Values.api.strategy.type "RollingUpdate") }}
+          {{- if and .Values.api.preStopSleepSeconds (eq ((.Values.api.strategy).type | default "") "RollingUpdate") }}
           # Hold the container fully serving while LB/endpoint
           # deregistration propagates, THEN deliver SIGTERM for the in-flight
           # drain. Kubelet runs exec hooks via the container runtime, not as a

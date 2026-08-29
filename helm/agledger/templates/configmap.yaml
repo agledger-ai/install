@@ -1,3 +1,4 @@
+{{- include "agledger.validateValues" . -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,10 +20,10 @@ data:
          real deployment should set config.externalUrl (or an ingress host) so
          the chain carries a verifiable issuer. */}}
   {{- $extUrl := .Values.config.externalUrl }}
-  {{- if and (not $extUrl) .Values.ingress.enabled (gt (len .Values.ingress.hosts) 0) }}
+  {{- if and (not $extUrl) (.Values.ingress).enabled (gt (len ((.Values.ingress).hosts | default list)) 0) }}
     {{- $firstHost := (index .Values.ingress.hosts 0).host }}
-    {{- $hasAlbSsl := hasKey .Values.ingress.annotations "alb.ingress.kubernetes.io/certificate-arn" }}
-    {{- $scheme := ternary "https" "http" (or (gt (len .Values.ingress.tls) 0) $hasAlbSsl) }}
+    {{- $hasAlbSsl := hasKey ((.Values.ingress).annotations | default dict) "alb.ingress.kubernetes.io/certificate-arn" }}
+    {{- $scheme := ternary "https" "http" (or (gt (len ((.Values.ingress).tls | default list)) 0) $hasAlbSsl) }}
     {{- $extUrl = printf "%s://%s" $scheme $firstHost }}
   {{- end }}
   AGLEDGER_EXTERNAL_URL: {{ $extUrl | default "https://localhost" | quote }}
@@ -40,22 +41,23 @@ data:
   AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG: "true"
   {{- end }}
   DATABASE_POOL_MAX: {{ .Values.database.poolMax | quote }}
-  DATABASE_IDLE_IN_TX_TIMEOUT_MS: {{ .Values.database.idleInTxTimeoutMs | default 30000 | quote }}
+  DATABASE_IDLE_IN_TX_TIMEOUT_MS: {{ include "agledger.idleInTxTimeoutMs" . | quote }}
+  DATABASE_STATEMENT_TIMEOUT_MS: {{ include "agledger.statementTimeoutMs" . | quote }}
   WORKER_HEALTH_PORT: {{ .Values.worker.healthPort | quote }}
   {{- if .Values.config.nodeExtraCaCerts }}
   NODE_EXTRA_CA_CERTS: {{ .Values.config.nodeExtraCaCerts | quote }}
   {{- end }}
-  {{- if .Values.license.releaseDate }}
-  AGLEDGER_RELEASE_DATE: {{ .Values.license.releaseDate | quote }}
+  {{- if (.Values.license).releaseDate }}
+  AGLEDGER_RELEASE_DATE: {{ (.Values.license).releaseDate | quote }}
   {{- end }}
-  {{- if .Values.license.keyFile.enabled }}
-  AGLEDGER_LICENSE_KEY_FILE: {{ .Values.license.keyFile.mountPath | quote }}
+  {{- if ((.Values.license).keyFile).enabled }}
+  AGLEDGER_LICENSE_KEY_FILE: {{ ((.Values.license).keyFile).mountPath | quote }}
   {{- end }}
-  {{- if .Values.postgres.bundled.enabled }}
+  {{- if ((.Values.postgres).bundled).enabled }}
   ALLOW_DB_WITHOUT_SSL: "true"
   AGLEDGER_PG_BUNDLED: "true"
   {{- end }}
-  {{- if .Values.provisioning.enabled }}
+  {{- if (.Values.provisioning).enabled }}
   PROVISIONING_CONFIG_PATH: {{ .Values.provisioning.configPath | quote }}
   {{- if .Values.provisioning.dryRun }}
   PROVISIONING_DRY_RUN: "true"
@@ -64,9 +66,9 @@ data:
   PROVISIONING_PRUNE: "true"
   {{- end }}
   {{- end }}
-  {{- if .Values.marketplace.productId }}
-  AWS_MARKETPLACE_PRODUCT_ID: {{ .Values.marketplace.productId | quote }}
+  {{- if (.Values.marketplace).productId }}
+  AWS_MARKETPLACE_PRODUCT_ID: {{ (.Values.marketplace).productId | quote }}
   {{- end }}
-  {{- if .Values.marketplace.publicKeyVersion }}
-  AWS_MARKETPLACE_PUBLIC_KEY_VERSION: {{ .Values.marketplace.publicKeyVersion | quote }}
+  {{- if (.Values.marketplace).publicKeyVersion }}
+  AWS_MARKETPLACE_PUBLIC_KEY_VERSION: {{ (.Values.marketplace).publicKeyVersion | quote }}
   {{- end }}
