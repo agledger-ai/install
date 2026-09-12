@@ -1,0 +1,60 @@
+{{- include "agledger.validateValues" . -}}
+{{- if ((.Values.monitoring).serviceMonitor).enabled }}
+{{- /* One ServiceMonitor covers both Services. The selector matches the
+       release's common labels, which both the API Service and the worker
+       Service carry; the endpoints are keyed by port NAME, and an endpoint
+       naming a port a Service does not have is skipped rather than erroring.
+       So `http` resolves on the API Service only and `health` on the worker
+       Service only, and neither needs its own object.
+
+       The bearer credentials come from the release Secret, which is where the
+       chart mints METRICS_AUTH_TOKEN. With secrets.existingSecret the operator
+       owns that Secret, so the reference points at theirs and the key has to
+       be present under the same name. */}}
+{{- $secretName := include "agledger.secretName" . }}
+{{- $useToken := ne (.Values.secrets.metricsAuthToken | default "") "-" }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "agledger.fullname" . }}
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    {{- with ((.Values.monitoring).serviceMonitor).additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "agledger.selectorLabels" . | nindent 6 }}
+    matchExpressions:
+      {{- /* The bundled-Postgres Service carries the same release labels. Its
+             single port is unnamed so neither endpoint below would resolve on
+             it, but naming the two components keeps the object saying what it
+             means rather than relying on that. */}}
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [api, worker]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ ((.Values.monitoring).serviceMonitor).interval | default "30s" }}
+      scrapeTimeout: {{ ((.Values.monitoring).serviceMonitor).scrapeTimeout | default "10s" }}
+      {{- if $useToken }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ $secretName }}
+          key: METRICS_AUTH_TOKEN
+      {{- end }}
+    - port: health
+      path: /metrics
+      interval: {{ ((.Values.monitoring).serviceMonitor).interval | default "30s" }}
+      scrapeTimeout: {{ ((.Values.monitoring).serviceMonitor).scrapeTimeout | default "10s" }}
+      {{- if $useToken }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ $secretName }}
+          key: METRICS_AUTH_TOKEN
+      {{- end }}
+{{- end }}

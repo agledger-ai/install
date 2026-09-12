@@ -39,6 +39,47 @@ spec:
         - ipBlock:
             cidr: {{ . | quote }}
         {{- end }}
+        {{- if ((.Values.monitoring).serviceMonitor).enabled }}
+        {{- /* The scrape the chart's own ServiceMonitor configures. Prometheus
+               is neither of the ingress controllers ingressFrom names, so
+               without this the API endpoint is dropped at the network layer
+               while the worker one succeeds, and the target simply reads as
+               down. Namespace-wide, because the Prometheus Operator commonly
+               runs the server in a monitoring namespace of its own. */}}
+        {{- range ((.Values.monitoring).serviceMonitor).scrapeFrom }}
+        - namespaceSelector: {}
+          {{- if (.podSelector).matchLabels }}
+          podSelector:
+            matchLabels:
+              {{- toYaml (.podSelector).matchLabels | nindent 14 }}
+          {{- else }}
+          podSelector: {}
+          {{- end }}
+        {{- end }}
+        {{- end }}
+        {{- if (.Values.openshift).enabled }}
+        {{- /* The OpenShift router is not ingress-nginx and is not traefik, so
+               none of the podSelectors above match it and the shipped policy
+               left the router unable to reach the API: an admitted Route that
+               returns 503 with nothing in the pod logs, because the connection
+               never arrived. The router runs in the openshift-ingress
+               namespace; both selectors below name it, because which label is
+               present depends on the cluster version.
+
+               kubernetes.io/metadata.name is set by the apiserver on every
+               namespace (Kubernetes 1.21+), so it is the one that is always
+               there. policy-group.network.openshift.io/ingress is the label
+               OpenShift's own docs point NetworkPolicy authors at, and is what
+               keeps this working on a cluster that runs the router somewhere
+               else. Two `from` entries are OR, so a selector matching nothing
+               costs nothing. */}}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-ingress
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+        {{- end }}
       ports:
         - port: 3000
           protocol: TCP
@@ -51,7 +92,7 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    {{- if ((.Values.postgres).bundled).enabled }}
+    {{- if (include "agledger.bundledPostgres" .) }}
     # Bundled PostgreSQL (in-cluster only)
     - to:
         - podSelector:
@@ -111,7 +152,7 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    {{- if ((.Values.postgres).bundled).enabled }}
+    {{- if (include "agledger.bundledPostgres" .) }}
     # Bundled PostgreSQL (in-cluster only)
     - to:
         - podSelector:

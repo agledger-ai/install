@@ -17,10 +17,28 @@ source "${SCRIPT_DIR}/lib-compose.sh"
 
 BACKUP_SCRIPT="${SCRIPT_DIR}/backup.sh"
 
+# Set once this run stops the worker for the migration. Everything above that
+# point leaves the install exactly as it found it; everything below does not,
+# and telling an operator whose migration just failed that "your previous
+# version should still be running" is wrong in the one direction that matters:
+# the worker is down, so nothing is processing jobs, dispatching webhooks or
+# sweeping deadlines, and the message they were given says to do nothing.
+WORKER_STOPPED=false
+
 cleanup() {
   if [[ $? -ne 0 ]]; then
     echo ""
-    error "Upgrade failed. Your previous version should still be running."
+    if [[ "$WORKER_STOPPED" == true ]]; then
+      error "Upgrade failed AFTER the worker was stopped for the migration."
+      error "The worker is DOWN: no jobs, no webhook deliveries, no deadline sweeps"
+      error "until it is back. Whether the API is still serving depends on how far this"
+      error "run got; the ps command below answers that."
+      error "Finish or abandon the upgrade, then bring it back with either:"
+      error "  ./scripts/upgrade.sh ${TARGET_VERSION}          # re-run; applied migrations are skipped"
+      error "  (cd ${COMPOSE_DIR} && docker compose up -d)   # restart on the version .env names"
+    else
+      error "Upgrade failed. Nothing was stopped, so your previous version is still running."
+    fi
     error "Check: docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps"
     error "Logs:  docker compose -f ${COMPOSE_DIR}/docker-compose.yml logs"
   fi
@@ -83,6 +101,16 @@ done
 
 if [[ -z "$TARGET_VERSION" ]]; then
   fatal "Target version is required. Usage: $0 <VERSION> [--skip-backup]"
+fi
+
+# --- Compose version floor ---
+# The compose file this upgrade is about to run declares an inline
+# `configs.content`, which Compose below 2.23.1 fails to parse rather than
+# ignore. Refuse before anything is stopped: an upgrade that gets as far as
+# stopping the worker and then cannot run `compose up` leaves the stack down.
+COMPOSE_STATE="$(compose_version_state)"
+if [[ "$COMPOSE_STATE" != "ok" ]]; then
+  fatal "${COMPOSE_STATE} Nothing has been stopped. Upgrade Compose, then re-run: https://docs.docker.com/compose/install/"
 fi
 
 # --- Resolve Current Version ---
@@ -160,62 +188,76 @@ if grep -q '^AGLEDGER_RELEASE_DATE=' "$ENV_FILE" 2>/dev/null; then
   info "Commented out AGLEDGER_RELEASE_DATE in .env (image-baked value takes precedence)"
 fi
 
+# --- Configuration State Check ---
+# Surface known-broken-state conditions before the customer confirms. Don't
+# auto-flip security-sensitive values.
+
+step "Checking configuration state"
+
+# Every .env repair here sits above the version-equality exit below on purpose,
+# and lives in lib-compose.sh so restore.sh performs the same ones: none of them
+# is a property of the version gap. reconcile_env_file sets ENV_RECONCILED and
+# MONITORING_ACTIVE; its comment carries the reasoning for each repair.
+reconcile_env_file "$ENV_FILE"
+
+# --- Grafana Credential State ---
+# The installer generates GRAFANA_ADMIN_PASSWORD on a fresh monitoring install,
+# and warns when a Grafana volume already exists because the password is applied
+# only when the admin user is created and ignored on every later boot. Neither
+# ran on the upgrade path, so an install that predates the change came out the
+# far side still answering to admin/admin with nothing in the output saying so.
+# The generate branch cannot apply here for the same reason it does not apply in
+# the installer: the volume already pinned it.
+#
+# Above the exit for the same reason the reconciles are: the password is stale
+# whether or not there is a version to move to, and this is the only path that
+# reports it.
+if [[ "$MONITORING_ACTIVE" == true ]] \
+  && [[ "$(grafana_password_action "$ENV_FILE")" == "stale" ]]; then
+  echo ""
+  warn "Grafana is running from an existing volume, so its admin password is whatever it was first started with."
+  warn "  Releases before 1.4.0 defaulted it to 'admin', which is very likely what it still is. To set a new one:"
+  warn "    docker compose exec grafana grafana cli admin reset-admin-password <new-password>"
+  warn "  then record it as GRAFANA_ADMIN_PASSWORD in ${ENV_FILE}."
+  warn "  The shipped compose file binds Grafana to loopback; the container currently running keeps"
+  warn "  whatever binding it was created with until it is recreated. Check: docker compose ps grafana"
+fi
+
+# --- Already on the target version? ---
+#
+# Only if the stack is actually serving it. This script writes AGLEDGER_VERSION
+# before the restart, so a run whose `up -d --wait` failed left .env naming the
+# target with nothing up: on re-run the equality below held, "Nothing to do"
+# printed, and the recovery text the failed run gave ("set them in .env and
+# re-run this script") was a no-op against a stack that was down. Ask the API,
+# not `compose ps`: an unhealthy container is still `running`.
+RESUMING_FAILED_UPGRADE=false
 if [[ "$CURRENT_VERSION" == "$TARGET_VERSION" ]]; then
-  warn "Already running version ${TARGET_VERSION}. Nothing to do."
-  exit 0
+  detect_db_mode
+  build_compose_cmd
+  if api_service_serving; then
+    if [[ "$ENV_RECONCILED" == true ]]; then
+      warn "Already running version ${TARGET_VERSION}, so nothing is pulled, backed up or restarted."
+      warn "The .env repairs above are on disk, but the containers still hold the environment they"
+      warn "started with. Recreate the stack to pick them up:"
+      warn "  (cd ${COMPOSE_DIR} && docker compose up -d)"
+    else
+      warn "Already running version ${TARGET_VERSION}. Nothing to do."
+    fi
+    exit 0
+  fi
+  RESUMING_FAILED_UPGRADE=true
+  warn ".env names ${TARGET_VERSION} but the API is not serving, so this is a resumed upgrade,"
+  warn "not a no-op. Continuing: applied migrations are skipped and the restart is re-attempted."
+  warn "The rollback marker is left holding the version the first attempt recorded."
+  warn "If the database container is down as well, and the first attempt did not itself skip the"
+  warn "backup, that backup is already on disk: re-run with --skip-backup rather than fighting a"
+  warn "pg_dump against a stopped Postgres."
 fi
 
 # --- Detect Database Mode ---
 
 detect_db_mode
-
-# --- Configuration State Check ---
-# Surface known-broken-state conditions from v0.19.16 before the customer
-# confirms. Don't auto-flip security-sensitive values.
-
-step "Checking configuration state"
-
-if ! grep -qE '^COMPOSE_FILE=' "$ENV_FILE" 2>/dev/null; then
-  warn "COMPOSE_FILE not persisted in .env — manual 'docker compose' commands will drop overlays."
-  warn "Auto-adding based on current deployment."
-  build_overlay_list
-  upsert_env_var COMPOSE_FILE "${OVERLAY_LIST}" "$ENV_FILE"
-  info "Added COMPOSE_FILE=${OVERLAY_LIST}"
-fi
-
-# --- Federation Identity ---
-# The same gap install.sh now closes, reached from the other direction.
-# An install stood up before that fix has no AGLEDGER_INSTANCE_ID, so its
-# operator is told the Server's id is the literal "default" and the peer's
-# handshake refuses it. `federation_hub_id_action` will not touch a Server that
-# already has a usable id, so an upgrade can never move an identity peers have
-# stored: it only fills in the absent case.
-if [[ "$(federation_hub_id_action "$ENV_FILE")" == "generate" ]]; then
-  if HUB_ID_VALUE=$(generate_uuid); then
-    upsert_env_var AGLEDGER_INSTANCE_ID "${HUB_ID_VALUE}" "$ENV_FILE"
-    info "Generated AGLEDGER_INSTANCE_ID (this Server's federation identity; it had none)"
-  else
-    warn "Could not generate AGLEDGER_INSTANCE_ID. Federation stays unavailable until one is set;"
-    warn "GET /federation/v1/admin/instance names the variable and how to generate a value."
-  fi
-fi
-
-# --- Monitoring Profile ---
-# An install stood up with --with-monitoring before COMPOSE_PROFILES was
-# persisted has monitoring containers running and nothing in .env that selects
-# them. Every compose command here, including the `up -d` below, would then skip
-# the profile: the containers keep running on the OLD image with the OLD port
-# bindings while the upgrade reports success, and the release notes describe a
-# hardening the machine never received. Repair the .env before anything else
-# reads it, so the profile also sticks for the operator's own later commands.
-MONITORING_ACTIVE=false
-if monitoring_containers_running; then
-  MONITORING_ACTIVE=true
-  if [[ "$(ensure_monitoring_profile "$ENV_FILE")" == "added" ]]; then
-    info "Monitoring containers are running but COMPOSE_PROFILES did not select them."
-    info "  Added COMPOSE_PROFILES=monitoring to .env so this upgrade includes them."
-  fi
-fi
 
 # --- Config Gate ---
 #
@@ -249,7 +291,11 @@ fi
 # --- Confirmation ---
 
 echo ""
-echo -e "${YELLOW}Upgrade AGLedger from ${BOLD}${CURRENT_VERSION}${NC}${YELLOW} to ${BOLD}${TARGET_VERSION}${NC}${YELLOW}?${NC}"
+if [[ "$RESUMING_FAILED_UPGRADE" == true ]]; then
+  echo -e "${YELLOW}Finish the interrupted upgrade to ${BOLD}${TARGET_VERSION}${NC}${YELLOW}? (.env already names it; the stack is not serving)${NC}"
+else
+  echo -e "${YELLOW}Upgrade AGLedger from ${BOLD}${CURRENT_VERSION}${NC}${YELLOW} to ${BOLD}${TARGET_VERSION}${NC}${YELLOW}?${NC}"
+fi
 
 if [[ -t 0 ]]; then
   read -rp "Continue? (y/N) " CONFIRM
@@ -365,9 +411,22 @@ runtime_role_gate() {
 }
 
 build_compose_cmd
-runtime_role_gate "before the backup" \
+# The recovery text has to describe the state this run is actually in. On a
+# resumed run every clause of the fresh-run version is false: the first
+# attempt's backup exists, its migrations are applied, .env names the target
+# (that is how the resume was detected) and the stack is not serving. Telling
+# an external-DB operator their database is untouched when it has already been
+# migrated is how a rollback gets reached for that nothing needs.
+if [[ "$RESUMING_FAILED_UPGRADE" == true ]]; then
+  runtime_role_gate "before the backup" \
+"This is a resumed upgrade, so read the state before acting: the first attempt's migrations for
+${TARGET_VERSION} are applied and .env already names it. Nothing further has changed on THIS run.
+The original restart may have failed for the same reason this check just did."
+else
+  runtime_role_gate "before the backup" \
 "Nothing has changed yet: no backup has been taken, no migration has run, and .env still
 names the version you are on, so your install is serving exactly as it was."
+fi
 
 # --- Pre-Upgrade Backup ---
 
@@ -386,10 +445,30 @@ else
   fi
 fi
 
-# Save pre-upgrade version for rollback
-BACKUP_ROOT="${BACKUP_DIR:-${REPO_ROOT}/backup}"
-if [[ -d "$BACKUP_ROOT" ]] && [[ -n "$CURRENT_VERSION" ]]; then
-  echo "$CURRENT_VERSION" > "${BACKUP_ROOT}/.pre-upgrade-version"
+# Save pre-upgrade version for rollback.
+#
+# The directory is created rather than required: `--skip-backup` on a host that
+# has never run backup.sh has no backup/ yet, and the README says the marker is
+# always written. It is the one file that says what to roll back TO, so it is
+# not something to skip because the directory it lives in is absent.
+#
+# Not written on a resumed run: CURRENT_VERSION equals TARGET_VERSION there, so
+# writing it would overwrite the real previous version with the one being
+# upgraded to and leave nothing to roll back to.
+BACKUP_ROOT="$(backup_root)"
+# An install upgraded from an older checkout has a marker in the old shared
+# location too, naming an older version. Left unsaid, the operator reads that
+# one at rollback time.
+report_legacy_backup_root
+if [[ "$RESUMING_FAILED_UPGRADE" == true ]]; then
+  # Defaulted here rather than with `|| echo`: the reader prints nothing and
+  # SUCCEEDS when no marker exists, so a `||` fallback never fires and the line
+  # would end in a blank where the version belongs.
+  RESUMED_MARKER="$(read_pre_upgrade_marker)"
+  info "Rollback marker left as it is (resumed upgrade): ${RESUMED_MARKER:-none recorded}"
+elif [[ -n "$CURRENT_VERSION" ]]; then
+  mkdir -p "$BACKUP_ROOT"
+  echo "$CURRENT_VERSION" > "$(pre_upgrade_marker)"
 fi
 
 # --- Stop Worker ---
@@ -397,8 +476,29 @@ fi
 step "Stopping worker (prevent job processing during migration)"
 
 build_compose_cmd
-"${COMPOSE[@]}" stop agledger-worker 2>/dev/null || true
-info "Worker stopped"
+# `|| true` swallowed a FAILED stop as readily as an absent one, so a worker that
+# refused to stop went on consuming jobs while the migration rewrote the schema
+# under it. Three answers, not two: there is no worker, there is one, or we could
+# not find out. The third is the one a `2>/dev/null || true` turns into the
+# first, because `compose ps -aq <name>` exits non-zero and writes to stderr for
+# an unknown service, a compose file it cannot parse, a daemon it cannot reach
+# and a socket it may not read. Every one of those would print "nothing to stop"
+# and migrate against a worker that is very much running.
+WORKER_PS_STATUS=0
+WORKER_CONTAINER="$("${COMPOSE[@]}" ps -aq agledger-worker 2>&1)" || WORKER_PS_STATUS=$?
+if [[ $WORKER_PS_STATUS -ne 0 ]]; then
+  error "compose could not say whether agledger-worker exists. It reported:"
+  error "  ${WORKER_CONTAINER}"
+  fatal "Refusing to migrate without knowing whether a worker is processing jobs."
+fi
+if [[ -z "$WORKER_CONTAINER" ]]; then
+  info "No worker container on this host; nothing to stop."
+else
+  "${COMPOSE[@]}" stop agledger-worker \
+    || fatal "Could not stop agledger-worker. Refusing to migrate while it may still be processing jobs. Stop it by hand and re-run: (cd ${COMPOSE_DIR} && docker compose stop agledger-worker)"
+  WORKER_STOPPED=true
+  info "Worker stopped"
+fi
 
 # --- Run Migrations ---
 
@@ -459,6 +559,13 @@ fi
 
 step "Restarting all services"
 
+# The app containers are recreated below by the new image, but a monitoring
+# service whose bind-mounted config file arrived with this upgrade is not: its
+# service definition did not change, so `up -d` would leave it running on what
+# it read at its last start. Done before the wait, so the wait judges the
+# configuration that is on disk.
+restart_mounted_config_services
+
 # --wait fails the upgrade if the new image crashloops at boot (e.g. a
 # missing runtime asset). Without it, `up -d` returns as soon as
 # the container is created, the preflight loop below logs a soft WARN, and
@@ -480,33 +587,20 @@ if ! "${COMPOSE[@]}" up -d --wait; then
 fi
 info "All services restarted"
 
-# --- Grafana Credential State ---
-# The installer generates GRAFANA_ADMIN_PASSWORD on a fresh monitoring
-# install, and warns when a Grafana volume already exists because the password
-# is applied only when the admin user is created and ignored on every later
-# boot. Neither ran on the upgrade path, so an install that predates the change
-# came out the far side still answering to admin/admin with nothing anywhere in
-# the output saying so. The generate branch cannot apply here for the same
-# reason it does not apply in the installer: the volume already pinned it.
-if [[ "$MONITORING_ACTIVE" == true ]] \
-  && [[ "$(grafana_password_action "$ENV_FILE")" == "stale" ]]; then
-  echo ""
-  warn "Grafana is running from an existing volume, so its admin password is whatever it was first started with."
-  warn "  Releases before 1.4.0 defaulted it to 'admin', which is very likely what it still is. To set a new one:"
-  warn "    docker compose exec grafana grafana cli admin reset-admin-password <new-password>"
-  warn "  then record it as GRAFANA_ADMIN_PASSWORD in ${ENV_FILE}."
-  warn "  The port bindings moved to loopback in this upgrade, so it is no longer reachable off this host."
-fi
-
 # --- Preflight Check ---
 
 step "Running preflight checks"
 
+# /health/ready, not /health: the same endpoint the compose healthcheck and the
+# image HEALTHCHECK probe. `/health` is a static 200 that opens no connection,
+# so it answers on a container whose database is down, gone or refusing its
+# credentials, and this loop would then declare an upgrade ready that cannot
+# serve a single request. The readiness handler runs SELECT 1.
 ELAPSED=0
 MAX_WAIT=30
 while [[ $ELAPSED -lt $MAX_WAIT ]]; do
   if "${COMPOSE[@]}" exec agledger-api /nodejs/bin/node -e \
-    "fetch('http://localhost:3000/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" \
+    "fetch('http://localhost:3000/health/ready').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" \
     2>/dev/null; then
     break
   fi
@@ -526,8 +620,12 @@ fi
 
 step "Verifying upgrade"
 
+# /health/ready carries the same `version` field, and reading it from there
+# makes one answer cover both questions this step has: which version came up,
+# and whether it can reach its database. A version read off the static /health
+# would report a successful upgrade on a Server that 500s its first request.
 HEALTH_RESPONSE=$("${COMPOSE[@]}" exec agledger-api /nodejs/bin/node -e \
-  "fetch('http://localhost:3000/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d))).catch(e=>console.error(e))" \
+  "fetch('http://localhost:3000/health/ready').then(r=>r.json()).then(d=>console.log(JSON.stringify(d))).catch(e=>console.error(e))" \
   2>/dev/null || echo "{}")
 
 # POSIX sed rather than two chained `grep -oP`: BSD grep (macOS) has no -P, and
@@ -536,11 +634,11 @@ HEALTH_RESPONSE=$("${COMPOSE[@]}" exec agledger-api /nodejs/bin/node -e \
 HEALTH_VERSION=$(echo "$HEALTH_RESPONSE" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 HEALTH_VERSION="${HEALTH_VERSION:-unknown}"
 if [[ "$HEALTH_VERSION" == "$TARGET_VERSION" ]]; then
-  info "/health reports version: ${HEALTH_VERSION}"
+  info "/health/ready reports version: ${HEALTH_VERSION}"
 elif [[ "$HEALTH_VERSION" != "unknown" ]]; then
-  warn "/health reports version ${HEALTH_VERSION}, expected ${TARGET_VERSION}"
+  warn "/health/ready reports version ${HEALTH_VERSION}, expected ${TARGET_VERSION}"
 else
-  warn "Could not verify version from /health endpoint"
+  warn "Could not verify version from /health/ready endpoint"
 fi
 
 # --- Summary ---
@@ -554,7 +652,7 @@ echo -e "  ${BOLD}Previous version:${NC}  ${CURRENT_VERSION}"
 echo -e "  ${BOLD}Current version:${NC}   ${TARGET_VERSION}"
 echo ""
 echo -e "  ${BOLD}Verify:${NC}"
-echo -e "    curl -s http://localhost:$(resolve_host_port AGLEDGER_HOST_PORT 3001)/health | jq ."
+echo -e "    curl -s http://localhost:$(resolve_host_port AGLEDGER_HOST_PORT 3001)/health/ready | jq ."
 echo -e "    docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps"
 echo ""
 echo -e "${GREEN}=============================================================================${NC}"

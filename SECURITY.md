@@ -65,12 +65,13 @@ AGLedger supports good-faith security research. We will not pursue legal action 
 
 ## Data Sovereignty
 
-AGLedger is self-hosted. All application data (records, receipts, audit logs, API keys) stays within your infrastructure. There is no telemetry and no phone-home of any kind: license validation runs locally, and the Server never reports back to AGLedger at runtime.
+AGLedger is self-hosted. All application data (records, receipts, audit logs, API keys) stays within your infrastructure. There is no telemetry, and the Server never reports usage back to AGLedger at runtime. A license key issued to you directly is validated locally by signature check, with no network call at all.
 
 Outbound network access is required only for:
 
 - Pulling Docker images during install and upgrade
 - Sending a support bundle to `support.agledger.ai` (`AGLEDGER_SUPPORT_BUNDLE_URL`), and only when you explicitly upload one via `POST /v1/admin/support-bundle/upload`. `./scripts/support-bundle.sh` writes a local tarball and sends nothing
+- Checking your marketplace entitlement, on a marketplace install only. Setting `AWS_MARKETPLACE_PRODUCT_ID` turns on an AWS License Manager `CheckoutLicense` call every 15 minutes. Startup and `POST /v1/admin/license/reload` reach that same call only when you have configured no license key of your own, because a key you hold is read first and settles the tier locally with no network at all. The call goes to AWS, not to AGLedger, and carries no record, agent, or usage data: the request names the product, a key fingerprint, and a count of one. It fails open, so an unreachable entitlement service never blocks or degrades anything. Leave the variable unset and no such call is ever made
 
 For restricted-network deployments, pull images into an internal registry and pass `--image` to `install.sh`. See [air-gap/README.md](air-gap/README.md).
 

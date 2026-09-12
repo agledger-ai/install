@@ -7,6 +7,14 @@
     {{- $hasContent = true }}
   {{- end }}
 {{- end }}
+{{- /* trusted-issuers.yaml is a root-level FILE, not a subdirectory, and is
+       rendered from a list of entries rather than filename-keyed content.
+       Skipped when an existingConfigMaps.trustedIssuers supplies it. */}}
+{{- $inlineIssuers := list }}
+{{- if and (.Values.provisioning).trustedIssuers (not (((.Values.provisioning).existingConfigMaps | default dict).trustedIssuers)) }}
+  {{- $inlineIssuers = .Values.provisioning.trustedIssuers }}
+  {{- $hasContent = true }}
+{{- end }}
 {{- if $hasContent }}
 apiVersion: v1
 kind: ConfigMap
@@ -19,6 +27,11 @@ metadata:
 immutable: true
 {{- end }}
 data:
+  {{- if $inlineIssuers }}
+  trusted-issuers.yaml: |
+    trusted_issuers:
+      {{- toYaml $inlineIssuers | nindent 6 }}
+  {{- end }}
   {{- range $subdir := $subdirs }}
   {{- range $key, $value := index $.Values.provisioning $subdir }}
   {{ printf "%s--%s" $subdir $key }}: |

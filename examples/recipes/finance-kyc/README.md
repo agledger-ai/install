@@ -118,13 +118,18 @@ and is withheld from the subject; tipping off a SAR subject is a federal crime. 
 two notice legs go to different audiences, and the routing is a deployment
 responsibility.
 
-AGLedger Notify subscriptions filter by **event type**, not record type: a regulator
-channel and a customer channel both subscribed to `record.created` both receive a
-record's `record.created`. The deployment must route and filter so SAR events
-(`keystone-regulatory-report-v1`) reach only the regulator channel and never the
-subject's channel. `notify.yaml` wires the regulator channel (SAR / OFAC,
-ed25519-signed) and the customer channel (ECOA + FCRA) to distinct, type-filtered
-receivers; make that filtering explicit at the receiver before fan-out.
+A Notify subscription filters on two axes: `eventTypes` selects the lifecycle events,
+and `recordTypes` selects the contract types whose record-scoped events it may
+receive. A subscription that lists `recordTypes` never receives a record event for a
+type it does not list, and the Server applies that filter when it resolves
+subscriptions for the event, so it holds whatever the receiver does with the payload.
+A typed subscription is therefore the mechanism that keeps SAR events off a general
+channel. `notify.yaml` wires the regulator channel (SAR / OFAC, ed25519-signed) to
+`recordTypes: [keystone-regulatory-report-v1]` and the customer channel (ECOA + FCRA)
+to `recordTypes: [keystone-adverse-action-notice-v1]`, so a SAR `record.created` is
+never delivered to the subject's channel at all. A subscription that omits
+`recordTypes` (or sets `['*']`) receives every contract type, so never leave a
+subject-facing channel untyped.
 
 ## Deployment configuration
 
@@ -140,8 +145,8 @@ receivers; make that filtering explicit at the receiver before fan-out.
 - **Separation of duties.** Provision distinct keys for the orchestrator, the L1
   analyst, and the L2 / MLRO; bind verdicts to named humans via `AGLedger-On-Behalf-Of`.
 - **Notice routing.** Point the regulator channel and the customer channel at distinct
-  receivers that filter by record type before fan-out; route the regulatory report to
-  the regulator, never to the subject.
+  receivers, and give each one a `recordTypes` filter so the Server delivers the
+  regulatory report to the regulator channel only and never to the subject's.
 
 ## Install
 

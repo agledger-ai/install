@@ -1,0 +1,52 @@
+{{- include "agledger.validateValues" . -}}
+{{- if (.Values.route).enabled }}
+{{- /* OpenShift's own ingress object. The Ingress template above works on
+       OpenShift too (the router reconciles Ingress into a Route), but a Route
+       is what an OpenShift platform team reviews and what carries edge and
+       reencrypt termination without an annotation dialect. Rendering both for
+       the same host would give the router two conflicting claims on it, so
+       enable one or the other. */}}
+{{- if (.Values.ingress).enabled }}
+{{- fail "route.enabled and ingress.enabled are both true. On OpenShift the router reconciles an Ingress into a Route of its own, so both objects would claim the same hostname and the router would admit whichever it saw first. Pick one: route.enabled for a native Route, ingress.enabled for the portable object." }}
+{{- end }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "agledger.fullname" . }}
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  {{- with .Values.route.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- /* An omitted host is not an empty one: the router generates
+         <name>-<namespace>.<apps-domain> when the field is absent, and rejects
+         an empty string. */}}
+  {{- with .Values.route.host }}
+  host: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.route.path }}
+  path: {{ . | quote }}
+  {{- end }}
+  to:
+    kind: Service
+    name: {{ include "agledger.fullname" . }}
+    weight: 100
+  port:
+    targetPort: http
+  {{- if ((.Values.route).tls).enabled }}
+  tls:
+    {{- $termination := ((.Values.route).tls).termination | default "edge" }}
+    {{- if not (has $termination (list "edge" "reencrypt" "passthrough")) }}
+    {{- fail (printf "route.tls.termination must be edge, reencrypt or passthrough, got %q. The API serves plain HTTP on port 3000, so `edge` (the router terminates TLS) is the working default; `reencrypt` needs a destinationCACertificate and a TLS listener the image does not run." $termination) }}
+    {{- end }}
+    termination: {{ $termination }}
+    insecureEdgeTerminationPolicy: {{ ((.Values.route).tls).insecureEdgeTerminationPolicy | default "Redirect" }}
+    {{- with ((.Values.route).tls).destinationCACertificate }}
+    destinationCACertificate: |
+      {{- . | nindent 6 }}
+    {{- end }}
+  {{- end }}
+{{- end }}

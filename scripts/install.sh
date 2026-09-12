@@ -51,7 +51,12 @@ trap handle_sigint INT
 
 # --- Argument Parsing ---
 
-export NON_INTERACTIVE=false
+# Accepted and kept, because agl-deploy.sh and every scripted caller passes it,
+# but this installer asks no questions: there is not a single `read` in it, and
+# each decision that could have been a prompt is a flag or a refusal with the
+# command to re-run. Nothing consults the variable for that reason. Do not
+# "wire it up" by adding a prompt for it to suppress.
+NON_INTERACTIVE=false
 WITH_MONITORING=false
 REQUESTED_VERSION=""
 EXTERNAL_DB_FLAG=false
@@ -61,6 +66,7 @@ CUSTOM_IMAGE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --non-interactive)
+      # shellcheck disable=SC2034  # see the declaration: nothing here prompts
       NON_INTERACTIVE=true
       shift
       ;;
@@ -92,7 +98,7 @@ while [[ $# -gt 0 ]]; do
       echo "Usage: $0 [OPTIONS]"
       echo ""
       echo "Options:"
-      echo "  --non-interactive    Skip all prompts (use defaults)"
+      echo "  --non-interactive    Accepted for scripted callers. This installer never prompts."
       echo "  --version VERSION    AGLedger version to install (default: the version this install is already on, or latest stable from Docker Hub for a fresh install)"
       echo "  --image IMAGE        Container image (default: agledger/agledger)"
       echo "  --with-monitoring    Enable monitoring stack (Jaeger, Prometheus, Grafana)"
@@ -229,10 +235,12 @@ info "Docker Engine ${DOCKER_VERSION}"
 if ! docker compose version &>/dev/null; then
   fatal "Docker Compose v2 is not installed. Install: https://docs.docker.com/compose/install/"
 fi
-COMPOSE_VERSION=$(docker compose version --short 2>/dev/null || echo "0.0.0")
-COMPOSE_MAJOR=$(echo "$COMPOSE_VERSION" | cut -d. -f1)
-if [[ "$COMPOSE_MAJOR" -lt 2 ]]; then
-  fatal "Docker Compose v2+ required (found: ${COMPOSE_VERSION})"
+COMPOSE_VERSION=$(docker compose version --short 2>/dev/null || echo "unknown")
+# The floor and the parsing live in lib-compose.sh, because upgrade.sh reads the
+# same compose file and needs the same answer. See compose_version_state.
+COMPOSE_STATE="$(compose_version_state)"
+if [[ "$COMPOSE_STATE" != "ok" ]]; then
+  fatal "${COMPOSE_STATE} This stack's compose file uses an inline \`configs.content\`, which older Compose fails to PARSE, so up, down, logs and ps all break. Upgrade: https://docs.docker.com/compose/install/"
 fi
 info "Docker Compose ${COMPOSE_VERSION}"
 
@@ -390,6 +398,7 @@ if [[ ${#PORT_CONFLICTS[@]} -gt 0 ]]; then
     error "and issuer URL. Give it its own copy and its own project name:"
     error "  cp -r $(dirname "${COMPOSE_DIR}") ../agledger-2 && cd ../agledger-2"
     error "  rm -f compose/.env compose/.env.backup-*   # generate fresh secrets, do not inherit"
+    error "  rm -rf backup                              # the first install's archives are not this one's"
     # Every published port, not just the colliding ones: in a fresh directory the
     # stack next door holds no ports on THIS project's behalf, so each one this
     # run publishes has to be free on its own.
@@ -403,6 +412,22 @@ if [[ ${#PORT_CONFLICTS[@]} -gt 0 ]]; then
 fi
 
 info "Host ports available: API ${API_HOST_PORT}$([[ "$PUBLISHES_BUNDLED_PG" == "true" ]] && echo ", PostgreSQL ${PG_HOST_PORT}")"
+
+# The registry has to be resolved before version resolution runs, not after:
+# resolve_latest_version (lib-compose.sh) and the private-registry guard in the
+# version case statement below both read AGLEDGER_IMAGE, and it was still
+# reading the "agledger/agledger" default at that point for a PERSISTED (not
+# re-flagged) private registry. The documented air-gap flow is exactly that
+# shape on its first real run: .env already names the private registry from an
+# earlier step, no --image, no --version, no install state yet, so a flagless
+# `install.sh` resolved a Docker Hub release number and only failed later,
+# inside verify_image, pulling that tag from the private registry. The "Image
+# Registry" step below still owns reporting this and authenticating; only the
+# read is pulled forward.
+if [[ -z "$CUSTOM_IMAGE" ]]; then
+  PERSISTED_IMAGE=$(get_env_value AGLEDGER_IMAGE "${COMPOSE_DIR}/.env")
+  [[ -n "$PERSISTED_IMAGE" ]] && AGLEDGER_IMAGE="$PERSISTED_IMAGE"
+fi
 
 # --- Version Resolution ---
 
@@ -434,7 +459,69 @@ case "$VERSION_SOURCE" in
     info "Version: ${AGLEDGER_VERSION} (the version this install is already on)"
     info "Re-running the installer does not move a version. To change releases:  ./scripts/upgrade.sh <VERSION>"
     ;;
+  ambiguous)
+    # AGLEDGER_VERSION here is the recorded tag itself (install_version_decision
+    # carries it through unchanged), not something to install on. Three shapes
+    # reach here, and only one of them has a version-preserving command to hand
+    # back:
+    #   - genuinely empty: real install state with no AGLEDGER_VERSION line at
+    #     all, from an install that predates this script recording one.
+    #   - the literal string "latest": the .env.example placeholder. It reads
+    #     like a version but is a floating tag, so playing it back with
+    #     --version does not restore what is running, it resolves to whatever
+    #     Docker Hub's latest tag means TODAY - the opposite of a no-op.
+    #   - anything else non-release: a deliberate pin (a testbed build, an
+    #     air-gap mirror tag) this installer cannot tell from the placeholder.
+    # The first two have no tag worth playing back, so both point at reading
+    # the version actually running instead.
+    RECORDED_TAG="$AGLEDGER_VERSION"
+    if [[ -z "$RECORDED_TAG" ]]; then
+      error "This install has real install state (a platform key and/or a signing key) but"
+      error "no recorded AGLEDGER_VERSION at all, so this installer cannot tell what version"
+      error "is actually running without moving it to resolve one. Read the version this"
+      error "install runs today, then pass it explicitly:"
+      error ""
+      error "  docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps          # IMAGE column names the running tag"
+      error "  curl -s http://localhost:${API_HOST_PORT}/health/ready         # or the running API's own \"version\" field"
+      error ""
+      error "  ./scripts/install.sh --version <that version>"
+      fatal "Refusing to resolve a version for an install with no recorded version."
+    fi
+    if [[ "$RECORDED_TAG" == "latest" ]]; then
+      error "This install's recorded AGLEDGER_VERSION is the literal string 'latest', the"
+      error ".env.example placeholder. It reads like a version but is a floating tag:"
+      error "passing it back as --version does not restore what is running, it resolves to"
+      error "whatever Docker Hub's latest tag means right now, almost certainly a newer"
+      error "release than whatever this install started on. Read the version actually"
+      error "running, then pass it explicitly:"
+      error ""
+      error "  docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps          # IMAGE column names the running tag"
+      error "  curl -s http://localhost:${API_HOST_PORT}/health/ready         # or the running API's own \"version\" field"
+      error ""
+      error "  ./scripts/install.sh --version <that version>"
+      error ""
+      error "To move to a newer release instead (backs up first, writes a rollback marker):"
+      error "  ./scripts/upgrade.sh <VERSION>"
+      fatal "Refusing to resolve a version for an install pinned to the floating 'latest' tag."
+    fi
+    error "This install's recorded AGLEDGER_VERSION is '${RECORDED_TAG}', which is not a release"
+    error "number, so this installer cannot tell a deliberate pin (a testbed build, an"
+    error "air-gap mirror tag) from the .env.example placeholder ('latest') never"
+    error "overwritten. A plain re-run cannot resolve that safely, so it refuses rather"
+    error "than silently moving the install to whatever Docker Hub currently calls latest."
+    error ""
+    error "To stay on '${RECORDED_TAG}' (re-install path, no version change, so long as your"
+    error "registry keeps that tag pointing at what it did when this install started):"
+    error "  ./scripts/install.sh --version ${RECORDED_TAG}"
+    error ""
+    error "To move to a specific release (backs up first, writes a rollback marker):"
+    error "  ./scripts/upgrade.sh <VERSION>"
+    fatal "Refusing to resolve a version for an install pinned to a non-release tag."
+    ;;
   *)
+    if [[ "${AGLEDGER_IMAGE}" != "agledger/agledger" ]]; then
+      fatal "No --version given, and the image is ${AGLEDGER_IMAGE}, not Docker Hub's agledger/agledger. Its tag list is not Docker Hub's, so 'latest' cannot be resolved from there. Re-run with --version <tag>."
+    fi
     info "Looking up latest version from Docker Hub..."
     if ! AGLEDGER_VERSION=$(resolve_latest_version); then
       fatal "Could not determine latest version (network failure, no cache). Re-run with --version X.Y.Z to pin a specific release. See https://hub.docker.com/r/agledger/agledger/tags"
@@ -451,12 +538,11 @@ esac
 # that registry instead of silently reverting to Docker Hub. An explicit
 # `--image` always wins, which is also how an operator moves an install back to
 # Docker Hub (`--image agledger/agledger`).
-if [[ -z "$CUSTOM_IMAGE" ]]; then
-  PERSISTED_IMAGE=$(get_env_value AGLEDGER_IMAGE "${COMPOSE_DIR}/.env")
-  if [[ -n "$PERSISTED_IMAGE" ]]; then
-    AGLEDGER_IMAGE="$PERSISTED_IMAGE"
-    info "Using the registry this install was configured with: ${AGLEDGER_IMAGE}"
-  fi
+#
+# AGLEDGER_IMAGE was already resolved from .env above, before version
+# resolution needed to see it. This just reports it.
+if [[ -z "$CUSTOM_IMAGE" ]] && [[ -n "${PERSISTED_IMAGE:-}" ]]; then
+  info "Using the registry this install was configured with: ${AGLEDGER_IMAGE}"
 fi
 
 if [[ "${AGLEDGER_IMAGE}" != "agledger/agledger" ]]; then
@@ -482,7 +568,59 @@ VERIFY_STATUS=0
 verify_image "$AGLEDGER_IMAGE" "$AGLEDGER_VERSION" || VERIFY_STATUS=$?
 case $VERIFY_STATUS in
   0) ;;
-  2) fatal "Could not pull ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION} — see the authentication guidance above. Nothing was verified, because the image never arrived." ;;
+  2)
+    # AGLEDGER_REQUIRE_VERIFY first, because `verify_image` never reaches its own
+    # copy of this check: the pull failure returns 2 from above every one of
+    # them. An operator who set the flag asked for a refusal in exactly this
+    # case, and the fallback below cannot honour it: a local pin proves the bytes
+    # are the ones .env names and says nothing about whether anything ever
+    # verified them, and cosign cannot verify against an unreachable registry.
+    if [[ "${AGLEDGER_REQUIRE_VERIFY:-false}" == "true" ]]; then
+      fatal "Could not pull ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}, and AGLEDGER_REQUIRE_VERIFY=true. Refusing to continue on bytes this run did not verify."
+    fi
+    # A failed pull is a statement about the network, not about the image, and
+    # this script is also the documented way to reconcile an existing install's
+    # configuration. Refusing outright meant an air-gapped host, or one whose
+    # registry was briefly down, could reach none of the repairs below: no
+    # metrics token, no federation identity, no monitoring profile, on a machine
+    # whose containers were already running the exact bytes .env pins.
+    #
+    # So the fatal is kept for every case where this run would have to RUN
+    # something new, and dropped for the one case where it does not: the pin in
+    # .env is a digest, and that digest is in this host's local image store.
+    # Nothing is verified here, which is why the output says so and the run
+    # carries on with SIGNATURE_VERIFIED false.
+    # Three conditions, not one. The pin has to name the registry this run
+    # resolved (`--image` moves an install, and reusing the old registry's
+    # digest under the new name would write a ref that does not exist), and it
+    # has to belong to the version this run is installing (a pin from an earlier
+    # release is old bytes, and continuing on them would label them as the new
+    # version). Only then does "the bytes are already here" mean anything.
+    OFFLINE_PIN=$(get_env_value AGLEDGER_IMAGE_PIN "${COMPOSE_DIR}/.env")
+    OFFLINE_PINNED_VERSION=$(get_env_value AGLEDGER_VERSION "${COMPOSE_DIR}/.env")
+    if [[ -n "$OFFLINE_PIN" ]] \
+      && [[ "${OFFLINE_PIN%%@*}" == "$AGLEDGER_IMAGE" ]] \
+      && [[ "$OFFLINE_PINNED_VERSION" == "$AGLEDGER_VERSION" ]] \
+      && local_image_matches_pin "$OFFLINE_PIN"; then
+      warn "Could not pull ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}, but ${COMPOSE_DIR}/.env already pins"
+      warn "  ${OFFLINE_PIN}"
+      warn "and those exact bytes are in this host's local image store. Continuing on them so this"
+      warn "run can still reconcile configuration. NOTHING WAS VERIFIED on this run: the pin keeps"
+      warn "whatever verdict the run that wrote it recorded."
+      RESOLVED_DIGEST="${OFFLINE_PIN##*@}"
+      SIGNATURE_VERIFIED=false
+      UNVERIFIED_REASON="registry unreachable; reused the digest already pinned in .env"
+    else
+      if [[ "${IMAGE_PRESENT_LOCALLY:-false}" == "true" ]]; then
+        # The bytes are here; what is missing is any way to check them on this
+        # run. Repeating "the image never arrived" as the last line an operator
+        # reads contradicts the refusal above it and sends them after an image
+        # `docker image inspect` resolves in front of them.
+        fatal "Could not pull ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}, and nothing on this run verified the copy already in this host's image store. See the guidance above."
+      fi
+      fatal "Could not pull ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION} — see the authentication guidance above. Nothing was verified, because the image never arrived."
+    fi
+    ;;
   *) fatal "Image signature verification failed — aborting before running an unverified image." ;;
 esac
 AGLEDGER_IMAGE_PIN=""
@@ -500,6 +638,16 @@ FRESH_ENV=false
 # reconciliation (which has nothing to compare without one) and the per-key
 # secret generation below, so it is set before either branch can read it.
 HAS_SIGNING_KEY=false
+
+# Every edit this run makes to .env that changes what a container receives.
+# Declared HERE, above the secret backfills, and not at the reconciliation
+# section further down, because the backfills are edits of exactly that kind and
+# they run first: a re-run that mints a missing METRICS_AUTH_TOKEN on a host
+# whose .env predates the gating wrote the token, appended nothing, and reached
+# the start step with the list still empty, so `up -d --no-recreate` left the
+# API, worker and bundled Prometheus on the environment they booted with. The
+# banner said the install was complete and /metrics kept answering 401.
+RECONCILE_CHANGES=()
 
 # Refusing to write credentials that cannot authenticate against a Postgres
 # data directory some earlier install left behind. Reached from two places: a
@@ -558,6 +706,7 @@ if project_switch_orphans_install "${COMPOSE_PROJECT_NAME:-}"; then
   # and COMPOSE_PROJECT_NAME below all read as one stack rather than three names.
   error "  cp -r $(dirname "${COMPOSE_DIR}") ../${COMPOSE_PROJECT_NAME} && cd ../${COMPOSE_PROJECT_NAME}"
   error "  rm -f compose/.env compose/.env.backup-*   # do not carry over the first install's secrets"
+  error "  rm -rf backup                              # nor its backup archives and rollback marker"
   # The port preflight above already cleared these values, so they are the ones
   # the operator asked for and they are free. Echoing them back is the whole
   # point: a recipe carrying different numbers reads as a correction the
@@ -722,6 +871,7 @@ case "$(pg_password_action "$ENV_FILE" "${EXTERNAL_DB_FLAG}")" in
   generate)
     POSTGRES_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
     upsert_env_var POSTGRES_PASSWORD "${POSTGRES_PASSWORD}" "$ENV_FILE"
+    RECONCILE_CHANGES+=("generated POSTGRES_PASSWORD")
     info "Generated POSTGRES_PASSWORD"
     ;;
 esac
@@ -734,19 +884,44 @@ esac
 # because `peerHubId` is declared `format: uuid`. Generated here rather
 # than defaulted in the engine because it has to be STABLE across restarts, and
 # .env is what survives a container.
-if [[ "$(federation_hub_id_action "$ENV_FILE")" == "generate" ]]; then
-  AGLEDGER_INSTANCE_ID_VALUE=$(generate_uuid) \
-    || fatal "Failed to generate AGLEDGER_INSTANCE_ID"
-  upsert_env_var AGLEDGER_INSTANCE_ID "${AGLEDGER_INSTANCE_ID_VALUE}" "$ENV_FILE"
-  info "Generated AGLEDGER_INSTANCE_ID (this Server's federation identity)"
-fi
+HUB_ID_ACTION="$(federation_hub_id_action "$ENV_FILE")"
+case "$HUB_ID_ACTION" in
+  generate)
+    AGLEDGER_INSTANCE_ID_VALUE=$(generate_uuid) \
+      || fatal "Failed to generate AGLEDGER_INSTANCE_ID"
+    upsert_env_var AGLEDGER_INSTANCE_ID "${AGLEDGER_INSTANCE_ID_VALUE}" "$ENV_FILE"
+    RECONCILE_CHANGES+=("generated AGLEDGER_INSTANCE_ID (this Server's federation identity; it had none)")
+    info "Generated AGLEDGER_INSTANCE_ID (this Server's federation identity)"
+    ;;
+  adopt-legacy-org-id:*)
+    # The retired AGLEDGER_ORGANIZATION_ID fallback was this Server's identity
+    # and peers may hold it. Carry it forward rather than mint a new one.
+    upsert_env_var AGLEDGER_INSTANCE_ID "${HUB_ID_ACTION#adopt-legacy-org-id:}" "$ENV_FILE"
+    RECONCILE_CHANGES+=("adopted AGLEDGER_ORGANIZATION_ID as AGLEDGER_INSTANCE_ID")
+    info "Adopted AGLEDGER_ORGANIZATION_ID as AGLEDGER_INSTANCE_ID (the identity peers already hold); AGLEDGER_ORGANIZATION_ID can be deleted from .env"
+    ;;
+esac
 
 if [[ -z "$(get_env_value API_KEY_SECRET "$ENV_FILE")" ]]; then
   info "Generating API_KEY_SECRET..."
   API_KEY_SECRET=$(openssl rand -hex 32) \
     || fatal "Failed to generate API_KEY_SECRET"
   upsert_env_var API_KEY_SECRET "${API_KEY_SECRET}" "$ENV_FILE"
+  RECONCILE_CHANGES+=("generated API_KEY_SECRET")
   info "Generated API_KEY_SECRET"
+fi
+
+# /metrics is gated under NODE_ENV=production, which .env.example sets. Without
+# a token the endpoint answers the API-key chain and the bundled Prometheus
+# scrapes 401s, which shows up as a target that is simply down. The token is
+# what the prometheus service reads (docker-compose.yml projects it as a file),
+# so generate one the same way as every other secret: once, then never again.
+if [[ -z "$(get_env_value METRICS_AUTH_TOKEN "$ENV_FILE")" ]]; then
+  METRICS_AUTH_TOKEN=$(openssl rand -hex 24) \
+    || fatal "Failed to generate METRICS_AUTH_TOKEN"
+  upsert_env_var METRICS_AUTH_TOKEN "${METRICS_AUTH_TOKEN}" "$ENV_FILE"
+  RECONCILE_CHANGES+=("generated METRICS_AUTH_TOKEN (bearer token for /metrics; it had none)")
+  info "Generated METRICS_AUTH_TOKEN (bearer token for /metrics)"
 fi
 
 if [[ "$HAS_SIGNING_KEY" != true ]]; then
@@ -766,8 +941,10 @@ if [[ "$HAS_SIGNING_KEY" != true ]]; then
     fatal "Could not parse VAULT_SIGNING_KEY from output"
   fi
   upsert_env_var VAULT_SIGNING_KEY "${VAULT_SIGNING_KEY}" "$ENV_FILE"
+  RECONCILE_CHANGES+=("generated VAULT_SIGNING_KEY (${SIGNING_ALGORITHM})")
   if [[ "$SIGNING_ALGORITHM" == "es256" ]]; then
     upsert_env_var AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG true "$ENV_FILE"
+    RECONCILE_CHANGES+=("set AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true (non-default algorithm opt-in)")
     info "Wrote AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true (non-default algorithm opt-in)"
   fi
   info "Generated VAULT_SIGNING_KEY"
@@ -792,11 +969,12 @@ chmod 600 "$ENV_FILE"
 #                        it. A revert to Docker Hub never happened either.
 #   AGLEDGER_IMAGE_PIN   the digest just verified was replaced by the one from
 #                        the previous install, so .env named a version the
-#                        stack was not running. (--skip-verify still resolves a
-#                        digest: verify_image pulls and inspects before it
-#                        returns. The pin is empty only when the registry
-#                        reports no usable RepoDigest, which the reconciliation
-#                        below now reports rather than acting on silently.)
+#                        stack was not running. (The pin is empty when the ref
+#                        carries no usable RepoDigest: the registry reported
+#                        none, or no registry was reached at all and the run is
+#                        continuing on an image already in the local store. The
+#                        reconciliation below reports that rather than acting on
+#                        it silently.)
 snapshot_resolved_var AGLEDGER_VERSION
 snapshot_resolved_var AGLEDGER_IMAGE
 snapshot_resolved_var AGLEDGER_IMAGE_PIN
@@ -853,14 +1031,25 @@ fi
 # reach customers who installed at v0.19.16 and re-run install.sh at v0.19.17+.
 # Never auto-flips security-sensitive values — only adds missing keys and
 # updates version-tracking keys.
-
-RECONCILE_CHANGES=()
+#
+# RECONCILE_CHANGES is declared with the secret backfills above, which append to
+# it for the same reason this section does.
 
 # Persist COMPOSE_FILE so manual `docker compose` commands from compose/
 # pick up all overlays (prod + optional bundled postgres). Without this, manual
 # commands drop to bare docker-compose.yml and the postgres container stops
 # reacting to `restart`.
 build_overlay_list
+
+# Setting COMPOSE_FILE is what turns Compose's automatic docker-compose.override.yml
+# discovery off, so build_overlay_list appends the override file itself when one
+# exists. Name it: an operator who wrote one has no other confirmation that it is
+# being applied, and one forgotten from an earlier experiment is worth saying out
+# loud before the stack comes up with it.
+COMPOSE_OVERRIDE_FILE="$(compose_override_file)"
+if [[ -n "$COMPOSE_OVERRIDE_FILE" ]]; then
+  warn "Applying ${COMPOSE_OVERRIDE_FILE} on top of the shipped compose files. Remove it if that is not what you want."
+fi
 
 EXISTING_COMPOSE_FILE=$(grep -E '^COMPOSE_FILE=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
 if [[ "$EXISTING_COMPOSE_FILE" != "$OVERLAY_LIST" ]]; then
@@ -1048,9 +1237,10 @@ if [[ -n "${AGLEDGER_IMAGE_PIN:-}" ]] && [[ "$EXISTING_PIN" != "$AGLEDGER_IMAGE_
     RECONCILE_CHANGES+=("pinned image to UNVERIFIED digest (${UNVERIFIED_REASON:-not verified}): ${AGLEDGER_IMAGE_PIN##*@}")
   fi
 elif [[ -z "${AGLEDGER_IMAGE_PIN:-}" ]] && [[ -n "$EXISTING_PIN" ]]; then
-  # This run could not resolve a digest (the registry reported no usable
-  # RepoDigest) but a pin from an earlier install lingers, naming a digest for
-  # a version this run is not installing. Drop it rather than run those bytes.
+  # This run could not resolve a digest (the ref carries no usable RepoDigest,
+  # either because the registry reported none or because no registry was
+  # reached) but a pin from an earlier install lingers, naming a digest for a
+  # version this run is not installing. Drop it rather than run those bytes.
   #
   # Reported, not silent. The pin is the only thing holding the stack to
   # signature-verified bytes, so dropping it back to a floating tag is a
@@ -1069,7 +1259,17 @@ fi
 BUNDLED_OTLP_ENDPOINT="http://otel-collector:4318"
 OTLP_ENDPOINT_EFFECTIVE=""
 GRAFANA_PASSWORD_STATE=keep
-if [[ "$WITH_MONITORING" == true ]]; then
+# `--with-monitoring` alone was the wrong gate. An install stood up with it
+# before COMPOSE_PROFILES was persisted has the collector, Jaeger, Prometheus
+# and Grafana running and nothing in .env selecting them, and the operator's
+# re-run of plain `install.sh` is exactly how that .env gets repaired everywhere
+# else. Without asking the containers, that run brought `up -d` with the profile
+# unselected: all four stayed on the old image with the old port bindings while
+# the banner reported a complete install. The containers are the only honest
+# answer to "is monitoring part of this install", so ask them too.
+MONITORING_ACTIVE=false
+if [[ "$WITH_MONITORING" == true ]] || monitoring_containers_running; then
+  MONITORING_ACTIVE=true
   # Grafana is the one bundled service with its own login, and it was the one
   # secret this installer did not generate: compose defaulted it to `admin` and
   # the summary below printed "admin / admin". Generated here like every other
@@ -1118,18 +1318,32 @@ if [[ "$WITH_MONITORING" == true ]]; then
   fi
 fi
 
+# Record the database mode in .env so the startup banner shows correctly.
+#
+# The old test was an unanchored `grep -q 'AGLEDGER_PG_BUNDLED='`, which matched
+# the commented `# AGLEDGER_PG_BUNDLED=false` that every .env inherits from
+# .env.example, so the line was never written on any install. get_env_value
+# reads it the way compose does, which is to say it ignores comments.
+#
+# Not a RECONCILE_CHANGES entry on the bundled path: docker-compose.postgres.yml
+# sets the same variable in the container's `environment:`, which wins over
+# env_file, so nothing a container receives changes. On the external path there
+# is no such overlay, so a stale `true` left by an earlier bundled install WOULD
+# reach the container and make the banner lie; drop it there.
+if [[ "${USES_BUNDLED_PG}" == "true" ]]; then
+  if [[ -z "$(get_env_value AGLEDGER_PG_BUNDLED "$ENV_FILE")" ]]; then
+    upsert_env_var AGLEDGER_PG_BUNDLED true "$ENV_FILE"
+  fi
+elif [[ -n "$(get_env_value AGLEDGER_PG_BUNDLED "$ENV_FILE")" ]]; then
+  delete_env_var AGLEDGER_PG_BUNDLED "$ENV_FILE"
+  RECONCILE_CHANGES+=("dropped AGLEDGER_PG_BUNDLED (this install uses an external database)")
+fi
+
 if [[ "$FRESH_ENV" != "true" ]] && [[ ${#RECONCILE_CHANGES[@]} -gt 0 ]]; then
   info "Reconciled existing .env (${#RECONCILE_CHANGES[@]} change(s)):"
   for change in "${RECONCILE_CHANGES[@]}"; do
     info "  - ${change}"
   done
-fi
-
-if [[ "${USES_BUNDLED_PG}" == "true" ]]; then
-  # Set bundled PG flag in .env so the startup banner shows correctly
-  if ! grep -q 'AGLEDGER_PG_BUNDLED=' "$ENV_FILE"; then
-    echo "AGLEDGER_PG_BUNDLED=true" >> "$ENV_FILE"
-  fi
 fi
 
 if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
@@ -1296,8 +1510,39 @@ info "Production prerequisites present"
 step "Pulling images"
 
 build_compose_cmd
-"${COMPOSE[@]}" pull
-info "All images pulled"
+# A failed pull is fatal only for images this host does not already have.
+# Compose's default pull policy is `missing`, so the `up` and `run` steps below
+# fetch nothing that is present, and a stack whose every image is in the local
+# store runs identically whether this step succeeded or not. That is the enclave
+# seeded by `docker load`, and the host whose registry is briefly down.
+#
+# What it must not do is pass silently on a missing image: the next step would
+# then die inside a Compose pull error naming one image, several steps after the
+# one that could have named all of them and said where to get them.
+if "${COMPOSE[@]}" pull; then
+  info "All images pulled"
+else
+  COMPOSE_IMAGES=()
+  mapfile -t COMPOSE_IMAGES < <("${COMPOSE[@]}" config --images 2>/dev/null || true)
+  if [[ ${#COMPOSE_IMAGES[@]} -eq 0 ]]; then
+    fatal "Could not pull the stack's images, and could not read which images it runs. See the output above."
+  fi
+  MISSING_IMAGES=()
+  for compose_image in "${COMPOSE_IMAGES[@]}"; do
+    [[ -n "$compose_image" ]] || continue
+    docker image inspect "$compose_image" >/dev/null 2>&1 || MISSING_IMAGES+=("$compose_image")
+  done
+  if [[ ${#MISSING_IMAGES[@]} -gt 0 ]]; then
+    error "Could not pull, and these images the stack runs are not in this host's image store:"
+    for compose_image in "${MISSING_IMAGES[@]}"; do
+      error "  ${compose_image}"
+    done
+    error "Load each one ('docker load < image.tar.gz') or make the registry reachable, then re-run."
+    fatal "Refusing to start a stack whose images are neither pullable nor present."
+  fi
+  warn "Could not pull. Every image this stack runs is already in this host's image store, so the"
+  warn "run continues on those bytes; nothing here compared them against a registry."
+fi
 
 # --- Start Data Stores ---
 
@@ -1583,19 +1828,68 @@ fi
 # migration error, a DB refusal) is one `docker compose logs` away. Making the
 # operator run that by hand is what turned a single missing key into a
 # re-run-per-key loop.
-if ! "${COMPOSE[@]}" up -d "${UP_FLAGS[@]+"${UP_FLAGS[@]}"}" agledger-api --wait; then
-  error "Failed to start API. Its last 40 log lines:"
+#
+# The wait's verdict is not the whole answer, which is why the container states
+# are asked for as well: `--wait` is satisfied by a container that is merely
+# running whenever the service declares no healthcheck, and a crash-looping
+# container is running between restarts.
+if ! "${COMPOSE[@]}" up -d "${UP_FLAGS[@]+"${UP_FLAGS[@]}"}" agledger-api --wait \
+   || ! all_compose_services_up agledger-api; then
+  error "Failed to start API."
   echo ""
-  "${COMPOSE[@]}" logs --tail 40 --no-log-prefix agledger-api 2>&1 | sed 's/^/    /' || true
-  echo ""
-  error "Full log: docker compose logs agledger-api"
+  # Which of the two halves of the condition above failed decides what is worth
+  # printing. A container that is restarting, exited, unhealthy or absent is
+  # named by the reporter, with its own log tail. When every container reports
+  # up it is the wait itself that timed out, the reporter has nothing to name,
+  # and the tail is the only thing that explains it.
+  if all_compose_services_up agledger-api; then
+    "${COMPOSE[@]}" logs --tail "${COMPOSE_FAIL_LOG_LINES}" --no-log-prefix agledger-api 2>&1 | sed 's/^/    /' || true
+  else
+    report_failed_compose_services agledger-api || true
+  fi
   fatal "API did not become healthy."
 fi
 
-if [[ "$WITH_MONITORING" == true ]]; then
-  "${COMPOSE[@]}" --profile monitoring up -d "${UP_FLAGS[@]+"${UP_FLAGS[@]}"}" --wait
+# MONITORING_ACTIVE, not WITH_MONITORING: a re-run without the flag on a host
+# whose monitoring containers are up still has to bring them with it, or they
+# keep running on the previous image while everything else moves.
+#
+# Same reasoning as the API's own `up -d --wait` above: a bare failure here
+# reports "container is unhealthy" with no service name and no log, and falls
+# straight to the generic cleanup trap under `set -e`. Name what this call
+# starts and print each one's tail on failure, the same as the API does for
+# itself.
+if [[ "$MONITORING_ACTIVE" == true ]]; then
+  SECOND_UP_SERVICES=(agledger-worker otel-collector jaeger prometheus grafana)
+  # Before the wait, not after: a service whose mounted config file changed is
+  # still running the old one, and `up -d` will not notice. Restarting first is
+  # what puts the check below over the configuration that is on disk, so a
+  # config that does not load fails this install rather than the next one.
+  restart_mounted_config_services
+  if ! "${COMPOSE[@]}" --profile monitoring up -d "${UP_FLAGS[@]+"${UP_FLAGS[@]}"}" --wait \
+     || ! all_compose_services_up "${SECOND_UP_SERVICES[@]}"; then
+    error "Failed to start the worker and/or the monitoring stack:"
+    echo ""
+    if all_compose_services_up "${SECOND_UP_SERVICES[@]}"; then
+      error "Every container reports running, so the wait itself timed out rather than a"
+      error "container failing. Re-check with: docker compose ps"
+    else
+      report_failed_compose_services "${SECOND_UP_SERVICES[@]}" || true
+    fi
+    fatal "Worker and/or monitoring services did not become healthy."
+  fi
 else
-  "${COMPOSE[@]}" up -d "${UP_FLAGS[@]+"${UP_FLAGS[@]}"}" --wait
+  if ! "${COMPOSE[@]}" up -d "${UP_FLAGS[@]+"${UP_FLAGS[@]}"}" --wait \
+     || ! all_compose_services_up agledger-worker; then
+    error "Failed to start the worker."
+    echo ""
+    if all_compose_services_up agledger-worker; then
+      "${COMPOSE[@]}" logs --tail "${COMPOSE_FAIL_LOG_LINES}" --no-log-prefix agledger-worker 2>&1 | sed 's/^/    /' || true
+    else
+      report_failed_compose_services agledger-worker || true
+    fi
+    fatal "Worker did not become healthy."
+  fi
 fi
 info "All services started"
 
@@ -1736,7 +2030,10 @@ echo -e "  ${BOLD}Signed issuer:${NC} ${CONFIGURED_ISSUER}  (iss baked into ever
 if [[ -n "$ACTIVE_SIGNING_ALG" ]]; then
   echo -e "  ${BOLD}Signing:${NC}       ${ACTIVE_SIGNING_ALG}"
 fi
-echo -e "  ${BOLD}Health:${NC}        ${API_URL}/health"
+# /health/ready rather than /health: the one an operator opens should be the one
+# that answers the question they are asking, which is whether the Server can
+# serve. /health is a static 200 and says nothing about the database.
+echo -e "  ${BOLD}Health:${NC}        ${API_URL}/health/ready"
 echo -e "  ${BOLD}Conformance:${NC}   ${API_URL}/v1/conformance"
 echo -e "  ${BOLD}OpenAPI spec:${NC}  ${API_URL}/openapi.json"
 echo -e "  ${BOLD}Agent guide:${NC}   ${API_URL}/llms.txt"

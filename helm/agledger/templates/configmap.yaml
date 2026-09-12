@@ -13,20 +13,7 @@ data:
   PORT: "3000"
   HOST: "0.0.0.0"
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
-  {{- /* Derive the Server's published issuer identity: explicit config → first
-         ingress host → https://localhost. AGLEDGER_EXTERNAL_URL is the `iss`
-         signed into every record/receipt/cert and is required in production;
-         the localhost fallback keeps a default `helm install` bootable, but a
-         real deployment should set config.externalUrl (or an ingress host) so
-         the chain carries a verifiable issuer. */}}
-  {{- $extUrl := .Values.config.externalUrl }}
-  {{- if and (not $extUrl) (.Values.ingress).enabled (gt (len ((.Values.ingress).hosts | default list)) 0) }}
-    {{- $firstHost := (index .Values.ingress.hosts 0).host }}
-    {{- $hasAlbSsl := hasKey ((.Values.ingress).annotations | default dict) "alb.ingress.kubernetes.io/certificate-arn" }}
-    {{- $scheme := ternary "https" "http" (or (gt (len ((.Values.ingress).tls | default list)) 0) $hasAlbSsl) }}
-    {{- $extUrl = printf "%s://%s" $scheme $firstHost }}
-  {{- end }}
-  AGLEDGER_EXTERNAL_URL: {{ $extUrl | default "https://localhost" | quote }}
+  AGLEDGER_EXTERNAL_URL: {{ include "agledger.externalUrl" . | quote }}
   # Post-v1.0 the migration baseline is frozen — the migrate job refuses to
   # rebase an applied migration's checksum. Shipped migrations are immutable;
   # every schema delta is a new numbered migration.
@@ -35,6 +22,20 @@ data:
   OTEL_PROVIDER: {{ .Values.config.otelProvider | quote }}
   AGLEDGER_EXAMPLE_CONTRACT_TYPE: {{ .Values.config.exampleType | quote }}
   RATE_LIMIT_ENABLED: {{ .Values.config.rateLimitEnabled | quote }}
+  {{- /* RATE_LIMIT_STORE defaults to `memory`, which counts per replica: two
+         API pods with a 100/min limit admit 200/min, and an HPA makes the real
+         ceiling a function of load. The chart knows the replica shape, so it
+         answers for it. `postgresql` shares the counter through the database
+         the install already depends on. An explicit config.rateLimitStore wins,
+         including the operator who wants per-replica counting on purpose. */}}
+  {{- $rateLimitStore := .Values.config.rateLimitStore }}
+  {{- if not $rateLimitStore }}
+  {{- $rateLimitStore = "memory" }}
+  {{- if or (gt (int .Values.api.replicaCount) 1) ((.Values.hpa).enabled) }}
+  {{- $rateLimitStore = "postgresql" }}
+  {{- end }}
+  {{- end }}
+  RATE_LIMIT_STORE: {{ $rateLimitStore | quote }}
   CORS_ENABLED: {{ .Values.config.corsEnabled | quote }}
   HELMET_ENABLED: {{ .Values.config.helmetEnabled | quote }}
   {{- if .Values.config.allowNonDefaultSigningAlg }}
@@ -53,7 +54,7 @@ data:
   {{- if ((.Values.license).keyFile).enabled }}
   AGLEDGER_LICENSE_KEY_FILE: {{ ((.Values.license).keyFile).mountPath | quote }}
   {{- end }}
-  {{- if ((.Values.postgres).bundled).enabled }}
+  {{- if (include "agledger.bundledPostgres" .) }}
   ALLOW_DB_WITHOUT_SSL: "true"
   AGLEDGER_PG_BUNDLED: "true"
   {{- end }}
