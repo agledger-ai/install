@@ -23,6 +23,42 @@ processors:
     timeout: 5s
     send_batch_size: 1024
 
+  # The `agledger_*` namespace reaches Prometheus by direct scrape of each
+  # process's own /metrics, and must not also reach it through here.
+  #
+  # Every metric the engine records itself is emitted twice: once into
+  # prom-client, which serves /metrics with the bucket boundaries the code
+  # declares, and once over OTLP into this collector. The OTLP copy is
+  # re-bucketed onto the OpenTelemetry SDK's default boundaries, which run
+  # 0, 5, 10, 25 up to 10000 and are meant for milliseconds. The durations they
+  # measure are in seconds, so every observation lands in the `le=5` bucket and
+  # a quantile over that copy reports a fraction of 5 seconds, whatever the
+  # real duration: p95 reads 4.75, p50 reads 2.5. With prometheus.yml scraping
+  # the app AND this collector, an unfiltered expression summed the two copies,
+  # so a p95 panel read ~4.75 s on an install whose sweeps take 4 ms, and every
+  # counter read double.
+  #
+  # Dropping the namespace here leaves exactly one producer per series, which is
+  # what makes the shipped dashboards and alert rules correct without a `job=`
+  # filter on every expression (they also render on Kubernetes, where the job
+  # label is the release's Service name and no fixed filter would match).
+  #
+  # What still reaches :8889 is everything that is NOT ours: the
+  # auto-instrumentation metrics the OpenTelemetry SDK produces for HTTP and
+  # PostgreSQL, which nothing else scrapes.
+  #
+  # Removing this processor from the pipeline below is what a backend of your
+  # own would need if you fed it from here rather than from /metrics. Read the
+  # histograms that arrive that way as bucket boundaries in milliseconds over
+  # values in seconds, whichever collector carries them: the boundaries are the
+  # SDK's default, not something this file sets.
+  filter/drop-app-prometheus-namespace:
+    metrics:
+      exclude:
+        match_type: regexp
+        metric_names:
+          - '^agledger_.*'
+
 service:
   pipelines:
     traces:
@@ -31,5 +67,5 @@ service:
       exporters: [otlp_grpc/jaeger, debug]
     metrics:
       receivers: [otlp]
-      processors: [batch]
+      processors: [filter/drop-app-prometheus-namespace, batch]
       exporters: [prometheus]

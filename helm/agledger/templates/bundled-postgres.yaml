@@ -1,7 +1,8 @@
-{{- if ((.Values.postgres).bundled).enabled }}
+{{- if (include "agledger.bundledPostgres" .) }}
 # Bundled PostgreSQL for development, evaluation, and small deployments.
-# For production with external databases, set postgres.bundled.enabled=false
-# and configure database.externalUrl.
+# For production with an external database, configure database.externalUrl. It
+# wins over postgres.bundled.enabled, so nothing here renders when both are set;
+# the `agledger.bundledPostgres` helper carries the reason.
 apiVersion: v1
 kind: Service
 metadata:

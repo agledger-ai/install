@@ -78,7 +78,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Parents whose synchronous AUTO_ROLLUP didn't fire (engine crash mid-tx). Discovered by the consistency sweep. The chain has a hole: child records terminalized but parent is still ACTIVE.",
+      "description": "Parents the consistency sweep settled out of band: every child terminal, no activity for five minutes, so the sweep rolled the parent up. Movement here is NORMAL, not a fault. A parent whose children are all notarize-only has no last-child transition to settle it inline and always settles here; only a parent whose inline rollup was lost to a crash or a dropped cascade job is a real fault, and this panel cannot tell the two apart. Read the GAP instead: stuck rising while repaired stays flat means those parents cannot settle and needs a human. The sweep handles at most 50 parents per five-minute pass, so a large backfill drains at roughly 600 an hour and the two series close over hours rather than minutes.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -129,11 +129,20 @@
             "uid": "prometheus"
           },
           "expr": "sum(increase(agledger_auto_rollup_stuck_parents_total[1h]))",
-          "legendFormat": "stuck parents (1h)",
+          "legendFormat": "found due (1h)",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(agledger_auto_rollup_repaired_parents_total[1h]))",
+          "legendFormat": "settled by sweep (1h)",
+          "refId": "B"
         }
       ],
-      "title": "AUTO_ROLLUP stuck parents (1h) \u2014 agledger_auto_rollup_stuck_parents_total",
+      "title": "AUTO_ROLLUP swept vs settled (1h) \u2014 agledger_auto_rollup_{stuck,repaired}_parents_total",
       "type": "stat"
     },
     {

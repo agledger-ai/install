@@ -7,10 +7,93 @@
 # =============================================================================
 
 # DEPLOY_DIR is the checkout root (the directory holding scripts/); REPO_ROOT is
-# its PARENT, which is where backups and support bundles land
+# its PARENT, which is where support bundles and vault dumps land. Backups are
+# NOT there: see backup_root below.
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "${DEPLOY_DIR}/.." && pwd)"
 COMPOSE_DIR="${DEPLOY_DIR}/compose"
+
+# Where this install's backup archives and its `.pre-upgrade-version` rollback
+# marker live. Inside the checkout, because the checkout is what identifies one
+# install: there is one `compose/.env` per checkout, and the backups belong to
+# the database that .env names.
+#
+# It used to default to the checkout's PARENT, and the README's own two-stack
+# recipe (`cp -r <this-install> ../agledger-2`) puts two checkouts in one
+# parent. Both then wrote to one directory: `backup.sh --keep` in either deleted
+# the other's pre-upgrade archive on retention, one `.pre-upgrade-version` named
+# whichever install wrote it last, and two installs' tarballs were
+# indistinguishable by name.
+#
+# BACKUP_DIR overrides it, which is what a mounted backup volume wants. Archive
+# names carry the compose project name, so several installs can share one
+# BACKUP_DIR without their retention sweeps reaching each other's files.
+backup_root() {
+  printf '%s' "${BACKUP_DIR:-${DEPLOY_DIR}/backup}"
+}
+
+# The location backups defaulted to in earlier releases.
+legacy_backup_root() {
+  printf '%s' "${REPO_ROOT}/backup"
+}
+
+# The rollback marker for THIS install: the file `upgrade.sh` writes naming the
+# version to go back to.
+#
+# Named for the compose project, like the archives beside it, so two installs
+# pointed at one BACKUP_DIR cannot overwrite each other's. The unscoped name is
+# still read (below) because an install that upgraded before this carries one.
+pre_upgrade_marker() {
+  printf '%s/.pre-upgrade-version-%s' "$(backup_root)" "$(compose_project_name)"
+}
+
+# The version this install's marker names, or nothing. Reads the project-scoped
+# file first and falls back to the unscoped one an earlier release wrote.
+read_pre_upgrade_marker() {
+  local candidate
+  # Newest naming first, then the two places an install upgraded under an
+  # earlier release could have left one. The legacy root is not optional: that
+  # release wrote the marker to the checkout's PARENT, so an install that
+  # upgraded before this one and rolls back after it finds its marker there and
+  # nowhere else. Leaving it out made the fallback dead in exactly the case it
+  # was written for, and a rollback then printed no version to return to.
+  for candidate in \
+    "$(pre_upgrade_marker)" \
+    "$(backup_root)/.pre-upgrade-version" \
+    "$(legacy_backup_root)/.pre-upgrade-version"; do
+    if [[ -f "$candidate" ]]; then
+      head -1 "$candidate"
+      return 0
+    fi
+  done
+}
+
+# Say so when the older location still holds archives or a rollback marker.
+#
+# Nothing is moved. On a host running two stacks that directory holds both
+# installs' archives under names that do not say which is which, so only the
+# operator can decide; a script that guessed would be doing the thing this
+# whole change exists to stop.
+report_legacy_backup_root() {
+  local legacy current found
+  legacy="$(legacy_backup_root)"
+  current="$(backup_root)"
+  [[ "$legacy" != "$current" ]] || return 0
+  [[ -d "$legacy" ]] || return 0
+  # `|| true` is load-bearing under `set -euo pipefail`. An install run with
+  # sudo leaves that directory root-owned, an operator who hardens it (it holds
+  # full database dumps) makes it unreadable to the cron user, and `find` then
+  # exits non-zero with its message already sent to /dev/null: the substitution
+  # carries that status out and kills the caller with nothing printed at all.
+  # `backup.sh` and `restore.sh` both call this before they do any work, so the
+  # nightly backup and the 3am restore would end on a blank screen.
+  found="$(find "$legacy" -maxdepth 1 \( -name 'backup-*.tar.gz' -o -name '.pre-upgrade-version' \) 2>/dev/null | head -1 || true)"
+  [[ -n "$found" ]] || return 0
+  warn "Older backups are in ${legacy}, the directory this defaulted to in earlier releases."
+  warn "  This install now uses ${current}. Nothing was moved: on a host running two stacks"
+  warn "  that directory holds both installs' archives, and only you know which are this one's."
+  warn "  Restore an older archive by path, or set BACKUP_DIR=${legacy} to keep writing there."
+}
 
 # --- Constants ---
 
@@ -30,12 +113,30 @@ sedi() {
   fi
 }
 
+# Escape a value for the REPLACEMENT half of `sed s|...|...|`.
+#
+# Three characters are read specially there and every one of them is reachable
+# from a real .env value: `&` is the whole match (a DATABASE_URL query string
+# carries one), `|` closes the expression, and `\` escapes whatever follows.
+# Unescaped, the write does not fail, it writes a DIFFERENT value than the
+# caller asked for, which is the worst shape for a config file nothing reads
+# back. Backslash first, or it would escape the escapes added after it.
+sed_replacement_escape() {
+  printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
 # Set KEY=VALUE in an env file: replace the line if KEY exists, append if not.
 # Usage: upsert_env_var KEY VALUE FILE
+#
+# The pattern matches the same shapes `get_env_value` reads and `delete_env_var`
+# removes, and the replacement keeps whatever prefix it found. `^KEY=` alone
+# walked past `export KEY=old` and appended a second, plain assignment below it,
+# leaving one file naming two values for one key: after a rollback the first
+# line an operator reads names the release they just left.
 upsert_env_var() {
   local key="$1" value="$2" file="$3"
-  if grep -q "^${key}=" "$file"; then
-    sedi "s|^${key}=.*|${key}=${value}|" "$file"
+  if grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$file"; then
+    sedi -E "s|^([[:space:]]*(export[[:space:]]+)?)${key}[[:space:]]*=.*|\1${key}=$(sed_replacement_escape "$value")|" "$file"
   else
     # A file whose last line carries no newline would otherwise get the new
     # assignment glued onto it, corrupting the existing variable and the new
@@ -233,8 +334,10 @@ pgdata_volume_state() {
 # Returns empty string if the key is absent.
 # Usage: VALUE=$(get_env_value KEY FILE)
 # Which version an install.sh run should use, and where that came from.
-# Echoes "<version>|<source>", source one of: requested, installed, latest.
-# An empty version with source `latest` means "go ask Docker Hub".
+# Echoes "<version>|<source>", source one of: requested, installed, ambiguous,
+# latest. An empty version with source `latest` means "go ask Docker Hub".
+# Source `ambiguous` carries the recorded (non-concrete) tag as its version
+# half; the caller refuses rather than adopting it.
 #
 # A version, like a registry, names an install for its life and not for one
 # process, so a run that passes no --version adopts what the last install
@@ -244,6 +347,16 @@ pgdata_volume_state() {
 # and without the word "upgrade" anywhere in the output. Moving between releases
 # is upgrade.sh's job, because upgrade.sh backs up first and writes
 # backup/.pre-upgrade-version, the one file that says what to roll back to.
+#
+# Adopting the recorded version requires it to actually BE a version, for the
+# same reason: a non-concrete tag with real install state is not safe to
+# resolve either way. Falling through to Docker Hub's latest (the old
+# behaviour) silently moves an install pinned to a testbed build, an air-gap
+# mirror tag, or the .env.example `latest` placeholder never overwritten.
+# Adopting it as-is would be just as wrong the other way: it is not
+# necessarily a deliberate pin, so treating it as one and skipping resolution
+# entirely could leave a first, still-placeholder install stuck on `latest`
+# forever. Neither guess is safe, so this is the one case that refuses.
 #
 # Extracted so the guards can drive every case with no network and no daemon.
 install_version_decision() {
@@ -269,8 +382,19 @@ install_version_decision() {
   # so the one file that says what to roll back to names the image you just
   # upgraded to. A tag that is not a release number falls through to Docker Hub
   # instead, which is what a first install should do.
-  if [[ "$has_install_state" == "true" ]] && is_concrete_version "$installed"; then
-    printf '%s|installed' "$installed"
+  if [[ "$has_install_state" == "true" ]]; then
+    if is_concrete_version "$installed"; then
+      printf '%s|installed' "$installed"
+      return 0
+    fi
+    # Real install state exists, but the recorded tag is not shaped like a
+    # release number: a testbed build, an air-gap mirror tag, `edge`, or the
+    # .env.example `latest` placeholder never overwritten. A plain re-run
+    # cannot tell a deliberate pin from that placeholder, so it must not fall
+    # through to Docker Hub's latest and move the install with no backup, no
+    # rollback marker and no warning. The caller refuses and names both ways
+    # forward: re-run with --version to stay, or upgrade.sh to move.
+    printf '%s|ambiguous' "$installed"
     return 0
   fi
   printf '|latest'
@@ -487,19 +611,41 @@ is_uuid() {
 # Whether this run should mint a federation identity for the Server, per the
 # same rule the engine's `localHubId()` applies.
 #
-# Echoes `generate` when neither AGLEDGER_INSTANCE_ID nor the legacy
-# AGLEDGER_ORGANIZATION_ID fallback holds a UUID, and nothing when one does.
+# Echoes one of:
 #
-# The "one does" case is the important half. Writing a fresh id over a Server
-# that already has a usable one would change the identity its peers have stored
-# and 401 every message after the next restart. There is no such hazard in the
-# other direction: a Server whose id is absent or is the old literal "default"
-# cannot have completed a handshake, because the peer's schema declares
-# `peerHubId` as `format: uuid` and refuses it.
+#   (nothing)                     AGLEDGER_INSTANCE_ID already holds a UUID.
+#   generate                      no usable id anywhere in the file, mint one.
+#   adopt-legacy-org-id:<uuid>    AGLEDGER_INSTANCE_ID is unset or empty, but
+#                                 the retired AGLEDGER_ORGANIZATION_ID fallback
+#                                 is itself a UUID. Earlier releases read that
+#                                 value as the hub id when no instance id was
+#                                 set, so any federating Server provisioned
+#                                 that way has peers who stored it. Carry it
+#                                 into AGLEDGER_INSTANCE_ID
+#                                 verbatim rather than minting a new one.
+#
+# The "already a UUID" case is the important half. Writing a fresh id over a
+# Server that already has a usable one would change the identity its peers
+# have stored and 401 every message after the next restart. There is no such
+# hazard in the other direction: a Server whose id is absent or is the old
+# literal "default" cannot have completed a handshake, because the peer's
+# schema declares `peerHubId` as `format: uuid` and refuses it.
+#
+# The adopt case only fires when AGLEDGER_INSTANCE_ID is unset or empty, not
+# when it holds other non-UUID junk (a stale "default" or hand-typed label):
+# that value was written by this installer or an operator, not inherited from
+# the retired fallback, so it carries no hint that a peer stored the org id.
 federation_hub_id_action() {
-  local file="$1"
-  is_uuid "$(get_env_value AGLEDGER_INSTANCE_ID "$file")" && return 0
-  is_uuid "$(get_env_value AGLEDGER_ORGANIZATION_ID "$file")" && return 0
+  local file="$1" instance_id org_id
+  instance_id="$(get_env_value AGLEDGER_INSTANCE_ID "$file")"
+  is_uuid "$instance_id" && return 0
+  if [[ -z "$instance_id" ]]; then
+    org_id="$(get_env_value AGLEDGER_ORGANIZATION_ID "$file")"
+    if is_uuid "$org_id"; then
+      echo "adopt-legacy-org-id:${org_id}"
+      return 0
+    fi
+  fi
   echo generate
 }
 
@@ -1111,12 +1257,20 @@ MONITORING_SERVICES="otel-collector jaeger prometheus grafana"
 # monitoring containers running, untouched, on their old image and old port
 # bindings, while reporting a successful upgrade. The containers themselves are
 # the only honest answer to "is monitoring part of this install", so ask them.
+#
+# The listing is captured first and matched with a here-string, the way
+# `audit_event_trigger_verdict` is and for the same reason: every caller runs
+# with `set -o pipefail`, `grep -q` exits on the first match, and once the
+# producer's output outgrows a pipe buffer its next write takes EPIPE and the
+# pipeline reports failure. Here that reads as "monitoring is not running" on a
+# host where it is, which silently skips the profile repair.
 monitoring_containers_running() {
-  local project
+  local project services
   project="$(compose_project_name)"
-  docker ps --filter "label=com.docker.compose.project=${project}" \
-    --format '{{.Label "com.docker.compose.service"}}' 2>/dev/null \
-    | grep -qxE "$(printf '%s' "$MONITORING_SERVICES" | tr ' ' '|')"
+  services="$(docker ps --filter "label=com.docker.compose.project=${project}" \
+    --format '{{.Label "com.docker.compose.service"}}' 2>/dev/null || true)"
+  [[ -n "$services" ]] || return 1
+  grep -qxE "$(printf '%s' "$MONITORING_SERVICES" | tr ' ' '|')" <<< "$services"
 }
 
 # Ensure COMPOSE_PROFILES in $1 selects `monitoring`. Echoes `added` when it had
@@ -1131,6 +1285,326 @@ ensure_monitoring_profile() {
   fi
   upsert_env_var COMPOSE_PROFILES "${existing:+${existing},}monitoring" "$file"
   echo added
+}
+
+# Repair the .env properties an install can be missing regardless of which
+# version it is on. Sets ENV_RECONCILED=true when it wrote anything and
+# MONITORING_ACTIVE to whether this host is running the monitoring stack.
+#
+# Shared by upgrade.sh and restore.sh because both start a stack out of a file
+# they did not write. None of these gaps is a property of a version gap: a
+# missing or stale COMPOSE_FILE line, an absent federation identity, an absent metrics
+# scrape token and an unselected monitoring profile are properties of the .env,
+# so an install already on the target version needs each repair as much as one
+# that is behind, and a DR restore onto a host whose .env predates them needs
+# them before anything comes up rather than after.
+#
+# That case is routine rather than theoretical, because these scripts never
+# update themselves. Only the image is pulled, so a machine that upgraded ran
+# whatever upgrade.sh its checkout held, which may carry none of these; the
+# operator's remedy is to refresh the install scripts and re-run. All of them
+# are idempotent: each writes only when the value is absent, so a re-run on a
+# reconciled .env changes nothing and leaves ENV_RECONCILED false.
+#
+# build_overlay_list reads USES_BUNDLED_PG, so detect_db_mode runs before the
+# comparison rather than being assumed; it is idempotent, and callers that run
+# it themselves are unaffected.
+reconcile_env_file() {
+  local env_file="$1"
+  # Both are this function's OUTPUT, read by upgrade.sh and restore.sh, which
+  # source this file.
+  # shellcheck disable=SC2034
+  ENV_RECONCILED=false
+  # shellcheck disable=SC2034
+  MONITORING_ACTIVE=false
+  # Repair, never create. upsert_env_var appends to a file it cannot read, so
+  # without this a caller pointed at a checkout that was never installed would
+  # get a two-line .env conjured out of nothing and every reader downstream
+  # would treat it as an install.
+  [[ -f "$env_file" ]] || return 0
+
+  # Absent OR stale. It used to be absent-only, which was enough while the list
+  # was derived from files this repo ships. It is not enough now that it can
+  # carry the operator's own override file: adding or deleting that file changes
+  # the correct list, and a `.env` still naming the old one sends every manual
+  # `docker compose` from compose/ to a different stack than the scripts bring
+  # up, or, after a deletion, to a file that is not there. install.sh already
+  # rewrites this key on every run; upgrade.sh and restore.sh reach the same
+  # answer through here.
+  local current_compose_file
+  current_compose_file="$(get_env_value COMPOSE_FILE "$env_file")"
+  detect_db_mode
+  build_overlay_list
+  if [[ "$current_compose_file" != "$OVERLAY_LIST" ]]; then
+    if [[ -z "$current_compose_file" ]]; then
+      warn "COMPOSE_FILE not persisted in .env: manual 'docker compose' commands will drop overlays."
+      warn "Auto-adding based on current deployment."
+    fi
+    upsert_env_var COMPOSE_FILE "${OVERLAY_LIST}" "$env_file"
+    ENV_RECONCILED=true
+    info "Set COMPOSE_FILE=${OVERLAY_LIST}"
+  fi
+
+  # --- Federation Identity ---
+  # An install stood up before install.sh generated one has no
+  # AGLEDGER_INSTANCE_ID, so its operator is told the Server's id is the literal
+  # "default" and the peer's handshake refuses it. `federation_hub_id_action`
+  # will not touch a Server that already has a usable id, so this can never move
+  # an identity peers have stored: it only fills in the absent case.
+  local hub_id_action hub_id_value
+  hub_id_action="$(federation_hub_id_action "$env_file")"
+  case "$hub_id_action" in
+    generate)
+      if hub_id_value=$(generate_uuid); then
+        upsert_env_var AGLEDGER_INSTANCE_ID "${hub_id_value}" "$env_file"
+        ENV_RECONCILED=true
+        info "Generated AGLEDGER_INSTANCE_ID (this Server's federation identity; it had none)"
+      else
+        warn "Could not generate AGLEDGER_INSTANCE_ID. Federation stays unavailable until one is set;"
+        warn "GET /federation/v1/admin/instance names the variable and how to generate a value."
+      fi
+      ;;
+    adopt-legacy-org-id:*)
+      # The retired AGLEDGER_ORGANIZATION_ID fallback was this Server's identity
+      # and peers hold it. Carry it forward rather than mint a new one, which
+      # would 401 every message after restart.
+      upsert_env_var AGLEDGER_INSTANCE_ID "${hub_id_action#adopt-legacy-org-id:}" "$env_file"
+      ENV_RECONCILED=true
+      info "Adopted AGLEDGER_ORGANIZATION_ID as AGLEDGER_INSTANCE_ID (the identity peers already hold); AGLEDGER_ORGANIZATION_ID can be deleted from .env"
+      ;;
+  esac
+
+  # --- Metrics scrape token ---
+  # An install stood up before /metrics was gated has no METRICS_AUTH_TOKEN, and
+  # .env sets NODE_ENV=production, so the endpoint answers the API-key chain and
+  # a Prometheus that holds no credential simply stops collecting, silently.
+  # Never regenerated: a token already in .env is the one the running Prometheus
+  # was configured with.
+  local metrics_token_value
+  if [[ -z "$(get_env_value METRICS_AUTH_TOKEN "$env_file")" ]]; then
+    if metrics_token_value=$(openssl rand -hex 24); then
+      upsert_env_var METRICS_AUTH_TOKEN "${metrics_token_value}" "$env_file"
+      ENV_RECONCILED=true
+      info "Generated METRICS_AUTH_TOKEN (bearer token for /metrics; it had none)"
+    else
+      warn "Could not generate METRICS_AUTH_TOKEN. /metrics answers the API-key chain under"
+      warn "NODE_ENV=production, so a scrape holding no credential will report the target down."
+    fi
+  fi
+
+  # --- Monitoring Profile ---
+  # An install stood up with --with-monitoring before COMPOSE_PROFILES was
+  # persisted has monitoring containers running and nothing in .env that selects
+  # them. Every later compose command, `up -d` included, then skips the profile:
+  # the containers keep running on the OLD image with the OLD port bindings
+  # while the run reports success. Repair the .env before anything else reads
+  # it, so the profile also sticks for the operator's own later commands.
+  if monitoring_containers_running; then
+    # shellcheck disable=SC2034  # output; see the declaration above
+    MONITORING_ACTIVE=true
+    if [[ "$(ensure_monitoring_profile "$env_file")" == "added" ]]; then
+      # shellcheck disable=SC2034  # output; see the declaration above
+      ENV_RECONCILED=true
+      info "Monitoring containers are running but COMPOSE_PROFILES did not select them."
+      info "  Added COMPOSE_PROFILES=monitoring to .env so this run includes them."
+    fi
+  fi
+}
+
+# True when the API container answers its own readiness probe.
+#
+# The question is "is this stack actually serving", and `compose ps` answers
+# neither half of it: a container can be up and not serving (an unhealthy one
+# reports `running`, a config fail-fast crashloop reports `restarting`), which
+# is exactly the state a failed `up -d --wait` leaves behind.
+#
+# /health/ready, not /health, and the same endpoint the compose healthcheck and
+# the image HEALTHCHECK use. `/health` is a static 200 that opens no connection,
+# so a container pointed at a database that is down, gone or refusing its
+# credentials answers it: an upgrade whose restart failed on exactly that would
+# read as "already serving" and be reported as nothing to do. The readiness
+# handler runs SELECT 1 and answers 503 when it cannot.
+#
+# Requires: build_compose_cmd has run, so COMPOSE is set.
+api_service_serving() {
+  "${COMPOSE[@]}" exec -T agledger-api /nodejs/bin/node -e \
+    "fetch('http://localhost:3000/health/ready').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" \
+    >/dev/null 2>&1
+}
+
+# How many log lines a failed start prints, per failing service.
+COMPOSE_FAIL_LOG_LINES=40
+
+# The services named in $@ that are not up. One `<service>|<status>` line each;
+# no output at all means every one of them is running and, where it declares a
+# healthcheck, healthy.
+#
+# This exists because `up -d --wait` cannot answer the question on its own. It
+# waits for a healthcheck, so a service that declares none is "ready" the moment
+# its container is running, and a container that is crash-looping is running
+# between restarts: `--wait` returned 0 over a Prometheus whose config had a
+# typo, and the install reported success and handed the operator a URL that
+# answered nothing. Docker's own container state is the honest answer, so ask
+# for it after the wait rather than trusting the wait alone.
+#
+# A service with no container at all is a failure too (an image that would not
+# pull leaves nothing behind), which is why this walks the requested names
+# rather than listing what the project happens to hold.
+#
+# Requires: build_compose_cmd has run, so COMPOSE is set.
+failed_compose_services() {
+  local project svc rows state status
+  project="$(compose_project_name)"
+  for svc in "$@"; do
+    # `oneoff=False` excludes the containers `docker compose run` creates. They
+    # carry the same project and service labels, `docker compose ps` does not
+    # list them, and one survives whenever a `run --rm` is killed rather than
+    # exiting (a dropped SSH session, the OOM killer). install.sh runs its
+    # preflight that way, so without this filter the documented recovery,
+    # re-running install.sh, aborts a healthy install on the exit status of a
+    # dead container from the interrupted run.
+    rows="$(docker ps -a \
+      --filter "label=com.docker.compose.project=${project}" \
+      --filter "label=com.docker.compose.service=${svc}" \
+      --filter "label=com.docker.compose.oneoff=False" \
+      --format '{{.State}}|{{.Status}}' 2>/dev/null || true)"
+    if [[ -z "$rows" ]]; then
+      printf '%s|%s\n' "$svc" "no container was created"
+      continue
+    fi
+    while IFS='|' read -r state status; do
+      [[ -n "$state" ]] || continue
+      # `(health: starting)` is not reported: that is a container inside its
+      # start_period, which only reaches here when the wait itself failed.
+      if [[ "$state" != "running" || "$status" == *"(unhealthy)"* ]]; then
+        printf '%s|%s\n' "$svc" "${status:-$state}"
+      fi
+    done <<< "$rows"
+  done
+}
+
+# True when every service named in $@ is up. The predicate half of
+# report_failed_compose_services, so a caller can put the question in an `if`
+# without printing anything.
+all_compose_services_up() {
+  [[ -z "$(failed_compose_services "$@")" ]]
+}
+
+# Report the services from $@ that are not up, then print the last
+# COMPOSE_FAIL_LOG_LINES lines of EACH FAILING ONE. Returns 1 when it reported
+# something, 0 when everything asked about is up.
+#
+# Only the failing services' logs, deliberately. Dumping the tail of all five
+# put the one line that explained the failure under 160 lines of Grafana
+# plugin-install chatter, in a terminal the operator is reading at the moment
+# the install broke.
+#
+# Requires: build_compose_cmd has run, so COMPOSE is set.
+report_failed_compose_services() {
+  local failures svc status
+  failures="$(failed_compose_services "$@")"
+  [[ -n "$failures" ]] || return 0
+
+  while IFS='|' read -r svc status; do
+    [[ -n "$svc" ]] || continue
+    error "  ${svc}: ${status}"
+  done <<< "$failures"
+
+  while IFS='|' read -r svc status; do
+    [[ -n "$svc" ]] || continue
+    echo ""
+    error "Last ${COMPOSE_FAIL_LOG_LINES} log lines of ${svc}:"
+    "${COMPOSE[@]}" logs --tail "${COMPOSE_FAIL_LOG_LINES}" --no-log-prefix "$svc" 2>&1 | sed 's/^/    /' || true
+  done <<< "$failures"
+
+  echo ""
+  error "Full logs: docker compose logs <service>"
+  return 1
+}
+
+# The monitoring services that read their whole configuration once, at process
+# start, from a file bind-mounted out of this checkout.
+# `<service>:<file under compose/>`.
+MOUNTED_CONFIG_SERVICES=(
+  "otel-collector:otel-collector-config.yaml"
+  "prometheus:prometheus.yml"
+)
+
+# Restart those of them that are already running, so the file on disk is the
+# file the process is holding.
+#
+# Compose will not do it. A mounted file's CONTENT is no part of the service
+# definition Compose hashes, so `up -d` after the file changed prints `Running`
+# and hands back the SAME container id, with the process still on what it read
+# when it started. (A top-level `configs:` entry sourced from a file behaves
+# identically; both were driven against Compose 2.40.)
+#
+# That is how the collector's `agledger_` filter would have reached no existing
+# install. The collector is the one monitoring service whose definition the
+# release carrying that filter does not change, precisely because it is the one
+# that can hold no healthcheck: every other monitoring container is recreated by
+# the upgrade and it is not, so the operator upgrades, the collector keeps
+# re-exporting the millisecond-bucketed copies, and every p95 panel stays where
+# it was.
+#
+# Unconditional, rather than only when the file changed. Asking whether it
+# changed needs either the container's start time, which costs a `date -d` these
+# scripts may not use (the deploy tests refuse GNU-only flags, because macOS
+# ships BSD userland), or a digest recorded somewhere that then has to be kept
+# honest across two stacks and a restore. Neither of these two services holds
+# anything worth that: Prometheus keeps its series on a volume and the collector
+# holds at most one 5s batch, so a restart on an operator-initiated install or
+# upgrade costs a few seconds of telemetry and no data.
+#
+# Grafana is deliberately absent. It re-reads provisioned dashboards from disk
+# on its own interval, so the files that change every release are already
+# covered, and it is the one of the three holding a database.
+#
+# Requires: build_compose_cmd has run, so COMPOSE is set.
+restart_mounted_config_services() {
+  local project entry svc file cid
+  project="$(compose_project_name)"
+  for entry in "${MOUNTED_CONFIG_SERVICES[@]}"; do
+    svc="${entry%%:*}"
+    file="${COMPOSE_DIR}/${entry#*:}"
+    [[ -f "$file" ]] || continue
+    # `|| true` for the same reason the legacy-backup probe carries one: a
+    # docker that answers non-zero here would otherwise take the whole install
+    # down through `pipefail`, with its message already sent to /dev/null.
+    # `oneoff=False` for the same reason failed_compose_services carries it.
+    cid="$(docker ps -q \
+      --filter "label=com.docker.compose.project=${project}" \
+      --filter "label=com.docker.compose.service=${svc}" \
+      --filter "label=com.docker.compose.oneoff=False" 2>/dev/null | head -1 || true)"
+    # Nothing running under that name: whatever `up -d` creates next reads the
+    # file as it stands now, so there is nothing to apply.
+    [[ -n "$cid" ]] || continue
+    info "Restarting ${svc} so it reads the ${entry#*:} in this checkout."
+    "${COMPOSE[@]}" restart "$svc" >/dev/null 2>&1 \
+      || warn "  ${svc} did not restart. Apply its configuration with: docker compose restart ${svc}"
+  done
+}
+
+# True when $1 is a digest ref (`repo@sha256:...`) whose exact bytes this host
+# already holds locally.
+#
+# The point is a registry the host cannot reach. A failed pull is not evidence
+# about the image, and on an air-gapped or briefly offline host it is the normal
+# case; when the bytes .env already pins are sitting in the local image store,
+# a run can go on with them rather than refusing to reconcile anything.
+# Deliberately an exact RepoDigest match: a tag that resolves to something local
+# is a weaker claim, since a tag can be repointed and nothing verified this one.
+#
+# Captured and matched with a here-string rather than piped into `grep -q`, for
+# the pipefail/EPIPE reason `monitoring_containers_running` above carries: an
+# image pulled under several names has a RepoDigests list, and a false "no" here
+# turns an offline reconcile into a refusal.
+local_image_matches_pin() {
+  local pin="$1" digests
+  [[ "$pin" == *"@sha256:"* ]] || return 1
+  digests="$(docker image inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "$pin" 2>/dev/null || true)"
+  [[ -n "$digests" ]] || return 1
+  grep -qxF "$pin" <<< "$digests"
 }
 
 # First port at or above $1 that nothing on this host answers on and that is not
@@ -1249,6 +1723,20 @@ fatal()   { error "$*"; exit 1; }
 AGLEDGER_SIGNER_IDENTITY_REGEXP='^https://github\.com/agledger-ai/agledger-api/\.github/workflows/.+@refs/tags/v.+$'
 AGLEDGER_SIGNER_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 
+# Set RESOLVED_DIGEST to the digest $ref carries for THIS repo specifically.
+# RepoDigests can hold entries for other repos the same image ID was previously
+# pulled under (mirror/ECR), so blindly taking [0] could yield a foreign digest.
+# Accepts only a well-formed sha256; otherwise leaves it empty so callers skip
+# pinning rather than write junk. An image built here or loaded from a tarball
+# carries no RepoDigests at all, and empty is the right answer for it: compose
+# takes the tag fallback and install.sh writes no pin.
+resolve_repo_digest() {
+  local image="$1" ref="$2"
+  RESOLVED_DIGEST=$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "$ref" 2>/dev/null \
+    | grep "^${image}@" | head -1 | sed 's/.*@//' || true)
+  [[ "$RESOLVED_DIGEST" == sha256:* ]] || RESOLVED_DIGEST=""
+}
+
 # Pull + cryptographically verify a Docker Hub image BEFORE anything runs it,
 # then expose its digest in the global RESOLVED_DIGEST. The image is executed to
 # mint the vault signing key, so an unverified/tampered image is silent RCE +
@@ -1261,10 +1749,18 @@ AGLEDGER_SIGNER_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 #   cosign present + verify OK      -> proceed.
 #   cosign absent                  -> warn loudly + proceed, UNLESS
 #                                     AGLEDGER_REQUIRE_VERIFY=true (then abort).
-# Returns non-zero only when the caller should abort. Sets RESOLVED_DIGEST
-# whenever the pull succeeded (verified or not) so callers can still digest-pin.
+#   pull FAILS + image already in the local image store
+#                                  -> proceed unverified for the two outcomes
+#                                     above that verify nothing either way
+#                                     (skip, custom image), warn; abort
+#                                     otherwise, and always under
+#                                     AGLEDGER_REQUIRE_VERIFY=true.
+# Returns non-zero only when the caller should abort. Sets RESOLVED_DIGEST from
+# whatever the daemon holds for the ref (verified or not) so callers can still
+# digest-pin; an image built here or loaded from a tarball carries no
+# RepoDigest, and then the pin is empty and compose runs the tag.
 #
-# Four of the five outcomes above return 0 and only one of them verified
+# Five of the six outcomes above return 0 and only one of them verified
 # anything, so the return code does not answer "was this image verified".
 # SIGNATURE_VERIFIED does, and callers that report on the digest have to read
 # it: pinning an unverified digest is right, and calling that digest verified
@@ -1282,10 +1778,75 @@ verify_image() {
   step "Verifying image signature"
 
   if ! docker pull "$ref"; then
-    error "docker pull ${ref} failed — cannot verify or run an image that isn't present."
+    # A pull failure is only fatal where this run was going to verify something.
+    # Where it was not, a copy already in the local image store is the whole of
+    # what a successful pull would have produced, and refusing it withholds an
+    # install that a reachable registry would have completed just as unverified.
+    # restore.sh takes the same position, skipping its own pull for an image
+    # `docker image inspect` resolves and naming `docker load` from an air-gap
+    # bundle as a way to put one there.
+    #
+    # So this mirrors the policy below, for the two outcomes that verify nothing
+    # either way: AGLEDGER_SKIP_VERIFY, and a custom image the release pipeline
+    # never signed. The cosign outcomes are not here, because a keyless check
+    # reads the signature from the registry and there is no registry.
+    #
+    # Without it, an image that exists only locally cannot be installed at all
+    # on a first run. install.sh's offline fallback needs a digest pin an earlier
+    # install left in .env, so it reaches none of these: an enclave seeded by
+    # `docker load` with no internal registry to push to, an internal mirror
+    # pulled out of band under its own name, or a customer running an image they
+    # built from source.
+    # shellcheck disable=SC2034  # read by install.sh, which reports on it
+    IMAGE_PRESENT_LOCALLY=false
+    if docker image inspect "$ref" >/dev/null 2>&1; then IMAGE_PRESENT_LOCALLY=true; fi
+
+    # AGLEDGER_REQUIRE_VERIFY is decisive here and nowhere else in this function.
+    # On a reachable registry it only governs a missing cosign, because the other
+    # skip outcomes were the operator's own choice. A failed pull is not: the
+    # operator asked for a refusal on bytes this run did not verify, and these
+    # are exactly those bytes. install.sh's own copy of this check says the same.
+    if [[ "$IMAGE_PRESENT_LOCALLY" == "true" && "${AGLEDGER_REQUIRE_VERIFY:-false}" != "true" ]]; then
+      local local_reason=""
+      if [[ "${AGLEDGER_SKIP_VERIFY:-false}" == "true" ]]; then
+        local_reason="AGLEDGER_SKIP_VERIFY=true"
+      elif [[ "$image" != "agledger/agledger" ]]; then
+        local_reason="custom image, not signed by the AGLedger release pipeline"
+      fi
+      if [[ -n "$local_reason" ]]; then
+        # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+        UNVERIFIED_REASON="${local_reason}; pull failed, used the local image store's copy"
+        warn "docker pull ${ref} failed, but ${local_reason}, and that image is already in this"
+        warn "host's local image store. Continuing on those bytes."
+        warn "NOTHING WAS VERIFIED, and nothing compared them against a registry: they are whatever"
+        warn "put them there."
+        resolve_repo_digest "$image" "$ref"
+        return 0
+      fi
+    fi
+
+    if [[ "$IMAGE_PRESENT_LOCALLY" == "true" ]]; then
+      # Present locally and still refused: a keyless check reads the signature
+      # from the registry, so an unreachable registry makes these bytes
+      # unverifiable, not absent. Reporting "isn't present" here sends an
+      # operator looking for an image `docker image inspect` resolves in front
+      # of them.
+      error "docker pull ${ref} failed. That image IS in this host's local image store, but a"
+      error "keyless signature check reads the signature from the registry, so this run cannot"
+      error "verify those bytes."
+      if [[ "${AGLEDGER_REQUIRE_VERIFY:-false}" == "true" ]]; then
+        error "AGLEDGER_REQUIRE_VERIFY=true, which is a refusal to run bytes this run did not verify."
+      else
+        error "For dev/local ONLY, install from them unverified with: --skip-verify"
+      fi
+    else
+      error "docker pull ${ref} failed — cannot verify or run an image that isn't present."
+    fi
     local pull_registry="${image%%/*}"
     if [[ "$image" == */* && ( "$pull_registry" == *.* || "$pull_registry" == *:* ) ]]; then
-      error "Nothing is wrong with the signature: the image never arrived."
+      if [[ "$IMAGE_PRESENT_LOCALLY" != "true" ]]; then
+        error "Nothing is wrong with the signature: the image never arrived."
+      fi
       error "'${pull_registry}' is a private registry, and the daemon has no credentials for it"
       error "if the output above says 'no basic auth credentials'. Authenticate, then re-run:"
       if [[ "$pull_registry" == *.dkr.ecr.*.amazonaws.com ]]; then
@@ -1300,13 +1861,7 @@ verify_image() {
     # one. An image that never downloaded was never verified either way.
     return 2
   fi
-  # Resolve the digest for THIS repo specifically — RepoDigests can carry entries
-  # for other repos the same image ID was previously pulled under (mirror/ECR),
-  # so blindly taking [0] could yield a foreign digest. Accept only a well-formed
-  # sha256; otherwise leave empty so callers skip pinning rather than write junk.
-  RESOLVED_DIGEST=$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "$ref" 2>/dev/null \
-    | grep "^${image}@" | head -1 | sed 's/.*@//' || true)
-  [[ "$RESOLVED_DIGEST" == sha256:* ]] || RESOLVED_DIGEST=""
+  resolve_repo_digest "$image" "$ref"
 
   if [[ "${AGLEDGER_SKIP_VERIFY:-false}" == "true" ]]; then
     UNVERIFIED_REASON="AGLEDGER_SKIP_VERIFY=true"
@@ -1479,6 +2034,19 @@ resolve_version() {
 # Cache: ${HOME}/.cache/agledger/latest-version, 1 hour TTL, falls back to
 # stale cache if the API is unreachable — and warns on stderr with the age.
 resolve_latest_version() {
+  # This queries the public agledger/agledger Docker Hub repository
+  # unconditionally, so it must not be asked to resolve "latest" for any other
+  # registry: a private registry's tag list is not Docker Hub's, and a
+  # semver it happens to publish under that number may not exist there at
+  # all. AGLEDGER_IMAGE is resolved by the time any caller reaches this,
+  # whether from an explicit --image or from a persisted one in .env
+  # (install.sh applies both before version resolution, precisely so this
+  # sees the real registry either way), so read it directly rather than
+  # taking a parameter every caller has to remember to pass.
+  if [[ "${AGLEDGER_IMAGE:-agledger/agledger}" != "agledger/agledger" ]]; then
+    echo "ERROR: no --version given, and the image is ${AGLEDGER_IMAGE}, not Docker Hub's agledger/agledger. Its tag list is not Docker Hub's, so a version cannot be resolved from there. Pass --version <tag>." >&2
+    return 1
+  fi
   local cache_dir="${HOME}/.cache/agledger"
   local cache_file="${cache_dir}/latest-version"
   local cache_max_age=3600
@@ -1704,13 +2272,41 @@ fips_overlay_enabled() {
   [[ "$value" == "true" ]]
 }
 
+# The operator's own override file, if they wrote one.
+#
+# Compose applies an override file automatically ONLY when it is discovering the
+# compose file itself. Setting COMPOSE_FILE in .env, and passing an explicit
+# `-f` list from these scripts, both turn that discovery off, so an override
+# file sat beside the stack doing nothing and nothing said so. The compose
+# file's own comments tell operators to write one (a worker port mapping), and
+# `.env.example` tells them to write one for the SIEM file sink's write grant.
+#
+# All FOUR names Compose discovers, in ITS precedence order, verified against
+# Compose 2.40: with several present it takes the first of
+# compose.override.yml, compose.override.yaml, docker-compose.override.yml,
+# docker-compose.override.yaml and warns about the rest. Checking only the
+# docker-compose pair would silently ignore a file named the way Compose's own
+# current documentation names it.
+#
+# Echoes the basename, or nothing.
+compose_override_file() {
+  local name
+  for name in compose.override.yml compose.override.yaml \
+              docker-compose.override.yml docker-compose.override.yaml; do
+    if [[ -f "${COMPOSE_DIR}/${name}" ]]; then
+      echo "$name"
+      return 0
+    fi
+  done
+}
+
 # Build the colon-separated overlay list for the COMPOSE_FILE .env line, in
 # the same order and under the same conditions build_compose_cmd applies its
 # -f flags, so a manual `docker compose` from compose/ and the scripts agree.
-# Sets OVERLAY_LIST. install.sh, upgrade.sh and remediate-env.sh all call
-# this; per-script copies drifted (the rebuild paths dropped the FIPS
-# overlay, so a --fips install remediated by hand ran with the FIPS provider
-# inactive while .env still said AGLEDGER_FIPS=true).
+# Sets OVERLAY_LIST. install.sh and upgrade.sh both call this; per-script
+# copies drifted (the rebuild path dropped the FIPS overlay, so a --fips
+# install whose COMPOSE_FILE line was removed by hand got it rebuilt without
+# the overlay while .env still said AGLEDGER_FIPS=true).
 build_overlay_list() {
   OVERLAY_LIST="docker-compose.yml"
   if [[ "${USES_BUNDLED_PG}" == "true" ]] && [[ -f "${COMPOSE_DIR}/docker-compose.postgres.yml" ]]; then
@@ -1719,9 +2315,59 @@ build_overlay_list() {
   if [[ -f "${COMPOSE_DIR}/docker-compose.prod.yml" ]]; then
     OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.prod.yml"
   fi
-  # Last, so its OPENSSL_CONF wins over anything an earlier overlay sets.
+  # Last of the shipped overlays, so its OPENSSL_CONF wins over anything an
+  # earlier one sets.
   if fips_overlay_enabled && [[ -f "${COMPOSE_DIR}/docker-compose.fips.yml" ]]; then
     OVERLAY_LIST="${OVERLAY_LIST}:docker-compose.fips.yml"
+  fi
+  # After every shipped overlay, which is where Compose applies an override file
+  # when it discovers one itself. An operator editing this file is editing it to
+  # win.
+  local override
+  override="$(compose_override_file)"
+  if [[ -n "$override" ]]; then
+    OVERLAY_LIST="${OVERLAY_LIST}:${override}"
+  fi
+}
+
+# The Compose floor this stack's own compose file needs.
+#
+# docker-compose.yml declares a top-level `configs:` entry with inline
+# `content:`, which is how the bundled Prometheus is handed the /metrics bearer
+# token out of .env without a second copy of that secret on disk. Compose gained
+# inline content in 2.23.1. Older Compose does not ignore the key, it fails to
+# parse the file, so this bites `down`, `logs` and `ps` as hard as `up`.
+#
+# Echoes "ok" or a human reason. The caller decides whether that is fatal, so
+# `install.sh` can refuse up front while a day-2 script can warn.
+COMPOSE_MIN_VERSION="2.23.1"
+
+compose_version_state() {
+  local raw major minor patch
+  raw="$(docker compose version --short 2>/dev/null || true)"
+  if [[ -z "$raw" ]]; then
+    echo "Docker Compose v2 is not installed."
+    return 0
+  fi
+  # Strip a leading v and any suffix a distribution appends
+  # (2.40.3+ds1-0ubuntu1~24.04.1, 2.24.0-desktop.1).
+  raw="${raw#v}"
+  major="${raw%%.*}"; raw="${raw#*.}"
+  minor="${raw%%.*}"; raw="${raw#*.}"
+  patch="${raw%%[!0-9]*}"
+  # A component that is not a number would make the arithmetic below evaluate a
+  # variable name under `set -u`. Refuse to guess instead.
+  if [[ ! "$major$minor" =~ ^[0-9]+$ ]]; then
+    echo "Could not read a version number from \`docker compose version --short\`."
+    return 0
+  fi
+  [[ "$patch" =~ ^[0-9]+$ ]] || patch=0
+  if (( major > 2 )) \
+     || (( major == 2 && minor > 23 )) \
+     || (( major == 2 && minor == 23 && patch >= 1 )); then
+    echo "ok"
+  else
+    echo "Docker Compose ${COMPOSE_MIN_VERSION}+ is required (found ${major}.${minor}.${patch})."
   fi
 }
 
@@ -1745,9 +2391,20 @@ build_compose_cmd() {
     COMPOSE+=(-f "${prod_file}")
   fi
 
-  # Last, so its OPENSSL_CONF wins over anything an earlier overlay sets.
+  # Last of the shipped overlays, so its OPENSSL_CONF wins over anything an
+  # earlier one sets.
   if fips_overlay_enabled && [[ -f "${fips_file}" ]]; then
     COMPOSE+=(-f "${fips_file}")
+  fi
+
+  # The operator's override file, after everything shipped. This list and the
+  # COMPOSE_FILE line build_overlay_list writes have to name the same files in
+  # the same order, or a manual `docker compose` and these scripts deploy
+  # different stacks.
+  local override
+  override="$(compose_override_file)"
+  if [[ -n "$override" ]]; then
+    COMPOSE+=(-f "${COMPOSE_DIR}/${override}")
   fi
 }
 

@@ -1,22 +1,67 @@
 # Orgs (with inline agents + API keys) provisioned as config-as-code.
 # Reconciled on every boot; rows are tagged managed_by=provisioning. The natural
-# key is `name` — keep it stable across reconciles (renaming creates a new org).
+# key is `name` - keep it stable across reconciles (renaming creates a new org).
 orgs:
   - name: Acme Corp
 
-    # Admin-role API key for external integrations. The generated key is returned
-    # once in the provisioning result (and logged at startup) — capture it then;
-    # it is not retrievable afterwards.
-    apiKeys:
-      - role: admin
-        label: primary-api-key
-        scopeProfile: admin-standard
+    # ---------------------------------------------------------------------
+    # API keys are declared here, and this starter file declares none on
+    # purpose. Pick a shape below and uncomment it.
+    #
+    # Nothing is commented out for safety in the abstract: a key the Server
+    # MINTS returns its plaintext in the POST /v1/admin/provisioning/reload
+    # response body and on no other surface. Provisioning also runs at startup,
+    # and at startup nobody called that route, so a key minted by first boot is
+    # a live admin credential with no readout anywhere. Copying this file
+    # verbatim should not leave you holding one.
+    #
+    # ---------------------------------------------------------------------
+    # Shape 1, and the one to reach for: supply the material yourself.
+    #
+    # The reconciler stores only the HMAC hash. The key lives in your secret
+    # store (External Secrets, a sealed Secret, chart extraEnv / extraEnvFrom
+    # with a secretKeyRef) before the Server ever boots, so there is nothing to
+    # capture out of a response and nothing to lose. Reconciles are idempotent
+    # on it: the same value next boot is a no-change, with no re-mint and no
+    # new audit row.
+    #
+    # Each entry needs its OWN material. api_keys.key_hash is UNIQUE, so two
+    # entries pointing at one env var is a reported config error, not a merge.
+    #
+    # Uncomment once ACME_INTEGRATION_KEY is in the pod environment. It is
+    # commented rather than shipped live because a bare ${VAR} with no default
+    # is a hard parse error when unset, and this file has to survive being
+    # copied verbatim.
+    #
+    # apiKeys:
+    #   - role: admin
+    #     label: gitops-admin-key
+    #     scopeProfile: admin-iac
+    #     apiKey: ${ACME_INTEGRATION_KEY}
+    #
+    # ---------------------------------------------------------------------
+    # Shape 2: let the Server mint one, and read it out deliberately.
+    #
+    # Omit `apiKey` and the reconciler generates a random key. Add the entry to
+    # a RUNNING Server and call POST /v1/admin/provisioning/reload (platform
+    # role) rather than adding it before first boot: the response body carries
+    # `apiKeys.generated[].apiKey` once, and that is the only place the
+    # plaintext ever appears. If you lose it, disable the key
+    # (PATCH /v1/admin/api-keys/{keyId} with isActive=false) and reload to mint
+    # another.
+    #
+    # apiKeys:
+    #   - role: admin
+    #     label: primary-api-key
+    #     scopeProfile: admin-standard
 
     # Agents owned by this org (they inherit org_id from the parent).
+    # Agent keys take the same two shapes and the same reasoning.
     agents:
       - displayName: Acme Task Processor
         agentClass: system
-        apiKeys:
-          - role: agent
-            label: processor-key
-            scopeProfile: agent-full
+        # apiKeys:
+        #   - role: agent
+        #     label: processor-key
+        #     scopeProfile: agent-full
+        #     apiKey: ${ACME_PROCESSOR_KEY}

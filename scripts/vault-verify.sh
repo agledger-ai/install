@@ -13,6 +13,14 @@ set -euo pipefail
 # AGLedger image (dist/scripts/verify-vault.js), so no source checkout, Node.js,
 # or pnpm is required on the host.
 #
+# The vault holds two kinds of chain and both are checked: one per record, and
+# one per org for schema registrations (reported as `schema:<orgId>`). The
+# summary says how many of each were covered. A chain holding no entries is
+# reported as EMPTY, not as a pass: nothing about it was proven. A record whose
+# entries were all deleted is reported that way too, rather than dropping out of
+# the count: the check enumerates the record rows, not just the surviving vault
+# entries.
+#
 # This is the fast in-database integrity check (no signature verification) — the
 # right post-restore "is my chain internally consistent?" proof. The
 # signature-checking, database-independent proof an external auditor runs is
@@ -23,10 +31,17 @@ set -euo pipefail
 # compose network — run this against a live install.
 #
 # Usage:
-#   ./scripts/vault-verify.sh                      # check every record's chain
-#   ./scripts/vault-verify.sh --record-id <uuid>   # check one record
-#   ./scripts/vault-verify.sh --since <date>       # check records since a date
+#   ./scripts/vault-verify.sh                      # check every chain
+#   ./scripts/vault-verify.sh --chain-key <key>    # check one chain, named the
+#                                                  # way the report prints it:
+#                                                  # a record uuid, or
+#                                                  # schema:<orgId> /
+#                                                  # schema:__platform__
+#   ./scripts/vault-verify.sh --record-id <uuid>   # check one record's chain
+#   ./scripts/vault-verify.sh --since <date>       # chains written since a date
 #   ./scripts/vault-verify.sh --json               # machine-readable report
+#
+# After a FAIL line, re-run with --chain-key and the key that line printed.
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,7 +50,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib-compose.sh"
 
 usage() {
-  sed -n '4,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '4,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 for arg in "$@"; do

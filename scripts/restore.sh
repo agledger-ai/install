@@ -7,8 +7,15 @@ set -euo pipefail
 # Restores PostgreSQL data from a backup tarball.
 # Works with both bundled PostgreSQL and external databases (Aurora, RDS, etc.).
 #
-# Usage: ./scripts/restore.sh backup/backup-2026-03-14-120000.tar.gz
-#        ./scripts/restore.sh --non-interactive backup/backup-2026-03-14-120000.tar.gz
+# Usage: ./scripts/restore.sh backup/backup-agledger-2026-03-14-120000.tar.gz
+#        ./scripts/restore.sh --non-interactive backup/backup-<project>-<ts>.tar.gz
+#        ./scripts/restore.sh --keep-version backup/backup-<project>-<ts>.tar.gz
+#
+# A backup carries the version it was taken from. When that is not the version
+# installed now, the restore returns the install to it, because the dump and the
+# schema have to agree: starting the newer release over an older dump re-applies
+# that release's migrations on top of it. --keep-version stays on the installed
+# release instead and says what that means.
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,6 +25,7 @@ source "${SCRIPT_DIR}/lib-compose.sh"
 
 NON_INTERACTIVE=false
 FORCE=false
+KEEP_VERSION=false
 
 log() { printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1"; }
 die() { log "ERROR: $1"; exit 1; }
@@ -28,17 +36,38 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --non-interactive) NON_INTERACTIVE=true; shift ;;
     --force) FORCE=true; shift ;;
+    --keep-version) KEEP_VERSION=true; shift ;;
     -*) die "Unknown option: $1" ;;
     *) TARBALL="$1"; shift ;;
   esac
 done
 
-[[ -n "${TARBALL}" ]] || die "Usage: $0 [--non-interactive] [--force] <backup-tarball>"
+[[ -n "${TARBALL}" ]] || die "Usage: $0 [--non-interactive] [--force] [--keep-version] <backup-tarball>"
 [[ -f "${TARBALL}" ]] || die "Backup file not found: ${TARBALL}"
 
 load_env
 detect_db_mode
+
+# The same .env repairs upgrade.sh performs, for the same reason and from the
+# other direction. A restore is the DR path: it commonly runs onto a rebuilt
+# host out of a checkout whose .env predates the repairs, and it ends by
+# starting the whole stack. Without this the restore brings up a Server with no
+# federation identity, no metrics scrape token, an unselected monitoring profile
+# and manual `docker compose` commands that drop the overlays, and reports a
+# clean restore. Above build_compose_cmd, because the COMPOSE_FILE repair is one
+# of them.
+reconcile_env_file "${COMPOSE_DIR}/.env"
+if [[ "$ENV_RECONCILED" == true ]]; then
+  log "Repaired ${COMPOSE_DIR}/.env (the lines above say what). Each repair only fills in a value"
+  log "that was absent, so it stands whether or not this restore goes ahead; the containers pick"
+  log "the repairs up when this run starts them."
+fi
+
 build_compose_cmd
+
+# Said before anything is dropped: an operator hunting for the right archive
+# needs to know the older default location still holds some.
+report_legacy_backup_root
 
 # --- Which database ---
 #
@@ -184,6 +213,118 @@ if ! pg_dump_magic_ok "${RESTORE_DIR}/db.dump"; then
   fi
   die "Nothing was stopped and nothing was dropped. Your install is serving exactly as it was."
 fi
+
+# --- The version this backup came from: decide ---
+#
+# A restore that puts back the data and leaves the install on the release it is
+# rolling back FROM is not a rollback. That is what happened: the restart re-ran
+# migrate, the newer release's migration went on top of the older dump, and
+# `/health/ready` reported the release the operator had just tried to leave.
+# Nothing in the run said so, and the `.pre-upgrade-version` marker upgrade.sh
+# writes was read by nothing.
+#
+# So the version travels IN the archive (backup.sh writes backup-metadata), and
+# the decision is made HERE, above the drop, with the image fetched before
+# anything is destroyed. A registry that cannot be reached is the ordinary
+# air-gap case, and discovering it after the database is gone leaves an operator
+# holding a rolled-back dump under a release that will migrate straight over it.
+# Every other precondition in this script is hoisted the same way, for the same
+# reason.
+#
+# The decision itself is a pure function so it can be driven in the deploy
+# guards without a database, a registry or a Docker daemon. Everything with a
+# side effect is either here (the pull) or in the applying half further down
+# (the .env write, once the data is actually back).
+#
+# Prints one word, and for `pin` the image reference to land on:
+#   unknown   the archive carries no version record
+#   same      the backup and the install are on one version
+#   keep      they differ and --keep-version was passed
+#   pin <ref> they differ and the install moves back to the backup's version
+restore_version_plan() {
+  local backup_version="$1" installed_version="$2" keep_version="$3" image_pin="$4" image="$5"
+  if [[ -z "${backup_version}" ]]; then
+    echo "unknown"
+  elif [[ "${backup_version}" == "${installed_version}" ]]; then
+    echo "same"
+  elif [[ "${keep_version}" == "true" ]]; then
+    echo "keep"
+  else
+    printf 'pin %s\n' "${image_pin:-${image}:${backup_version}}"
+  fi
+}
+
+BACKUP_VERSION="$(get_env_value agledger_version "${RESTORE_DIR}/backup-metadata")"
+BACKUP_IMAGE_PIN="$(get_env_value agledger_image_pin "${RESTORE_DIR}/backup-metadata")"
+BACKUP_PROJECT="$(get_env_value compose_project "${RESTORE_DIR}/backup-metadata")"
+INSTALLED_VERSION="$(get_env_value AGLEDGER_VERSION "${COMPOSE_DIR}/.env")"
+SERVING_VERSION="${INSTALLED_VERSION:-unknown}"
+# matched, mismatch, or unrecorded. Three, not two: an archive that carries no
+# version record is not a mismatch, because nothing here knows whether it is
+# one, and a run that claimed otherwise would be inventing the fact the
+# operator needs.
+VERSION_OUTCOME=matched
+
+# This archive belongs to another install on this host. Said, not refused:
+# cloning one install's data into a second stack is a real thing to do, and the
+# operator is the only one who knows which this is.
+THIS_PROJECT="$(compose_project_name)"
+if [[ -n "${BACKUP_PROJECT}" && "${BACKUP_PROJECT}" != "${THIS_PROJECT}" ]]; then
+  log "NOTE: this backup was taken by compose project '${BACKUP_PROJECT}'; this install is '${THIS_PROJECT}'."
+  log "      Its data, its credentials and the version below are that install's, not this one's."
+fi
+
+read -r VERSION_PLAN TARGET_REF <<< "$(restore_version_plan \
+  "${BACKUP_VERSION}" "${INSTALLED_VERSION}" "${KEEP_VERSION}" "${BACKUP_IMAGE_PIN}" "${AGLEDGER_IMAGE}")"
+
+if [[ "${VERSION_PLAN}" == "unknown" ]]; then
+  MARKER_VERSION="$(read_pre_upgrade_marker)"
+  VERSION_OUTCOME=unrecorded
+  log "This backup carries no version record: archives from earlier releases, and the ones"
+  log "  the chart's backup Job writes, do not include one."
+  log "  Nothing here can tell which release its schema came from, so the install stays on"
+  log "  ${SERVING_VERSION} and the restart re-applies that release's migrations over this dump."
+  # Only a version that could be installed. The marker records whatever the
+  # upgrade could establish, and that includes the literal string `unknown`.
+  if is_concrete_version "${MARKER_VERSION}"; then
+    log "  The rollback marker in $(backup_root) names ${MARKER_VERSION}. If this archive is that"
+    log "  upgrade's pre-upgrade backup, finish the rollback with:"
+    log "    ./scripts/install.sh --version ${MARKER_VERSION}"
+  fi
+elif [[ "${VERSION_PLAN}" == "same" ]]; then
+  log "Backup and install are both on ${BACKUP_VERSION}."
+elif [[ "${VERSION_PLAN}" == "keep" ]]; then
+  VERSION_OUTCOME=mismatch
+  log "This backup came from ${BACKUP_VERSION}; --keep-version keeps the install on ${SERVING_VERSION}."
+  log "  The restart re-applies ${SERVING_VERSION}'s migrations over a ${BACKUP_VERSION} dump."
+  log "  To land on ${BACKUP_VERSION} instead: ./scripts/install.sh --version ${BACKUP_VERSION}"
+else
+  log "This backup came from ${BACKUP_VERSION}; the install is on ${SERVING_VERSION}."
+  log "This restore returns the install to ${BACKUP_VERSION}, so the dump and the schema agree."
+  if ! docker image inspect "${TARGET_REF}" >/dev/null 2>&1; then
+    # The same authentication install.sh and upgrade.sh perform before their own
+    # pulls. Without it a private-registry install could not roll back at all:
+    # the pull fails with `no basic auth credentials`, and neither of the two
+    # ways forward printed below is the `docker login` that fixes it.
+    if [[ "${AGLEDGER_IMAGE}" != "agledger/agledger" ]]; then
+      log "Authenticating with ${AGLEDGER_IMAGE%%/*} before the pull..."
+      ecr_login
+    fi
+    log "Fetching ${TARGET_REF} before anything is dropped..."
+    if ! docker pull "${TARGET_REF}"; then
+      log ""
+      log "${TARGET_REF} is not on this host and could not be pulled, so this restore cannot"
+      log "finish on ${BACKUP_VERSION}. Two ways forward:"
+      log "  - make that image reachable and re-run this command: authenticate to the"
+      log "    registry ('docker login ${AGLEDGER_IMAGE%%/*}'), or 'docker load' it from an"
+      log "    air-gap bundle; or"
+      log "  - re-run with --keep-version to restore the data onto ${SERVING_VERSION}, which"
+      log "    re-applies ${SERVING_VERSION}'s migrations over a ${BACKUP_VERSION} dump."
+      die "Nothing was stopped and nothing was dropped. Your install is serving exactly as it was."
+    fi
+  fi
+fi
+
 
 # --- Is this database ours to drop? ---
 #
@@ -607,6 +748,58 @@ PGBOSS_OWNER_SQL
   fi
 fi
 
+# What the operator has to know about the database that is now on disk,
+# whichever way this run ends.
+#
+# These sat below the runtime-role gate's `die`, so the one path where they
+# matter most printed neither: a restore that stopped at the gate had replaced
+# api_keys and possibly lost the audit trigger, and said nothing about either.
+# The operator was told to run a grant and bring the stack up, and then met a
+# 401 with no explanation.
+post_restore_notes() {
+  if [[ "${AUDIT_TRIGGER_MISSING}" == "true" ]]; then
+    log "One thing did not come back: the audit-chain event trigger 'agledger_block_audit_drop'."
+    log "See the WARN above for the single statement that restores it. Your records and the"
+    log "signature chain are intact and verify offline; what is missing is the in-band DROP guard"
+    log "on the audit tables (layer 2 of the tamper model)."
+    log ""
+  fi
+  # The restore replaced api_keys with the backup's copy, so the credential
+  # situation changed underneath the operator and nothing else says so. Two ways
+  # to end up locked out of a healthy server holding all your data: a key minted
+  # after the backup (including the one a reinstall printed minutes ago) is gone
+  # with the table, and every restored key hashes under the API_KEY_SECRET that
+  # was in force when it was minted, so a fresh secret invalidates all of them
+  # at once.
+  log "Credentials now come from the backup, not from this install:"
+  log "  - Any key minted after the backup was taken no longer exists. That includes"
+  log "    the platform key a reinstall printed before this restore."
+  log "  - Restored keys only authenticate if API_KEY_SECRET matches the value that"
+  log "    was in force when they were minted. A different secret fails all of them."
+  log ""
+  log "Check with a key you expect to work:"
+  log "  curl -sS -o /dev/null -w '%{http_code}\\n' -H 'Authorization: Bearer <key>' http://localhost:${AGLEDGER_HOST_PORT:-3001}/v1/auth/me"
+  log ""
+  log "If that answers 401, mint a fresh platform key (the chain and every record"
+  log "are unaffected; this only issues a new credential):"
+  log "  ${COMPOSE[*]} exec agledger-api /nodejs/bin/node dist/scripts/init.js --non-interactive"
+}
+
+# The one line that says whether this run ended on the version the dump came
+# from. Both endings print it: the runtime-role gate below stops the run with
+# the database already restored, and that is exactly the operator who is about
+# to start the stack by hand.
+version_outcome_note() {
+  case "${VERSION_OUTCOME}" in
+    mismatch)
+      log "This install is on ${SERVING_VERSION}, NOT the version this backup came from." ;;
+    unrecorded)
+      log "This install is on ${SERVING_VERSION}; this backup does not record which version it came from." ;;
+    *)
+      log "This install is on ${SERVING_VERSION}, the version this backup came from." ;;
+  esac
+}
+
 # --- Runtime Role Gate ---
 #
 # The restore rebuilt the database, so it also rebuilt everything the runtime
@@ -630,10 +823,54 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
     log ""
     log "Your data is restored and intact — this is about access to it, not about the rows."
     log "The API and Worker are still stopped, so nothing is serving a half-configured database."
-    log "Run the grants the report names, then re-run:"
-    log "  ${COMPOSE[*]} up -d --wait"
+    if [[ "${VERSION_PLAN}" == pin ]]; then
+      # The version move happens below this gate, so it has not happened. An
+      # operator who brings the stack up by hand here lands on the release they
+      # are rolling back FROM, which is the whole defect this section exists for.
+      log "Run the grants the report names, then re-run THIS script: the move to ${BACKUP_VERSION}"
+      log "is applied after this check, so bringing the stack up by hand starts ${SERVING_VERSION}."
+      echo ""
+      log "This install is still on ${SERVING_VERSION}; this backup came from ${BACKUP_VERSION}."
+    else
+      log "Run the grants the report names, then re-run:"
+      log "  ${COMPOSE[*]} up -d --wait"
+      echo ""
+      version_outcome_note
+    fi
+    log ""
+    post_restore_notes
     die "Restore finished; the Server was not started."
   fi
+fi
+
+# --- The version this backup came from: apply ---
+#
+# The other half of the decision above, after the data is back and after the
+# runtime-role gate, so a run that stopped short leaves compose/.env describing
+# the install that is actually there. The gate runs the image the install is
+# still on, which is the one whose preflight this script knows how to ask.
+if [[ "${VERSION_PLAN}" == pin ]]; then
+  upsert_env_var AGLEDGER_VERSION "${BACKUP_VERSION}" "${COMPOSE_DIR}/.env"
+  if [[ -n "${BACKUP_IMAGE_PIN}" ]]; then
+    upsert_env_var AGLEDGER_IMAGE_PIN "${BACKUP_IMAGE_PIN}" "${COMPOSE_DIR}/.env"
+  else
+    # A pin left over from the release being rolled back names the wrong bytes
+    # and beats AGLEDGER_VERSION in every compose file, so the version write
+    # alone would change nothing.
+    delete_env_var AGLEDGER_IMAGE_PIN "${COMPOSE_DIR}/.env"
+  fi
+  # And in this process, because compose reads the environment before the file:
+  # `load_env` exports any `export KEY=value` line it finds in .env, so on an
+  # install written that way the stale value would beat everything just written
+  # and the restart would come up on the release being rolled back.
+  export AGLEDGER_VERSION="${BACKUP_VERSION}"
+  if [[ -n "${BACKUP_IMAGE_PIN}" ]]; then
+    export AGLEDGER_IMAGE_PIN="${BACKUP_IMAGE_PIN}"
+  else
+    unset AGLEDGER_IMAGE_PIN
+  fi
+  SERVING_VERSION="${BACKUP_VERSION}"
+  log "compose/.env now names ${BACKUP_VERSION}."
 fi
 
 # --- Restart all services ---
@@ -644,31 +881,7 @@ log "Restarting all services..."
 echo ""
 log "========================================="
 log "Restore complete."
+version_outcome_note
 log "========================================="
 log ""
-if [[ "${AUDIT_TRIGGER_MISSING}" == "true" ]]; then
-  log "One thing did not come back: the audit-chain event trigger 'agledger_block_audit_drop'."
-  log "See the WARN above for the single statement that restores it. Your records and the"
-  log "signature chain are intact and verify offline; what is missing is the in-band DROP guard"
-  log "on the audit tables (layer 2 of the tamper model)."
-  log ""
-fi
-# The restore replaced api_keys with the backup's copy, so the credential
-# situation changed underneath the operator and nothing else says so. Two ways
-# to end up locked out of a healthy server holding all your data: a key minted
-# after the backup (including the one a reinstall printed minutes ago) is gone
-# with the table, and every restored key hashes under the API_KEY_SECRET that
-# was in force when it was minted, so a fresh secret invalidates all of them
-# at once.
-log "Credentials now come from the backup, not from this install:"
-log "  - Any key minted after the backup was taken no longer exists. That includes"
-log "    the platform key a reinstall printed before this restore."
-log "  - Restored keys only authenticate if API_KEY_SECRET matches the value that"
-log "    was in force when they were minted. A different secret fails all of them."
-log ""
-log "Check with a key you expect to work:"
-log "  curl -sS -o /dev/null -w '%{http_code}\\n' -H 'Authorization: Bearer <key>' http://localhost:${AGLEDGER_HOST_PORT:-3001}/v1/auth/me"
-log ""
-log "If that answers 401, mint a fresh platform key (the chain and every record"
-log "are unaffected; this only issues a new credential):"
-log "  ${COMPOSE[*]} exec agledger-api /nodejs/bin/node dist/scripts/init.js --non-interactive"
+post_restore_notes

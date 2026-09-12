@@ -1,34 +1,77 @@
 AGLedger has been installed successfully.
 
+{{- /*
+  Every curl below is written against $apiBase, so the commands agree with how
+  this release is actually reached. They used to hardcode localhost:3001, which
+  is only a real address in the last branch, where the port-forward creates it:
+  an ingress install printed its real URL once and then ten commands against a
+  port nothing was listening on. 3001 is not the service port either (the
+  service is 80 -> 3000); it is the local end of that port-forward.
+*/ -}}
+{{- $apiBase := printf "http://localhost:3001" -}}
 {{- if (.Values.ingress).enabled }}
 {{- range .Values.ingress.hosts }}
   API URL:  https://{{ .host }}
 {{- end }}
+{{- with (first .Values.ingress.hosts) }}{{ $apiBase = printf "https://%s" .host }}{{ end }}
+{{- else if (.Values.route).enabled }}
+{{- if .Values.route.host }}
+  API URL:  {{ if ((.Values.route).tls).enabled }}https{{ else }}http{{ end }}://{{ .Values.route.host }}
+{{- $apiBase = printf "%s://%s" (ternary "https" "http" (((.Values.route).tls).enabled | default false)) .Values.route.host }}
+{{- else }}
+  API URL:  kubectl get route {{ include "agledger.fullname" . }} -o jsonpath='{.spec.host}'
+            (the router generates the hostname when route.host is unset)
+            The commands below use $AGLEDGER_URL; set it from that hostname:
+              export AGLEDGER_URL="{{ if ((.Values.route).tls).enabled }}https{{ else }}http{{ end }}://$(kubectl get route {{ include "agledger.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.spec.host}')"
+{{- $apiBase = "$AGLEDGER_URL" }}
+{{- end }}
 {{- else }}
   API URL:  kubectl port-forward svc/{{ include "agledger.fullname" . }} 3001:80
             then open http://localhost:3001
+            Every command below assumes that port-forward is running.
 {{- end }}
 
 Health check:
-  curl http://localhost:3001/health
+  curl {{ $apiBase }}/health
 
-{{- if ((.Values.postgres).bundled).enabled }}
-Database:   Bundled PostgreSQL (not recommended for production)
+Chain issuer: {{ include "agledger.externalUrl" . }}
+  Signed into every record, receipt and certificate as `iss`. Rows already
+  written keep it, so changing config.externalUrl later splits the chain into
+  two issuers instead of correcting it.
+
+{{- if (include "agledger.bundledPostgres" .) }}
+Database:   Bundled PostgreSQL
+  Licensed for production under Developer Edition. It has no PITR and no
+  backup of its own; see `backup.cronJob` in values.yaml. An external database
+  (RDS/Aurora, Cloud SQL, Azure) brings its provider's point-in-time recovery
+  and is the Enterprise path.
 {{- if not .Values.postgres.bundled.storageClassName }}
 
   NOTE: bundled PG provisions a PersistentVolumeClaim using your cluster's
   DEFAULT storageclass. If your cluster has none (e.g. EKS 1.30+, which ships
   no default), the PVC stays Pending and this install hangs. Check:
     kubectl get storageclass            # one row must be marked (default)
-    kubectl get pvc {{ include "agledger.fullname" . }}-pgdata   # should be Bound, not Pending
-  If there is no default, set an explicit class and re-run:
-    helm upgrade ... --set postgres.bundled.storageClassName=<class>   # e.g. gp3 on EKS
+    kubectl get pvc {{ include "agledger.fullname" . }}-pgdata -n {{ .Release.Namespace }}   # should be Bound, not Pending
+  If there is no default, name a class and re-run:
+    helm upgrade --install ... --set postgres.bundled.storageClassName=<class>   # e.g. gp3 on EKS
+  A PVC spec is immutable except for a few fields, so if that upgrade is
+  refused because the claim already exists, delete the Pending claim and run it
+  again. A claim that never bound holds nothing:
+    kubectl delete pvc {{ include "agledger.fullname" . }}-pgdata -n {{ .Release.Namespace }}
+  Naming the class before the first install avoids the question entirely.
 {{- else }}
 
   Bundled PG PVC uses storageclass: {{ .Values.postgres.bundled.storageClassName }}
 {{- end }}
 {{- else }}
 Database:   External (configured via DATABASE_URL secret)
+{{- if ((.Values.postgres).bundled).enabled }}
+
+  postgres.bundled.enabled is set too, and database.externalUrl wins: this
+  release runs no bundled PostgreSQL. Honouring both would stand one up reading
+  a POSTGRES_PASSWORD the chart does not write on this path. Clear one of the
+  two values to say which database you meant.
+{{- end }}
 {{- end }}
 
 Next steps:
@@ -37,25 +80,29 @@ Next steps:
        /nodejs/bin/node dist/scripts/init.js --non-interactive
 
   2. Verify health:
-     curl http://localhost:3001/health
+     curl {{ $apiBase }}/health
 
-  3. Check API docs:
-     http://localhost:3001/docs
+  3. Read the API surface (always on, no auth):
+     curl {{ $apiBase }}/openapi.json
+     curl {{ $apiBase }}/llms.txt
+{{- if eq .Values.config.nodeEnv "production" }}
+     Swagger UI at /docs is off under NODE_ENV=production. Turn it on with
+     --set extraEnv[0].name=SWAGGER_UI_ENABLED --set extraEnv[0].value=true
+{{- else }}
+     Swagger UI: {{ $apiBase }}/docs
+{{- end }}
 
   4. View license status:
-     curl -H "Authorization: Bearer <platform-key>" http://localhost:3001/v1/admin/license
+     curl -H "Authorization: Bearer <platform-key>" {{ $apiBase }}/v1/admin/license
 
   5. Apply an Enterprise license:
-     curl -X POST http://localhost:3001/v1/admin/license/reload \
+     curl -X POST {{ $apiBase }}/v1/admin/license/reload \
        -H "Authorization: Bearer <platform-key>"
 
-SCITT / COSE export surfaces (T1 audit interop):
-  - GET /v1/records/{id}/attestation               canonical COSE_Sign1 chain (application/cose-sequence)
-  - GET /v1/records/{id}/attestation?receipts=true Transparent Statements (Receipts at label 394)
-  - GET /v1/records/{id}/attestation.bundle        sigstore-bundle v0.3 projection
-  - POST /v1/scitt/entries                         register a customer Signed Statement → Receipt
-  - GET /.well-known/scitt-keys                    CBOR COSE_KeySet (unauthenticated)
-  Capability matrix: curl http://localhost:3001/v1/conformance | jq .capabilities
+SCITT / COSE export, A2A, MCP and the rest of the surface:
+  https://agledger.ai/docs
+  Capability matrix on this install:
+  curl {{ $apiBase }}/v1/conformance | jq .capabilities
 
 {{- if (.Values.provisioning).enabled }}
 
@@ -67,8 +114,59 @@ Provisioning:
   {{- if .Values.provisioning.prune }}
   Prune:       enabled (removed resources will be deactivated)
   {{- end }}
-  Reload:      curl -X POST -H "Authorization: Bearer <platform-key>" http://localhost:3001/v1/admin/provisioning/reload
+  Reload:      curl -X POST -H "Authorization: Bearer <platform-key>" {{ $apiBase }}/v1/admin/provisioning/reload
   Or:          kubectl exec deploy/{{ include "agledger.fullname" . }}-api -- kill -SIGHUP 1
+{{- end }}
+
+{{- if ((.Values.backup).preUpgrade).enabled }}
+{{- if not (or ((.Values.backup).s3).enabled ((.Values.backup).persistence).existingClaim (lookup "v1" "PersistentVolumeClaim" .Release.Namespace (printf "%s-backups" (include "agledger.fullname" .)))) }}
+
+Pre-upgrade backup:
+  No backup ran this time. Helm finishes every pre-upgrade hook before it
+  creates an ordinary resource, so the PersistentVolumeClaim this release just
+  created did not exist when the hook would have run. It does now, and the next
+  `helm upgrade` takes a backup before the migration. Scheduling the hook
+  against a claim that is not there yet does not fail fast: the pod stays
+  Pending and the upgrade blocks until its timeout.
+{{- end }}
+{{- end }}
+{{- if not .Values.secrets.existingSecret }}
+{{- if not .Values.secrets.gitops }}
+
+Handing this release to Argo CD, or to a `helm template | kubectl apply` job?
+  Set secrets.gitops=true first. The secrets this Secret generates are kept
+  across upgrades by reading it back with `lookup`, which answers only during a
+  real helm operation: a renderer gets nothing and mints new ones every sync.
+  secrets.gitops=true refuses that render and names what to supply instead.
+{{- end }}
+{{- end }}
+{{- if eq .Values.config.nodeEnv "production" }}
+
+Metrics:
+{{- if .Values.secrets.existingSecret }}
+  GET /metrics is gated. The chart mints no token on the existingSecret path,
+  so {{ .Values.secrets.existingSecret }} has to carry METRICS_AUTH_TOKEN itself if you want a
+  bearer-token scrape. Without that key the endpoint answers the ordinary
+  API-key chain (METRICS_AUTH_REQUIRED defaults true under NODE_ENV=production),
+  and monitoring.serviceMonitor points at a key that is not there.
+{{- else if not (eq (.Values.secrets.metricsAuthToken | default "") "-") }}
+  GET /metrics is gated. The release Secret carries the bearer token:
+    kubectl get secret {{ include "agledger.secretName" . }} -n {{ .Release.Namespace }} \
+      -o jsonpath='{.data.METRICS_AUTH_TOKEN}' | base64 -d
+  Prometheus scrape config:
+    authorization: { type: Bearer, credentials: <that token> }
+{{- if not ((.Values.monitoring).serviceMonitor).enabled }}
+  With the Prometheus Operator installed, the chart writes that scrape config
+  for you:
+    --set monitoring.serviceMonitor.enabled=true
+    --set monitoring.prometheusRule.enabled=true      # the 29 shipped alerts
+    --set monitoring.grafanaDashboards.enabled=true   # the 3 shipped dashboards
+{{- end }}
+{{- else }}
+  secrets.metricsAuthToken is "-", so no token is minted and GET /metrics
+  answers the ordinary API-key chain (METRICS_AUTH_REQUIRED defaults true
+  under NODE_ENV=production). Scrape it with a platform or admin key.
+{{- end }}
 {{- end }}
 
 {{- if not .Values.image.digest }}
@@ -77,7 +175,7 @@ Image pin (production hardening):
   Your deployment pulls `{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}` with
   `pullPolicy: {{ .Values.image.pullPolicy }}`. Kubelet's tag-name cache means a node that
   previously pulled ANY image under this tag will NOT re-pull on the next
-  deploy — pods can silently boot against stale layers when a tag is
+  deploy: pods can silently boot against stale layers when a tag is
   re-pushed. For production, pin by content hash:
 
     helm upgrade ... \
@@ -97,6 +195,19 @@ OpenShift mode is ON:
   from the image's own USER 65532 and, on OpenShift, from restricted-v2 itself.
   Container hardening is unchanged (read-only root filesystem, no privilege
   escalation, all capabilities dropped).
+{{- if .Values.networkPolicy.enabled }}
+
+  The API NetworkPolicy also admits the OpenShift router (the openshift-ingress
+  namespace, by either the metadata.name or policy-group label). Without that
+  an admitted Route returns 503 and the pod logs show nothing, because the
+  connection never reaches it.
+{{- end }}
+{{- if not (.Values.route).enabled }}
+
+  Exposure is still yours to declare. For a native Route:
+    --set route.enabled=true --set route.host=agledger.apps.example.com
+  Enable route OR ingress, not both.
+{{- end }}
 {{- else }}
 
 Running on OpenShift?

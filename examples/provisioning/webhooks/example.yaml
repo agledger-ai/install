@@ -52,8 +52,19 @@ webhooks:
     recordTypes:
       - CUSTOM-INVOICE-v1
 
-  # Agent-owned webhook — all events (no eventTypes filter) for the monitoring
-  # agent. `ownerOrgName` disambiguates the agent's displayName within its org.
+  # Agent-owned webhook for the monitoring agent. `ownerOrgName` disambiguates
+  # the agent's displayName within its org.
+  #
+  # No eventTypes filter means every event type, but the SCOPE is the agent:
+  # record events reach this subscription only for records that agent is a party
+  # to, as principal or as performer. An agent subscribing to its own work is a
+  # different thing from an agent receiving everything the org writes, and only
+  # the first is the agent's own data. For org-wide delivery use ownerType: org
+  # above.
+  #
+  # Declared by the operator, here or through the admin API. Webhook management
+  # is an org-admin operation: webhooks:manage is admin-only, so an agent-role
+  # key cannot be minted with it and an agent cannot subscribe itself.
   - ownerName: External Monitor Agent
     ownerType: agent
     ownerOrgName: Acme Corp

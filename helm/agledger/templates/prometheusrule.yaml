@@ -1,0 +1,19 @@
+{{- include "agledger.validateValues" . -}}
+{{- if ((.Values.monitoring).prometheusRule).enabled }}
+{{- /* The rules file is the SAME file the Compose stack mounts into its
+       Prometheus: templates/../files/alerts is a symlink to deploy/monitoring/
+       alerts, so there is one copy of these rules in the repo and the two
+       packaging paths cannot drift. The alert-expression coverage test in the
+       API build reads that same path. */}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "agledger.fullname" . }}
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    {{- with ((.Values.monitoring).prometheusRule).additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- .Files.Get "files/alerts/agledger.rules.yml" | nindent 2 }}
+{{- end }}

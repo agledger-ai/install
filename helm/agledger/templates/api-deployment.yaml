@@ -22,6 +22,15 @@ spec:
         {{- include "agledger.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
       annotations:
+        {{- /* Annotation-based discovery has no way to carry a credential: the
+               conventional kubernetes-pods scrape job reads these three keys and
+               nothing else. /metrics is gated by default under
+               NODE_ENV=production, so a Prometheus discovering this pod that way
+               needs the bearer token added to its own scrape job (the release
+               Secret's METRICS_AUTH_TOKEN), or it collects 401s. The
+               ServiceMonitor the chart can render carries the credential itself;
+               these annotations stay because they are still how the pod is
+               found. */}}
         prometheus.io/scrape: "true"
         prometheus.io/port: "3000"
         prometheus.io/path: "/metrics"
@@ -107,12 +116,18 @@ spec:
               mountPath: /tmp
             {{- include "agledger.licenseVolumeMount" . | nindent 12 }}
             {{- include "agledger.provisioningVolumeMounts" . | nindent 12 }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
         {{- include "agledger.licenseVolume" . | nindent 8 }}
         {{- include "agledger.provisioningVolumes" . | nindent 8 }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.api.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

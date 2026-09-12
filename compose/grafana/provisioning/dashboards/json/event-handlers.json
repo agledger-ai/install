@@ -69,7 +69,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(sum(increase(agledger_api_key_last_used_update_failures_total[24h])) or vector(0)) + (sum(increase(agledger_auth_audit_persist_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cache_invalidation_drops_total[24h])) or vector(0)) + (sum(increase(agledger_cascade_cancel_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cascade_rollup_retry_exhausted_total[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_persist_event_failures_total[24h])) or vector(0)) + (sum(increase(agledger_federation_audit_vault_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_forensic_audit_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_enqueue_failed_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_event_persist_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_publish_failures_total[24h])) or vector(0)) + (sum(increase(agledger_federation_record_state_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_gate_dlq_advisory_pass_lost_total[24h])) or vector(0)) + (sum(increase(agledger_inline_phase2_failures_total[24h])) or vector(0)) + (sum(increase(agledger_llms_txt_customization_load_failures_total[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_persist_event_failures_total[24h])) or vector(0)) + (sum(increase(agledger_post_commit_callback_failures_total[24h])) or vector(0)) + (sum(increase(agledger_provisioning_reload_failures_total[24h])) or vector(0)) + (sum(increase(agledger_reputation_update_failures_total[24h])) or vector(0)) + (sum(increase(agledger_schema_warmcache_refresh_failures_total[24h])) or vector(0)) + (sum(increase(agledger_siem_file_lines_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_siem_http_batches_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_siem_mapper_failures_total[24h])) or vector(0)) + (sum(increase(agledger_siem_poll_failures_total[24h])) or vector(0)) + (sum(increase(agledger_support_bundle_audit_failures_total[24h])) or vector(0)) + (sum(increase(agledger_webhook_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_webhook_audit_persist_failures_total[24h])) or vector(0))",
+          "expr": "(sum(increase(agledger_api_key_last_used_update_failures_total[24h])) or vector(0)) + (sum(increase(agledger_auth_audit_persist_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cache_invalidation_drops_total[24h])) or vector(0)) + (sum(increase(agledger_cascade_cancel_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cascade_rollup_retry_exhausted_total[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_persist_event_failures_total[24h])) or vector(0)) + (sum(increase(agledger_federation_audit_vault_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_forensic_audit_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_enqueue_failed_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_event_persist_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_publish_failures_total[24h])) or vector(0)) + (sum(increase(agledger_federation_record_state_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_gate_abandon_entry_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_gate_dlq_advisory_pass_lost_total[24h])) or vector(0)) + (sum(increase(agledger_inline_phase2_failures_total[24h])) or vector(0)) + (sum(increase(agledger_llms_txt_customization_load_failures_total[24h])) or vector(0)) + (sum(increase(agledger_oidc_admin_org_binding_failures_total[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_persist_event_failures_total[24h])) or vector(0)) + (sum(increase(agledger_post_commit_callback_failures_total[24h])) or vector(0)) + (sum(increase(agledger_provisioning_reload_failures_total[24h])) or vector(0)) + (sum(increase(agledger_schema_warmcache_refresh_failures_total[24h])) or vector(0)) + (sum(increase(agledger_siem_file_lines_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_siem_http_batches_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_siem_mapper_failures_total[24h])) or vector(0)) + (sum(increase(agledger_siem_poll_failures_total[24h])) or vector(0)) + (sum(increase(agledger_support_bundle_audit_failures_total[24h])) or vector(0)) + (sum(increase(agledger_webhook_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_webhook_audit_persist_failures_total[24h])) or vector(0))",
           "legendFormat": "drops in last 24h",
           "refId": "A"
         }
@@ -540,7 +540,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "A cascade-rollup job gave up after every pg-boss retry. If the failing job was the last child's, the parent is stranded ACTIVE with every child terminal and nothing rolls it up; if other children were still outstanding, a later one rolls the parent up normally and only this attempt was lost. The auto-rollup consistency sweep (agledger_auto_rollup_stuck_parents_total, data-integrity dashboard) is what distinguishes the two. That sweep runs every five minutes and only counts a parent idle for five, so expect it five to ten minutes later. This counter names the cause at the moment it happens.",
+      "description": "A cascade-rollup job gave up after every pg-boss retry. If the failing job was the last child's, the parent is stranded ACTIVE with every child terminal and nothing rolls it up; if other children were still outstanding, a later one rolls the parent up normally and only this attempt was lost. The auto-rollup consistency sweep (agledger_auto_rollup_stuck_parents_total, data-integrity dashboard) settles the parent either way: it rolls up any ACTIVE parent whose children are all terminal once the tree has been quiet for five minutes, and it runs every five minutes, so expect the settlement five to ten minutes later. This counter names the cause at the moment it happens, which the sweep cannot.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -744,7 +744,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Reputation cache update failures. Intentionally swallowed at the call site (reputation is eventual-consistency convenience, not chain data) \u2014 this counter measures the eventual-consistency drift rate.",
+      "description": "Gate abandon entries that could not be appended. The pass opened with GATE_STARTED, ended with no verdict, and the entry that says so was dropped, so the chain reads the same as a gate still running. Pairs with agledger_gate_abandoned_total, which counts the abandons that did reach the chain.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -758,8 +758,8 @@
                 "value": null
               },
               {
-                "color": "yellow",
-                "value": 0.01
+                "color": "red",
+                "value": 0.001
               }
             ]
           },
@@ -773,11 +773,12 @@
         "x": 12,
         "y": 46
       },
-      "id": 110,
+      "id": 135,
       "options": {
         "legend": {
           "calcs": [
-            "max"
+            "max",
+            "mean"
           ],
           "displayMode": "table",
           "placement": "bottom",
@@ -785,7 +786,7 @@
         },
         "tooltip": {
           "mode": "multi",
-          "sort": "none"
+          "sort": "desc"
         }
       },
       "targets": [
@@ -794,12 +795,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (event) (rate(agledger_reputation_update_failures_total[5m]))",
-          "legendFormat": "{{event}}",
+          "expr": "sum(rate(agledger_gate_abandon_entry_dropped_total[5m]))",
+          "legendFormat": "agledger_gate_abandon_entry_dropped_total",
           "refId": "A"
         }
       ],
-      "title": "Reputation cache update failures",
+      "title": "Gate abandon chain entries dropped (drops/sec)",
       "type": "timeseries"
     },
     {
@@ -2051,6 +2052,70 @@
         }
       ],
       "title": "Webhook lifecycle audit drops",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Admin-role OIDC bearers (Mode 1 SSO) refused because no single Org could be bound to them. The refusal is silent by construction: the plugin's contract is to fall through to API-key auth on any failure, so the operator sees a 401 \"Missing API key\" and nothing says the trust anchor is the reason. `reason` names which: `multiple_orgs`/`no_org` mean a global trusted_issuers row (org_id NULL) matched on a Server that does not have exactly one Org, `ambiguous_issuer_rows` means two rows for the same (issuer, audience) sit under different Orgs, `lookup_failed` means the orgs read itself failed. Any non-zero rate is an SSO admin locked out by configuration, not by credentials.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 137
+      },
+      "id": 134,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (reason) (rate(agledger_oidc_admin_org_binding_failures_total[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Admin OIDC org-binding refusals",
       "type": "timeseries"
     }
   ],

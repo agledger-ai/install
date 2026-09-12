@@ -1,14 +1,36 @@
-# Standalone agents — each names its owning org via `orgName` (agents.org_id is
+# Standalone agents - each names its owning org via `orgName` (agents.org_id is
 # NOT NULL). The org must already exist (declared under orgs/ or provisioned in
 # an earlier run). The natural key is (orgName, displayName).
 agents:
   - displayName: External Monitor Agent
     orgName: Acme Corp
     agentClass: system
-    apiKeys:
-      - role: agent
-        label: monitor-key
-        scopes:
-          - records:read
-          - completions:read
-          - webhooks:manage
+    # The external identity this agent answers to. Declared here, on our side,
+    # so POST /v1/auth/oidc/cert can resolve the agent from an IdP token that
+    # carries no AGLedger id: the `sub` of an Azure managed identity, a
+    # Kubernetes service-account token or a SPIFFE workload is not a value you
+    # can change, and this is how you avoid needing to. `oidcIss` has to match a
+    # registered trusted_issuers row. Both keys or neither: a subject is unique
+    # only within its issuer.
+    #
+    # oidcIss: https://login.microsoftonline.com/<tenant>/v2.0
+    # oidcSub: 11111111-2222-3333-4444-555555555555
+    # API keys are commented out for the reason given in orgs/example.yaml: a
+    # key the Server mints during boot has no plaintext readout on any surface.
+    # Supply your own material (shape 1), or add the entry to a running Server
+    # and mint it through POST /v1/admin/provisioning/reload (shape 2).
+    #
+    # apiKeys:
+    #   - role: agent
+    #     label: monitor-key
+    #     apiKey: ${ACME_MONITOR_KEY}
+    #     scopes:
+    #       - records:read
+    #       - completions:read
+    #       - events:read
+    #     # Not webhooks:manage. That scope is admin-only, so minting an
+    #     # agent-role key with it is refused (SCOPE_ROLE_MISMATCH), and
+    #     # managing subscriptions is an org-admin operation. An agent-owned
+    #     # subscription is still a supported shape: declare it under
+    #     # webhooks/ (see the example there), where the operator owns it and
+    #     # the agent receives events for the records it is a party to.
