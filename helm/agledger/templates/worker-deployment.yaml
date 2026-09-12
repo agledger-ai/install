@@ -27,6 +27,12 @@ spec:
         # process. Without these annotations the prometheus-pod-discoverer
         # only sees the API and operators get HELP/TYPE only on the worker
         # counter half of /metrics.
+        #
+        # Discovery only: these three keys are all a kubernetes-pods scrape job
+        # reads, so there is nowhere in them to put a credential. /metrics takes
+        # the METRICS_AUTH_TOKEN bearer on this process too when one is set, so a
+        # Prometheus that finds the pod this way needs the token in its own
+        # scrape job. The chart's ServiceMonitor carries it already.
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.worker.healthPort | quote }}
         prometheus.io/path: "/metrics"
@@ -103,12 +109,18 @@ spec:
               mountPath: /tmp
             {{- include "agledger.licenseVolumeMount" . | nindent 12 }}
             {{- include "agledger.provisioningVolumeMounts" . | nindent 12 }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
         {{- include "agledger.licenseVolume" . | nindent 8 }}
         {{- include "agledger.provisioningVolumes" . | nindent 8 }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.worker.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -112,9 +112,12 @@ check "Readiness check" "$BASE_URL/health/ready" "status" "ready"
 # capability additions.
 check "Conformance envelope" "$BASE_URL/v1/conformance" "capabilities | type" "object"
 
-# Schema endpoint health — fresh installs ship with zero active schemas
-# (built-ins are DISABLED post-v0.22.11 so customers register their own).
-# We just verify the endpoint responds with a valid envelope.
+# Schema endpoint health. A fresh install is not an empty catalogue: bootstrap
+# seeds the example contracts per org (AGLEDGER_SEED_EXAMPLE_SCHEMAS, default
+# true), and this unauthenticated read returns every type on the install, so
+# the count here should match what /llms.txt advertises. Zero is still a valid
+# answer (seeding turned off, or every type disabled), so the assertion is on
+# the envelope, not the count.
 SCHEMA_RESPONSE=$(curl -sf "$BASE_URL/v1/schemas" 2>/dev/null || echo "")
 SCHEMA_COUNT=$(echo "$SCHEMA_RESPONSE" | jq '.data | length' 2>/dev/null || echo "")
 if [[ -n "$SCHEMA_COUNT" ]] && [[ "$SCHEMA_COUNT" =~ ^[0-9]+$ ]]; then
@@ -189,9 +192,9 @@ elif [[ -n "$VERIFY_STATE" ]]; then
             fi
         fi
 
-        # Verify schemas endpoint still responds. Built-ins ship DISABLED
-        # post-v0.22.11; the smoke-test contract registered in create mode is
-        # the load-bearing schema we expect to see.
+        # Verify schemas endpoint still responds. The load-bearing row is the
+        # smoke-test contract registered in create mode; the seeded example
+        # contracts make up the rest of the count.
         api GET "/v1/schemas"
         if [[ "$HTTP_CODE" == "200" ]]; then
             V_SCHEMAS=$(echo "$API_BODY" | jq '.data | length' 2>/dev/null || echo "0")
@@ -230,8 +233,8 @@ else
     if [[ -n "${ORG_ID:-}" ]]; then
 
         # Step 2: Create an agent via admin API (performer for the record).
-        # `orgId` is required; `name` is the canonical field.
-        api POST "/v1/admin/agents" "{\"orgId\":\"${ORG_ID}\",\"name\":\"Smoke Test Agent\"}"
+        # `orgId` is required; `displayName` is the canonical field.
+        api POST "/v1/admin/agents" "{\"orgId\":\"${ORG_ID}\",\"displayName\":\"Smoke Test Agent\"}"
         if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
             AGENT_ID=$(echo "$API_BODY" | jq -r '.id // empty' 2>/dev/null || true)
             if [[ -n "$AGENT_ID" ]]; then

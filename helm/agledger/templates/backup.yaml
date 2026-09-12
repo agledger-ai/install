@@ -1,0 +1,100 @@
+{{- include "agledger.validateValues" . -}}
+{{- $backupOn := or ((.Values.backup).cronJob).enabled ((.Values.backup).preUpgrade).enabled }}
+{{- $pvcName := printf "%s-backups" (include "agledger.fullname" .) }}
+{{- $existingClaim := ((.Values.backup).persistence).existingClaim }}
+{{- $s3On := ((.Values.backup).s3).enabled }}
+{{- if $backupOn }}
+{{- if and (not $existingClaim) (not $s3On) (not ((.Values.backup).persistence).enabled) }}
+{{- fail "backup is enabled but has nowhere to write. Set backup.persistence.enabled=true for a chart-managed PersistentVolumeClaim, backup.persistence.existingClaim for one you already have, or backup.s3.enabled with a bucket. A backup Job with no destination succeeds against an emptyDir the pod then deletes." }}
+{{- end }}
+{{- if and $s3On (not ((.Values.backup).s3).bucket) }}
+{{- fail "backup.s3.enabled is true with no backup.s3.bucket. The upload would run `aws s3 cp ... s3:///backup-<ts>.tar.gz` and fail after the dump, every night, on a schedule nobody is watching. Set backup.s3.bucket." }}
+{{- end }}
+{{- end }}
+
+{{- if and ((.Values.backup).persistence).enabled (not $existingClaim) $backupOn }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $pvcName }}
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+  {{- /* Kept when the release is uninstalled. A helm uninstall that deletes the
+         backups is the one moment an operator most needs them. */}}
+  annotations:
+    "helm.sh/resource-policy": keep
+spec:
+  accessModes:
+    {{- toYaml (((.Values.backup).persistence).accessModes | default (list "ReadWriteOnce")) | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ ((.Values.backup).persistence).size | default "20Gi" }}
+  {{- with ((.Values.backup).persistence).storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}
+
+{{- if ((.Values.backup).cronJob).enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "agledger.fullname" . }}-backup
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ ((.Values.backup).cronJob).schedule | default "0 2 * * *" | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ ((.Values.backup).cronJob).successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ ((.Values.backup).cronJob).failedJobsHistoryLimit | default 3 }}
+  {{- with ((.Values.backup).cronJob).startingDeadlineSeconds }}
+  startingDeadlineSeconds: {{ . }}
+  {{- end }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ ((.Values.backup).cronJob).backoffLimit | default 2 }}
+      ttlSecondsAfterFinished: 86400
+      template:
+        {{- include "agledger.backupPodTemplate" (dict "root" . "component" "backup") | nindent 8 }}
+{{- end }}
+
+{{- /* Does a destination exist ALREADY, before this release's manifests are
+       applied? The chart-managed PVC is a plain resource, and Helm runs every
+       pre-upgrade hook to completion before it creates one, so the upgrade that
+       first enables both would schedule a pod against a claim that does not
+       exist: it stays Pending, the Job never completes, and `helm upgrade`
+       blocks until its timeout with the release stuck in pending-upgrade.
+       `lookup` reads the live cluster on a real install and returns empty under
+       `helm template`, which is why the render tests pin an existingClaim. */}}
+{{- $destinationExists := or $s3On $existingClaim (lookup "v1" "PersistentVolumeClaim" .Release.Namespace $pvcName) }}
+{{- if and ((.Values.backup).preUpgrade).enabled $destinationExists }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "agledger.fullname" . }}-backup-preupgrade
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+  annotations:
+    {{- /* -11 is ahead of the ConfigMap and Secret, which are pre-install,
+           pre-upgrade hooks at -10, and therefore ahead of the migration Job's
+           -5 as well. The Secret ordering is the load-bearing half: this Job
+           reads DATABASE_URL out of it, so at any weight above -10 an upgrade
+           that also changes the database URL would back up the NEW database,
+           pass the archive check, and report success having captured nothing of
+           the one about to be migrated. Every pre-upgrade hook runs before the
+           bundled path's normal-resource migration, so one weight covers both
+           database paths. A failure here aborts the upgrade with nothing
+           migrated, which is the point. */}}
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-11"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    {{- include "agledger.backupPodTemplate" (dict "root" . "component" "backup") | nindent 4 }}
+{{- end }}

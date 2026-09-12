@@ -28,7 +28,7 @@ set -euo pipefail
 #
 # Quick start:
 #   ./scripts/agl-deploy.sh -H agl@HOST -i ~/.ssh/agl install
-#   ./scripts/agl-deploy.sh -H agl@HOST -i ~/.ssh/agl tunnel    # then curl localhost:3001/health
+#   ./scripts/agl-deploy.sh -H agl@HOST -i ~/.ssh/agl tunnel    # then curl localhost:3001/health/ready
 # =============================================================================
 
 # --- Inline helpers (kept in lockstep with scripts/lib-compose.sh) ---
@@ -222,7 +222,8 @@ confirm() {
 # --- Commands ----------------------------------------------------------------
 
 # Idempotent prereq install: installs ONLY what's missing (Docker CE via the
-# official convenience script, apt packages, cosign from its GitHub release).
+# official convenience script, apt packages, cosign from a pinned GitHub
+# release whose SHA-256 is checked before the binary is installed).
 # Escalates with sudo only when there's actually something to install, and
 # fails loudly with the gap list if root is needed but unavailable — it never
 # hangs on a hidden password prompt.
@@ -276,16 +277,37 @@ fi
 # Let the (non-root) login user reach docker without sudo on the NEXT session.
 if [ "$NEED_GROUP" = 1 ] && [ "$(id -u)" -ne 0 ]; then $SUDO usermod -aG docker "$(id -un)" || true; fi
 if [ "$NEED_COSIGN" = 1 ]; then
+  # cosign is the tool that verifies the AGLedger image, so it is pinned to one
+  # release and matched against a digest carried in this script. cosign cannot
+  # verify its own bootstrap; the pinned digest is what closes that circle. To
+  # raise the version, take COSIGN_VERSION and both digests from that release's
+  # cosign_checksums.txt and change all three together.
+  COSIGN_VERSION=v3.1.3
   case "$(uname -m)" in
-    x86_64|amd64) COSARCH=amd64 ;;
-    aarch64|arm64) COSARCH=arm64 ;;
+    x86_64|amd64)
+      COSARCH=amd64
+      COSSHA=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71 ;;
+    aarch64|arm64)
+      COSARCH=arm64
+      COSSHA=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a ;;
     *) echo "WARN: no cosign build for $(uname -m); image verification will be skipped" >&2; COSARCH="" ;;
   esac
   if [ -n "$COSARCH" ]; then
     TMP="$(mktemp)"
-    curl -fsSL -o "$TMP" "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-${COSARCH}"
+    trap 'rm -f "$TMP"' EXIT
+    curl -fsSL -o "$TMP" "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-${COSARCH}"
+    if have sha256sum; then COSGOT="$(sha256sum "$TMP" | cut -d' ' -f1)"
+    else COSGOT="$(openssl dgst -sha256 -r "$TMP" | cut -d' ' -f1)"; fi
+    if [ "$COSGOT" != "$COSSHA" ]; then
+      echo "ERROR: cosign ${COSIGN_VERSION} linux-${COSARCH} does not match its published digest. Nothing was installed." >&2
+      echo "  expected ${COSSHA}" >&2
+      echo "  got      ${COSGOT}" >&2
+      echo "  Install cosign ${COSIGN_VERSION} yourself from https://github.com/sigstore/cosign/releases and re-run." >&2
+      exit 1
+    fi
     $SUDO install -m 0755 "$TMP" /usr/local/bin/cosign
     rm -f "$TMP"
+    trap - EXIT
   fi
 fi
 echo "bootstrap: docker=$(docker --version 2>/dev/null || echo missing) cosign=$(cosign version 2>/dev/null | head -1 || echo missing)"
@@ -355,8 +377,27 @@ cmd_upgrade() {
   script=$(cat <<'AGLR'
 VERSION="$(d64 "$1")"; REMOTE_DIR="$(d64 "$2")"
 cd "$REMOTE_DIR"
-git fetch --tags --quiet || true
-git -c advice.detachedHead=false checkout --quiet "v${VERSION}" 2>/dev/null || true
+# The self-update is the point of this step: upgrade.sh never updates itself, so
+# a release's .env reconciles only reach the host by moving the checkout onto
+# that release's tag. Both halves used to be `|| true`, so a tag that does not
+# exist yet, or a checkout with local edits, silently ran the OLD upgrade.sh and
+# the wrapper still printed "Upgrade complete".
+#
+# A failed fetch is survivable on its own: the tag may already be local. Landing
+# on the tag is not, so it is asserted rather than assumed.
+git fetch --tags --quiet || echo "WARN: git fetch failed; falling back to the tags already in ${REMOTE_DIR}" >&2
+if ! git -c advice.detachedHead=false checkout --quiet "v${VERSION}"; then
+  echo "ERROR: could not check out v${VERSION} in ${REMOTE_DIR}." >&2
+  echo "  If the tag is missing, the release may not be published yet, or this checkout's remote" >&2
+  echo "  does not carry it. If the tree is dirty, commit or discard the local changes first:" >&2
+  echo "    ssh <target> 'cd ${REMOTE_DIR} && git status --short'" >&2
+  echo "  Refusing to run the installed (older) upgrade.sh against ${VERSION}." >&2
+  exit 1
+fi
+if [ "$(git rev-parse --verify HEAD)" != "$(git rev-parse --verify "v${VERSION}^{commit}")" ]; then
+  echo "ERROR: ${REMOTE_DIR} is not on v${VERSION} after checkout. Refusing to run its upgrade.sh." >&2
+  exit 1
+fi
 # upgrade.sh prompts on its own stdin; give it an explicit "y" so it never
 # reads from the bash -s script stream.
 printf 'y\n' | scripts/upgrade.sh "$VERSION"
@@ -444,7 +485,7 @@ AGLR
 cmd_tunnel() {
   require_target
   step "Tunnel: localhost:${LOCAL_PORT} -> ${AGL_SSH_TARGET} :${REMOTE_PORT} (Ctrl-C to close)"
-  info "In another shell: curl http://localhost:${LOCAL_PORT}/health"
+  info "In another shell: curl http://localhost:${LOCAL_PORT}/health/ready"
   exec ssh -N -L "${LOCAL_PORT}:localhost:${REMOTE_PORT}" "${SSH_OPTS[@]}" "$AGL_SSH_TARGET"
 }
 

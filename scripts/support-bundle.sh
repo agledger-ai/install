@@ -73,7 +73,7 @@ collect "docker compose logs (last 1000 lines)" "compose-logs.txt" \
 #
 # `pg_stat_user_tables` reports a partitioned parent's own heap, and a
 # partitioned table (relkind 'p') has no heap of its own, so audit_vault,
-# events, system_audit_log, webhook_deliveries, federation_reputation_contributions
+# events, system_audit_log, webhook_deliveries
 # and pgboss.job all read as 0 rows and 0 bytes no matter how full they are.
 # Roll each partition tree up into its parent and drop the leaf rows, so a
 # reader is not summing partitions by hand and the counts agree with

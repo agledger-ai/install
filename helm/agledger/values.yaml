@@ -309,7 +309,13 @@ migrate:
 # Database (PostgreSQL)
 # ---
 database:
-  externalUrl: ""  # required if postgres.bundled.enabled is false.
+  externalUrl: ""  # required if postgres.bundled.enabled is false, and it WINS
+                   # over postgres.bundled.enabled when both are set: the chart
+                   # renders no bundled PostgreSQL, and the release is an
+                   # external-database one in every other respect too (hook
+                   # migration, runtime-role preflight gate, outbound database
+                   # egress, and no ALLOW_DB_WITHOUT_SSL, so the production
+                   # sslmode= requirement stands). See postgres.bundled.enabled.
                    # IMPORTANT: the role that runs MIGRATIONS (this URL, or
                    # secrets.databaseUrlMigrate if set) must be a SUPERUSER —
                    # rds_superuser on Amazon RDS/Aurora, a true superuser on
@@ -388,6 +394,20 @@ database:
 
 postgres:
   bundled:
+    # database.externalUrl takes precedence over this flag. With both set the
+    # chart renders no bundled PostgreSQL at all, because honouring both breaks
+    # the install: the Secret the chart writes carries the external DATABASE_URL
+    # and no POSTGRES_PASSWORD, so the bundled Deployment asks for a Secret key
+    # that was never written and sits in CreateContainerConfigError behind a PVC
+    # you are billed for, while `helm install --wait` blocks on a database the
+    # API never uses. Switching an existing bundled release to an external
+    # database therefore drops the bundled PVC from the release, exactly as
+    # setting this to false does, and on the default Delete reclaim policy that
+    # takes the volume with it; back it up first if you want what is on it.
+    #
+    # The precedence is the same under secrets.existingSecret, where the chart
+    # writes no Secret and reads no key out of yours: naming database.externalUrl
+    # there still means this release runs no bundled PostgreSQL.
     enabled: false
     image: postgres:18-alpine
     # Server-side guards for the bundled instance, matched to what the Compose
@@ -408,6 +428,8 @@ postgres:
       shared_buffers: 256MB
       statement_timeout: 30s
     password: ""  # Empty = auto-generated 32-char random, preserved across upgrades (like apiKeySecret). Set to pin a specific password; also used in DATABASE_URL.
+                  # Preservation reads the release Secret, which needs a real helm install: under a
+                  # renderer it regenerates and stops matching what initdb set. See secrets.gitops.
     storage: 10Gi
     # storageClassName for the bundled-PG data PVC. Leave empty ("") to use the
     # cluster's DEFAULT storageclass. Bundled PG REQUIRES either a default
@@ -458,6 +480,46 @@ extraEnv: []
   #     secretKeyRef:
   #       name: agledger-webhook-secrets
   #       key: acme
+
+# ---
+# Extra volumes on the API and worker pods
+# ---
+# For settings that take a FILE PATH rather than a value. `extraEnv` sets the
+# variable; these put the file where it points. Without them, three of the four
+# /llms.txt customization knobs were unreachable on Kubernetes: they name a path
+# and the chart had no way to deliver one, so the env var pointed at nothing, the
+# Server fell back to the built-in template, and the only evidence was a WARN
+# plus agledger_llms_txt_customization_load_failures_total. The Compose path
+# says "mount the files into the container" and could; this one could not.
+#
+# Rendered on both workloads, so a file the API reads is also present for the
+# worker rather than being half-configured.
+#
+# Serving a customized /llms.txt, end to end:
+#
+#   kubectl create configmap agledger-llms-txt \
+#     --from-file=prepend.md --from-file=append.md
+#
+#   extraVolumes:
+#     - name: llms-txt
+#       configMap:
+#         name: agledger-llms-txt
+#   extraVolumeMounts:
+#     - name: llms-txt
+#       mountPath: /etc/agledger/llms-txt
+#       readOnly: true
+#   extraEnv:
+#     - name: AGLEDGER_LLMS_TXT_PREPEND_PATH
+#       value: /etc/agledger/llms-txt/prepend.md
+#     - name: AGLEDGER_LLMS_TXT_APPEND_PATH
+#       value: /etc/agledger/llms-txt/append.md
+#
+# AGLEDGER_LLMS_TXT_OVERRIDE_PATH replaces the generated document entirely. Read
+# what it costs before using it: the Server serves that file verbatim and never
+# regenerates, so it does not follow the API across releases. It is the one knob
+# that can make the discovery surface disagree with the build serving it.
+extraVolumes: []
+extraVolumeMounts: []
 # Load every key of a Secret/ConfigMap as env, cleanest when you have several
 # provisioning secrets at once.
 #
@@ -481,7 +543,34 @@ extraEnvFrom: []
 # Secrets
 # ---
 secrets:
-  apiKeySecret: ""          # Auto-generated if empty (64-char random). Preserved across upgrades.
+  # Set this to true when something OTHER than helm applies the chart: Argo CD,
+  # or any pipeline built on `helm template | kubectl apply`.
+  #
+  # The three values below that the chart generates (apiKeySecret,
+  # postgres.bundled.password, metricsAuthToken) are preserved across upgrades
+  # by reading the release Secret with `lookup`. `lookup` talks to the API
+  # server, and a renderer does not: under `helm template` it returns nothing,
+  # every sync falls through to the random fallback, and the Secret is applied
+  # with brand new values. Every API key issued against the last API_KEY_SECRET
+  # stops authenticating, the bundled-PostgreSQL password stops matching the one
+  # initdb set, and the Prometheus you configured starts getting 401s. Nothing
+  # logs a rotation, because from the chart's side nothing was rotated.
+  #
+  # There is no in-template flag that says "this is a render, not an install":
+  # .Release.IsInstall is true under `helm template` too. So this is a value you
+  # set, and it turns each of those three fallbacks into a render failure naming
+  # what to supply instead.
+  #
+  # The supported GitOps path is secrets.existingSecret: a Secret your platform
+  # manages (External Secrets, Sealed Secrets, SOPS). With it set the chart
+  # writes no Secret at all and has nothing to rotate.
+  #
+  # Flux's helm-controller runs real helm releases against the cluster, so
+  # `lookup` works there and this can stay false.
+  gitops: false
+  apiKeySecret: ""          # Auto-generated if empty (64-char random). Preserved across upgrades
+                             # by reading the release Secret, which needs a real install: see
+                             # secrets.gitops above before syncing this chart from a renderer.
   vaultSigningKey: ""       # Ed25519 key for audit vault signatures. Generate with:
                              #   kubectl run keygen --rm -it --restart=Never \
                              #     --image=agledger/agledger:<same tag this chart deploys> \
@@ -493,6 +582,15 @@ secrets:
                              # filled in. Add --algorithm es256 for FIPS hosts.
                              # Preserved across upgrades once set.
   webhookEncryptionKey: ""
+  # Bearer token for GET /metrics. Auto-generated (48 chars) if empty and
+  # preserved across upgrades, so the ServiceMonitor and the Prometheus you
+  # pointed at this install keep scraping. Read it with:
+  #   kubectl get secret <release>-agledger-chart -o jsonpath='{.data.METRICS_AUTH_TOKEN}' | base64 -d
+  # Set to "-" to mint none, which leaves /metrics behind the ordinary API-key
+  # chain in production (METRICS_AUTH_REQUIRED defaults true there).
+  # Preserved the same way apiKeySecret is, and lost the same way under a
+  # renderer: see secrets.gitops above.
+  metricsAuthToken: ""
   databaseUrlMigrate: ""    # optional — superuser DATABASE_URL for migrations (DDL).
                              # When set, the migration job uses this instead of the
                              # standard DATABASE_URL. Enables DB role separation:
@@ -500,7 +598,12 @@ secrets:
                              # note on database.externalUrl: rds_superuser on RDS/Aurora,
                              # superuser on self-managed PG), agledger_app for DML
                              # (API/Worker). scripts/setup-db-roles.sh wires this split.
-  licenseKey: ""            # optional — Inline PEM license string (AGLEDGER_LICENSE_KEY)
+  # The Developer Edition key from agledger.ai/register is a compact string
+  # (agl_dev_v1_...), and that is the format to put here. `licenseKey` below is
+  # the older PEM file contents; set one or the other, not both.
+  # Precedence, highest first: license, license.keyFile, licenseKey.
+  license: ""               # optional. Compact activation string (AGLEDGER_LICENSE)
+  licenseKey: ""            # optional. Inline PEM license string (AGLEDGER_LICENSE_KEY)
   apiKeySecretPrevious: ""  # optional — Previous API_KEY_SECRET for key rotation (zero-downtime)
   existingSecret: ""        # set to use a pre-existing Kubernetes Secret
                              # The Secret must contain these keys (as env var names):
@@ -509,13 +612,23 @@ secrets:
                              #   VAULT_SIGNING_KEY     (required) — Ed25519 key for audit vault signatures
                              #   WEBHOOK_ENCRYPTION_KEY (optional) — AES key for webhook payloads
                              #   DATABASE_URL_MIGRATE  (optional) — Owner-role URL for migrations
+                             #   AGLEDGER_LICENSE      (optional): compact key, agl_<tier>_v1_...
                              #   AGLEDGER_LICENSE_KEY  (optional) — PEM license string
+                             #   METRICS_AUTH_TOKEN    (optional) — bearer token for GET /metrics.
+                             #     The chart mints one into its own Secret and cannot write to
+                             #     yours, so supply it here if you want a bearer-token scrape.
+                             #     Required if you enable monitoring.serviceMonitor, which
+                             #     references this key: without it the Prometheus Operator
+                             #     cannot resolve the selector and drops the scrape config.
+                             #     Without it /metrics answers the API-key chain instead
+                             #     (METRICS_AUTH_REQUIRED defaults true in production).
 
 # ---
 # License (Developer Edition or Enterprise)
 # ---
-# No license = Developer Edition (all features enabled — enforcement is contractual, not software).
-# License problems fail-open — all features remain enabled with ERROR logs.
+# No license = Developer Edition (all features enabled: enforcement is contractual, not software).
+# Everything fails open. No key configured, or a key that was removed, logs a WARN
+# banner every 24h; a key that fails validation logs an ERROR every 30 minutes.
 license:
   releaseDate: ""           # YYYY-MM-DD — baked into image at build time; override only if building from source
   keyFile:
@@ -544,15 +657,47 @@ config:
   nodeEnv: production
   externalUrl: ""  # Public URL where this instance is reachable (e.g., https://agledger.example.com).
                     # The Server's published identity — the issuer (`iss`) signed into every
-                    # record/receipt/cert; required in production. Cascades to the A2A agent
-                    # card URL. Auto-derived from ingress.hosts[0] when set; otherwise falls
-                    # back to https://localhost so the pod boots — override for a real issuer.
+                    # record/receipt/cert. Cascades to the A2A agent card URL. Auto-derived
+                    # from ingress.hosts[0] when ingress is enabled.
+                    #
+                    # PERMANENT. Rows already written keep the issuer they were signed with,
+                    # so changing this later splits the chain into two issuers rather than
+                    # correcting anything. With nodeEnv: production and neither this value nor
+                    # an ingress host, the chart REFUSES to render rather than signing a
+                    # default into that field. For a single node with no domain, set it to
+                    # https://localhost yourself — that is a choice the chart will not make
+                    # on your behalf.
+                    #
+                    # UPGRADING from a release that had no such requirement: your install
+                    # already signed rows with something. Read it and set exactly that,
+                    # rather than setting the public URL for the first time here:
+                    #   kubectl -n NS get configmap RELEASE-agledger-chart \
+                    #     -o jsonpath='{.data.AGLEDGER_EXTERNAL_URL}'
+                    # Read it, do not guess it. An install with an ingress host has been
+                    # signing that host all along; only one with no ingress and no route
+                    # host fell back to https://localhost.
   otelProvider: "generic"
   # Primary contract type for agent discovery docs (/llms.txt, /llms-full.txt).
   # Pick your primary use case so agents see it first; empty string uses the
   # first alphabetical active contract as a deterministic fallback.
   exampleType: ""
   rateLimitEnabled: true
+  # RATE_LIMIT_STORE. Empty means the chart derives it from the replica shape:
+  # `postgresql` when api.replicaCount > 1 or hpa.enabled (a shared counter, so
+  # the advertised limit is the limit), `memory` on a single replica. Set
+  # "memory" or "postgresql" to decide it yourself.
+  rateLimitStore: ""
+  # API_KEY_MAX_LIFETIME_SECONDS. Empty means no cap. When set, a mint asking for
+  # an expiresAt beyond the cap is refused with a 422 naming the ceiling, and a
+  # mint that omits expiresAt gets the capped window rather than a key that never
+  # expires. It binds BOTH doors: keys minted through the API and keys minted
+  # from the provisioning directory, which re-opens the window on every reconcile
+  # for the keys it manages. Find the keys that predate the policy with
+  # GET /v1/admin/api-keys?neverExpires=true.
+  # Set through extraEnv, e.g. 90 days:
+  #   extraEnv:
+  #     - name: API_KEY_MAX_LIFETIME_SECONDS
+  #       value: "7776000"
   corsEnabled: true
   helmetEnabled: true
   # Opt-in acknowledgment for a non-default vault signing algorithm (e.g. an
@@ -588,7 +733,16 @@ ingress:
   # so old targets drain promptly instead of holding the default 300s.
   # nginx example:
   #   kubernetes.io/ingress.class: nginx
+  #
+  # Required whenever enabled is true. An Ingress with no rules is rejected by
+  # the API server, so the chart refuses that render rather than shipping an
+  # object that fails on apply with the rest of the release already installed.
+  # The first host also answers config.externalUrl when that is unset.
   hosts: []
+  # `paths` is optional. A host on its own routes / as a Prefix, which is the
+  # only route this chart serves, so the short form below is complete:
+  #  - host: api.agledger.example.com
+  # Write the list only to narrow or split the routing:
   #  - host: api.agledger.example.com
   #    paths:
   #      - path: /
@@ -599,6 +753,35 @@ ingress:
   #      - api.agledger.example.com
 
 # ---
+# OpenShift Route
+# ---
+# The native OpenShift ingress object. Enable this OR `ingress` above, never
+# both: the OpenShift router reconciles an Ingress into a Route of its own, so
+# two objects would claim the same hostname and the chart refuses that render.
+#
+# Nothing here implies openshift.enabled — that flag is about pod admission and
+# this one is about exposure — but a cluster that needs one usually needs both.
+route:
+  enabled: false
+  # Omit to let the router generate <name>-<namespace>.<apps domain>. An empty
+  # string is not the same thing: the router rejects it.
+  host: ""
+  path: ""
+  annotations: {}
+  #  haproxy.router.openshift.io/timeout: 60s
+  tls:
+    enabled: true
+    # edge: the router terminates TLS and speaks plain HTTP to the pod, which is
+    #   what the image serves. This is the working default.
+    # reencrypt: the router re-encrypts to the pod, so the pod must serve TLS.
+    #   The shipped image does not; use it only behind a sidecar or service mesh
+    #   that does, and supply destinationCACertificate.
+    # passthrough: the pod terminates TLS itself. Same requirement.
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+    destinationCACertificate: ""
+
+# ---
 # Horizontal Pod Autoscaler
 # ---
 hpa:
@@ -606,6 +789,104 @@ hpa:
   minReplicas: 2
   maxReplicas: 10
   targetCPUUtilizationPercentage: 80
+
+# ---
+# Backup
+# ---
+# The bundled PostgreSQL has no point-in-time recovery and no backup of its own.
+# An external database (RDS/Aurora, Cloud SQL, Azure) has its provider's PITR,
+# which is a better answer than anything this chart can run, so on that path
+# treat the CronJob below as a portable second copy rather than the plan.
+#
+# The archive is the same shape scripts/restore.sh reads:
+# backup-<UTC timestamp>.tar.gz holding <timestamp>/db.dump (pg_dump custom
+# format) and <timestamp>/vault-public-keys.csv. Restore is documented in the
+# install README; it is a kubectl recipe rather than a Job, because a restore
+# has preflight questions (a superuser for the audit event trigger, the runtime
+# role gate) that an operator has to answer rather than a template.
+backup:
+  cronJob:
+    enabled: false
+    schedule: "0 2 * * *"   # UTC
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    backoffLimit: 2
+    # startingDeadlineSeconds: 3600
+  # A backup taken before `helm upgrade` runs migrations. Failing it aborts the
+  # upgrade with nothing migrated, which is the point.
+  preUpgrade:
+    enabled: false
+  # How many archives to keep on the PVC. Ignored under s3, where the bucket's
+  # lifecycle policy owns expiry.
+  keep: 7
+  # A PostgreSQL client image: the AGLedger runtime base carries no pg_dump.
+  # Defaults to postgres.bundled.image. pg_dump refuses a server newer than
+  # itself, so an external PostgreSQL 18 needs an 18 client here.
+  image: ""
+  persistence:
+    enabled: false
+    existingClaim: ""
+    size: 20Gi
+    storageClassName: ""
+    accessModes: [ReadWriteOnce]
+  # Object storage instead of a PVC. Needs an image carrying BOTH pg_dump and
+  # the aws CLI (set backup.image); no public image ships both, so this is a
+  # build-one-image path, deliberately not a default that half-works. On EKS,
+  # leave existingSecret empty and annotate the service account for IRSA.
+  s3:
+    enabled: false
+    bucket: ""
+    prefix: ""
+    endpoint: ""        # for S3-compatible stores (MinIO, R2, Wasabi)
+    existingSecret: ""  # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION
+  workDirSize: 8Gi
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+
+# ---
+# Monitoring (Prometheus Operator)
+# ---
+# All three render the SAME files the Compose stack mounts: the chart's
+# `files/alerts` and `files/dashboards` are symlinks into deploy/monitoring and
+# deploy/compose/grafana, so a rule or panel is written once and both packaging
+# paths get it.
+#
+# These objects need the Prometheus Operator CRDs (PrometheusRule,
+# ServiceMonitor) already installed in the cluster. Enabling them without the
+# operator fails the apply with `no matches for kind "ServiceMonitor" in version
+# "monitoring.coreos.com/v1"`, which is the whole diagnosis.
+monitoring:
+  serviceMonitor:
+    enabled: false
+    # Extra labels. Most Prometheus Operator installs select ServiceMonitors by
+    # a label (`release: kube-prometheus-stack` is the common one) and ignore
+    # everything else, silently.
+    additionalLabels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+    # Who the API NetworkPolicy admits on port 3000 for the scrape. The policy's
+    # default ingressFrom names ingress controllers, which Prometheus is not, so
+    # without this the `health` endpoint scrapes (the worker policy admits any
+    # pod on that port) and the `http` one is dropped at the network layer with
+    # a correct bearer token: half a ServiceMonitor, and nothing says why.
+    # Same entry shape as networkPolicy.ingressFrom. Set to [] if your cluster
+    # has its own policy for the monitoring namespace.
+    scrapeFrom:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: prometheus
+  prometheusRule:
+    enabled: false
+    additionalLabels: {}
+  grafanaDashboards:
+    enabled: false
+    # The label the Grafana sidecar watches. Matches the grafana chart default.
+    label: grafana_dashboard
+    labelValue: "1"
+    # Optional folder for the sidecar to file them under.
+    folderAnnotation: ""
+    folderAnnotationKey: grafana_folder
 
 # ---
 # Network Policy
@@ -649,6 +930,13 @@ provisioning:
   enabled: false
   configPath: /etc/agledger/provisioning  # Mount path inside container
   dryRun: false
+  # Offboards resources removed from the YAML, rather than leaving them
+  # orphaned. For an org or agent that means revoking its API keys, releasing
+  # management and deactivating the account, so it refuses every credential
+  # bound to it and cannot be issued a new one. Undo with
+  # POST /v1/admin/{orgs|agents}/{id}/reactivate, which is platform-only.
+  # A prune is skipped entirely for any reload whose config did not load
+  # cleanly, so a typo never reads as a removal.
   prune: false
   immutable: false  # Set true to create immutable ConfigMap (reduces apiserver load;
                      # requires delete + recreate on changes, not in-place edit)
@@ -661,6 +949,11 @@ provisioning:
     agents: ""       # ConfigMap name for agents/*.yaml
     webhooks: ""     # ConfigMap name for webhooks/*.yaml
     schemas: ""      # ConfigMap name for schemas/*.yaml
+    # ConfigMap carrying the root-level trusted-issuers.yaml. Unlike the four
+    # above it is mounted as a single file, so the ConfigMap must have a key
+    # named exactly `trusted-issuers.yaml`; any other key is not projected and
+    # the loader reports no file.
+    trustedIssuers: ""
 
   # Inline YAML content — a ConfigMap is created automatically.
   # Each key becomes a file in the corresponding subdirectory.
@@ -696,6 +989,58 @@ provisioning:
   #        eventTypes:
   #          - record.created
 
+  # Which external IdPs this Server accepts JWTs from. A list, not a map of
+  # files: the loader reads one fixed file, `trusted-issuers.yaml`, at the
+  # provisioning root, and the chart renders these entries under its
+  # `trusted_issuers:` key. Same validators as POST /v1/admin/trusted-issuers,
+  # so what the admin API refuses this refuses too.
+  #
+  # Rows created here carry managed_by = 'provisioning' and are reconciled on
+  # every pass: dropping an entry deletes its row. Rows an operator created
+  # through the admin API are left alone and reported as skipped.
+  #
+  # jwksUri is optional; without it the loader runs OIDC discovery against the
+  # issuer at boot, which means a Server that cannot reach the IdP does not
+  # finish that pass.
+  #
+  # autoProvisionAgents (default false) lets one row create the agents it has
+  # never seen: the first token from an unknown subject makes an ephemeral agent
+  # under the row's org instead of the exchange being refused. It is for fleets
+  # of short-lived workloads (CI jobs, per-task pods) where declaring each one is
+  # the problem. A stable fleet does not need it: declare the agents under
+  # `agents` above with oidcIss/oidcSub and leave this off.
+  #
+  # Turning it on means an IdP token can create rows here, so it comes with
+  # three requirements the loader refuses to start without:
+  #   - orgId must name a real org. A global (orgId: null) row has no tenant.
+  #   - autoProvisionScopeProfile is required, and is the scope CEILING for every
+  #     cert this row mints: the IdP's mapped scopes claim can narrow it and can
+  #     never widen it, and a claim sharing nothing with it is refused rather
+  #     than minted scopeless. Agent-role profiles only (agent-full,
+  #     agent-readonly, agent-performer-only). The ceiling keys on this field
+  #     alone, so it holds whether or not the row also creates agents: set it
+  #     with autoProvisionAgents left false to cap an IdP whose agents you bind
+  #     by hand, and clearing the flag later does not lift it off the agents the
+  #     row already made.
+  #   - autoProvisionMaxAgents caps how many agents the row may create in that
+  #     org (default 1000, max 100000). At the cap the exchange is refused.
+  # Each creation writes an AGENT_AUTO_PROVISIONED chain entry and an
+  # auth.agent_auto_provisioned row on the SIEM stream.
+  trustedIssuers: []
+  #  - issuerUrl: https://login.example.com/
+  #    expectedAudience: agledger
+  #    appliesTo: any
+  #    orgId: null
+  #    label: Corporate IdP
+  #  - issuerUrl: https://kubernetes.default.svc/
+  #    expectedAudience: agledger
+  #    appliesTo: agent
+  #    orgId: 00000000-0000-0000-0000-000000000000
+  #    label: Cluster service accounts
+  #    autoProvisionAgents: true
+  #    autoProvisionScopeProfile: agent-performer-only
+  #    autoProvisionMaxAgents: 500
+
   # A type with a structured completionSchema runs the completion phase; `{}`
   # makes it notarize-only, terminal at RECORDED on create.
   schemas: {}
@@ -706,6 +1051,7 @@ provisioning:
   #        category: custom
   #        recordSchema:
   #          type: object
+  #          required: [reference]
   #          properties:
   #            reference: { type: string }
   #        completionSchema: {}

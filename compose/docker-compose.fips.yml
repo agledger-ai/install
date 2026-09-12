@@ -15,6 +15,12 @@
 # list. A stack recreated without this overlay is no longer FIPS, and nothing
 # would report the loss, because an ES256 key signs either way.
 #
+# One thing CAN override it: a docker-compose.override.yml, which the scripts
+# apply after this file, the way Compose applies a discovered override. That is
+# deliberate and it is announced (install.sh names the override file it found),
+# but an override that sets OPENSSL_CONF or replaces the openssl-fips.cnf mount
+# below turns FIPS off with nothing else reporting it.
+#
 # Direct invocation, if you are driving compose yourself:
 #   docker compose -f docker-compose.yml -f docker-compose.postgres.yml \
 #                  -f docker-compose.prod.yml -f docker-compose.fips.yml up -d --wait
@@ -23,7 +29,7 @@
 # configured for ES256.
 #
 # A stock Ed25519 install will fail to sign under it. Federation is not
-# available in this configuration (its transport is Ed25519/X25519), and the
+# available in this configuration (its transport signs with Ed25519), and the
 # Server refuses to boot if federation keys are set alongside ES256.
 #
 # See the FIPS section of README.md for what the configuration gives up and

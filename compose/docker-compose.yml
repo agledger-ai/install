@@ -101,11 +101,25 @@ services:
     depends_on:
       agledger-migrate:
         condition: service_completed_successfully
+    # /health/ready, not /health. `/health` is a static 200 that opens no
+    # connection, so a container pointed at a database that is down, gone or
+    # refusing its credentials reported healthy: `upgrade.sh` runs
+    # `up -d --wait`, which passed, and the first request then 500'd. The
+    # readiness endpoint runs `SELECT 1`, and either it answers 503 or the query
+    # does not come back and this probe's own 5s timeout ends it. Both read as
+    # unhealthy, which is what --wait needs. Its own OpenAPI description names
+    # Docker Compose healthchecks as the intended caller.
+    #
+    # start_period is what keeps this from flapping at boot: failures inside it
+    # do not count toward `retries`, and the API only starts after
+    # agledger-migrate exits successfully, so Postgres is already accepting
+    # connections by the time the first probe runs. 20s covers the pool's first
+    # connect on a cold host without buying a slow `--wait` on a healthy one.
     healthcheck:
-      test: ['CMD', '/nodejs/bin/node', '-e', "fetch('http://localhost:3000/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test: ['CMD', '/nodejs/bin/node', '-e', "fetch('http://localhost:3000/health/ready').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
-      start_period: 10s
+      start_period: 20s
       retries: 3
 
   # --- Background worker ---
@@ -136,17 +150,22 @@ services:
     depends_on:
       agledger-migrate:
         condition: service_completed_successfully
+    # /health/ready for the same reason the API uses it. The worker serves it on
+    # this port and races the pool query against its own 2s deadline, so an
+    # unreachable primary over a live socket answers 503 here rather than
+    # running out this probe's timeout. `/health` on this port reports only that
+    # the process is up and draining or not.
     healthcheck:
-      test: ['CMD', '/nodejs/bin/node', '-e', "fetch('http://localhost:3001/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test: ['CMD', '/nodejs/bin/node', '-e', "fetch('http://localhost:3001/health/ready').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
-      start_period: 10s
+      start_period: 20s
       retries: 3
 
   # --- Monitoring (optional, enable with --profile monitoring) ---
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.159.0
+    image: otel/opentelemetry-collector-contrib:0.160.0
     profiles: [monitoring]
     # Same restart policy the app services carry in docker-compose.prod.yml. The
     # app is configured to export at this collector permanently, so a collector
@@ -167,6 +186,20 @@ services:
       - '127.0.0.1:${OTEL_METRICS_HOST_PORT:-8889}:8889'     # Prometheus metrics exporter
     depends_on:
       - jaeger
+    # No `healthcheck:` here, and it is not an oversight. A Docker healthcheck
+    # runs a command INSIDE the container, and this image carries the collector
+    # binary and its certificates: no shell, no wget, no curl, nothing that can
+    # call an endpoint (`--entrypoint /bin/ls` fails with "no such file"). The
+    # other three monitoring services all carry busybox or curl and are probed
+    # below.
+    #
+    # What covers a crash loop here is install.sh's post-start check: `up -d
+    # --wait` treats a container with no healthcheck as ready the moment it is
+    # running, which a crash-looping container is between restarts, so the
+    # installer asks the container states directly afterwards and reports any
+    # service that is restarting, exited or unhealthy. A collector that is
+    # running and silently dropping every batch is not covered by anything: it
+    # exports no telemetry about itself that this stack scrapes.
 
   jaeger:
     image: jaegertracing/jaeger:2.20.0
@@ -181,6 +214,16 @@ services:
     expose:
       - '4317'         # OTLP gRPC (internal, OTel collector to Jaeger)
       - '4318'         # OTLP HTTP (internal)
+    # Jaeger v2 is an OpenTelemetry Collector distribution and answers its
+    # health_check extension on 13133 at /status. `/` on that port is a 404, so
+    # the path is load-bearing. wget is a busybox applet in this image and is
+    # not linked into PATH, hence the explicit /bin/busybox.
+    healthcheck:
+      test: ['CMD', '/bin/busybox', 'wget', '--spider', '-q', '-T', '3', 'http://localhost:13133/status']
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
   prometheus:
     image: prom/prometheus:v3.14.0
@@ -193,11 +236,34 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       # Rule files are referenced by prometheus.yml `rule_files`.
       - ../monitoring/alerts:/etc/prometheus/alerts:ro
+    # /metrics is gated under NODE_ENV=production. prometheus.yml reads the
+    # bearer token from this file rather than carrying it inline, so .env stays
+    # the only place the secret is written. install.sh generates it.
+    configs:
+      - source: metrics_token
+        target: /etc/prometheus/metrics-token
+        # 0444, not 0440. Compose materializes an inline config as root-owned
+        # and this image runs as `nobody`, so a group-only mode is unreadable:
+        # every target reports down with "unable to read authorization
+        # credentials ... permission denied". World-readable inside a container
+        # whose only other content is Prometheus itself costs nothing.
+        mode: 0444
     ports:
       - '127.0.0.1:${PROMETHEUS_HOST_PORT:-9090}:9090'
+    # A typo in prometheus.yml (the file monitoring/README.md invites operators
+    # to edit) makes this container exit at config load and restart forever,
+    # and without a healthcheck the installer reported the whole stack up. wget
+    # is on PATH in this busybox-based image; /-/healthy answers 200 as soon as
+    # the process has loaded its configuration.
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', '-T', '3', 'http://localhost:9090/-/healthy']
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
   grafana:
-    image: grafana/grafana:13.2.0
+    image: grafana/grafana:13.2.1
     profiles: [monitoring]
     restart: unless-stopped
     environment:
@@ -214,6 +280,27 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
+    # /api/health reports the database check as well as the process, so a
+    # Grafana that came up onto an unreadable grafana-data volume reads
+    # unhealthy rather than ready. start_period is longer than the others
+    # because a first boot migrates its own SQLite database before it listens.
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', '--max-time', '3', 'http://localhost:3000/api/health']
+      interval: 15s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
 
 volumes:
   grafana-data:
+
+configs:
+  metrics_token:
+    # The fallback is not cosmetic. An EMPTY `content:` is dropped from the
+    # rendered config, and Docker then bind-mounts the whole compose project
+    # directory at the target path: `.env` and every secret in it, inside the
+    # Prometheus container. A non-empty placeholder keeps this a file. It is not
+    # a working credential, so a Server with no METRICS_AUTH_TOKEN set answers
+    # the scrape 401 and Prometheus shows the target as down, which is the
+    # correct signal for "no token configured".
+    content: ${METRICS_AUTH_TOKEN:-no-metrics-token-set-see-.env}

@@ -1,4 +1,15 @@
 {{- if (.Values.ingress).enabled }}
+{{- if not ((.Values.ingress).hosts | default list) }}
+{{- /*
+  `hosts: []` is the shipped default, so `--set ingress.enabled=true` on its own
+  reaches here. The `range` at `rules:` below would iterate zero times and emit a
+  bare key, which YAML reads as null and the API server rejects. kubeconform does
+  not catch it (`rules` is optional in the OpenAPI schema; the constraint is
+  server-side), so the render has to refuse here or the install fails on apply
+  with the rest of the release already in the cluster.
+*/}}
+{{- fail "ingress.enabled is true with no ingress.hosts. An Ingress needs at least one rule: with none, spec.rules renders null and the API server rejects the object outright (\"either 'defaultBackend' or 'rules' must be specified\"), so the install fails after the rest of the release is already applied. Name the hostname this Server is reached at:\n  --set ingress.enabled=true --set ingress.hosts[0].host=agledger.example.com\nThe chart will not fall back to a host-less defaultBackend: that publishes this Server on every request the controller cannot match elsewhere, which is wider exposure than enabling an ingress asks for, and it leaves config.externalUrl with no hostname to derive from. On OpenShift, route.enabled lets the router generate the hostname instead; to reach the Server with no ingress at all, port-forward the Service." }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -25,10 +36,28 @@ spec:
   {{- end }}
   rules:
     {{- range .Values.ingress.hosts }}
+    {{- /*
+      A host with no `paths` renders `paths: null` without this default, which
+      the API server rejects outright (`at '/spec/rules/0/http/paths': got null,
+      want array`), so the most natural way to write this block would fail the
+      whole install.
+      Setting only a host is now the ordinary shape (config.externalUrl is
+      required and derives from the first ingress host), so default the one
+      route this chart has rather than refusing.
+    */}}
     - host: {{ .host | quote }}
       http:
         paths:
-          {{- range .paths }}
+          {{- /*
+            No `| default` on `.path`. The list-level default above covers the
+            host that declares no paths at all, which is the shape being fixed.
+            An entry that IS declared but carries no `path` is a typo (`paths:`
+            written under the wrong key, a misspelled `path:`, one level of
+            indent out), and defaulting it to / would publish the whole host on
+            an ingress the operator was trying to narrow. Let the API server
+            refuse it the way it always has.
+          */}}
+          {{- range (.paths | default (list (dict "path" "/" "pathType" "Prefix"))) }}
           - path: {{ .path }}
             pathType: {{ .pathType | default "Prefix" }}
             backend:

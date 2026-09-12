@@ -1,4 +1,4 @@
-{{- if not ((.Values.postgres).bundled).enabled }}
+{{- if not (include "agledger.bundledPostgres" .) }}
 apiVersion: batch/v1
 kind: Job
 metadata:

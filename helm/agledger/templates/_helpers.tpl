@@ -211,6 +211,63 @@ nil-pointer deref from whichever template Helm happened to render first.
 {{- end -}}
 
 {{/*
+The Server's published identity — AGLEDGER_EXTERNAL_URL.
+
+This is the `iss` signed into every record, receipt and certificate. Rows
+already written carry it forever: changing it later does not rewrite them, it
+splits the chain into two issuers, and an offline verifier reading the old rows
+still resolves keys against the old one. So it is resolved once, here, and both
+the ConfigMap and NOTES.txt read the same answer.
+
+Resolution order: explicit config.externalUrl, then the first ingress host
+(https when TLS or an ALB certificate is configured, http otherwise), then
+route.host (https when route.tls.enabled). Ingress and Route cannot both be
+on, so the last two never compete.
+
+With neither, a production render is refused rather than defaulted. The old
+fallback signed `https://localhost` into a permanent field on an install whose
+operator was never asked, and nothing in the output said so. Non-production
+keeps the fallback so `helm install` on a dev cluster still boots.
+
+The refusal is worded twice, because an install and an upgrade need opposite
+advice. On an install the operator is choosing an issuer, and the public
+URL is the right answer. On an upgrade they already HAVE one, very likely the
+old `https://localhost` fallback, and the public URL is the one value that
+splits the chain. The upgrade branch names where to read the current issuer
+instead of offering a new one.
+
+`.Release.IsUpgrade` is false under `helm template`, which is how Argo CD and
+every other rendering GitOps tool invokes this chart, so an existing Argo
+release that trips this gets the INSTALL wording. That is why the install branch
+carries the "if this release already exists" paragraph as well: the two branches
+differ in emphasis, and neither may be unsafe on its own.
+*/}}
+{{- define "agledger.externalUrl" -}}
+{{- $extUrl := .Values.config.externalUrl -}}
+{{- if and (not $extUrl) (.Values.ingress).enabled (gt (len ((.Values.ingress).hosts | default list)) 0) -}}
+{{- $firstHost := (index .Values.ingress.hosts 0).host -}}
+{{- $hasAlbSsl := hasKey ((.Values.ingress).annotations | default dict) "alb.ingress.kubernetes.io/certificate-arn" -}}
+{{- $scheme := ternary "https" "http" (or (gt (len ((.Values.ingress).tls | default list)) 0) $hasAlbSsl) -}}
+{{- $extUrl = printf "%s://%s" $scheme $firstHost -}}
+{{- end -}}
+{{- if and (not $extUrl) (.Values.route).enabled ((.Values.route).host) -}}
+{{- $extUrl = printf "%s://%s" (ternary "https" "http" (((.Values.route).tls).enabled | default false)) .Values.route.host -}}
+{{- end -}}
+{{- if not $extUrl -}}
+{{- if eq .Values.config.nodeEnv "production" -}}
+{{- if .Release.IsUpgrade -}}
+{{- fail (printf "config.externalUrl is not set and nothing else supplies one, and this is an UPGRADE, so this install already has an issuer.\n\nAGLEDGER_EXTERNAL_URL is the issuer (`iss`) signed into every record, receipt and certificate already written. Those rows keep the issuer they were signed with. Setting a DIFFERENT value now does not correct them, it splits the chain into two issuers, and an offline verifier reading the old rows still resolves keys against the old one. Releases before this one defaulted to https://localhost when nothing supplied a value, so that is very likely what yours is signing with today.\n\nRead what this install actually uses, and set exactly that:\n  kubectl -n %s get configmap %s -o jsonpath='{.data.AGLEDGER_EXTERNAL_URL}'\n  --set config.externalUrl=<the value that prints>\n\nGET /v1/records/{id} on any existing record answers it too: the `iss` of its signed envelope. Choose a new value only if you intend a new issuer and accept that the chain splits at this upgrade." .Release.Namespace (include "agledger.fullname" .)) -}}
+{{- else -}}
+{{- fail "config.externalUrl is not set and nothing else supplies one. It becomes AGLEDGER_EXTERNAL_URL, the issuer (`iss`) signed into every record, receipt and certificate this Server writes, and it is permanent: rows already signed keep the issuer they were signed with, so changing it later splits the chain rather than correcting it. Set the public URL this Server will be reachable at:\n  --set config.externalUrl=https://agledger.example.com\nAn ingress host or a route.host answers it too. For a single node with no domain, say so explicitly:\n  --set config.externalUrl=https://localhost\n\nIf this release ALREADY EXISTS (a GitOps renderer such as Argo CD runs `helm template`, which cannot tell an upgrade from an install), read the issuer it is already signing with and set exactly that, rather than choosing a new one here:\n  kubectl -n <namespace> get configmap <release>-agledger-chart -o jsonpath='{.data.AGLEDGER_EXTERNAL_URL}'" -}}
+{{- end -}}
+{{- else -}}
+{{- $extUrl = "https://localhost" -}}
+{{- end -}}
+{{- end -}}
+{{- $extUrl -}}
+{{- end -}}
+
+{{/*
 Node 24 Permission Model argv prefix. Emits a comma-terminated list of quoted
 node argv entries (`"--permission", "--allow-fs-read=*", ...`) to prepend before
 the entry script in a container command/args array. Empty when
@@ -290,11 +347,34 @@ Usage: {{- include "agledger.assertNoDuplicateDatabaseUrl" (dict "envList" .Valu
 {{- end }}
 
 {{/*
+True (non-empty) when this release runs the chart's bundled PostgreSQL.
+
+`database.externalUrl` wins over `postgres.bundled.enabled`. Setting both is
+reachable (a values file that pinned the bundled flag, or a release reconciled
+from bundled to an external database with `--reset-then-reuse-values`, which
+carries the old flag forward), and honouring both is what breaks the install:
+secret.yaml writes DATABASE_URL from the external URL and reaches its
+POSTGRES_PASSWORD branch only on the bundled one, so the bundled Deployment asks
+for a Secret key the chart never wrote and sits in CreateContainerConfigError
+behind a provisioned PVC; the migration Job waits on
+that pod instead of running as a hook; the NetworkPolicy allows database egress
+in-cluster only, which an external database is not; ALLOW_DB_WITHOUT_SSL drops
+the production TLS requirement on it; and NOTES.txt reports a database the API
+never connects to.
+
+Every template that branches on the bundled path reads this, so the precedence
+is decided in one place. Empty string is false to `if`.
+*/}}
+{{- define "agledger.bundledPostgres" -}}
+{{- if and (((.Values.postgres).bundled).enabled) (not (.Values.database).externalUrl) }}true{{ end }}
+{{- end }}
+
+{{/*
 True (non-empty) when the chart's own Secret carries DATABASE_URL.
 */}}
 {{- define "agledger.chartSuppliesDatabaseUrl" -}}
 {{- if not .Values.secrets.existingSecret }}
-{{- if or .Values.database.externalUrl ((.Values.postgres).bundled).enabled }}true{{ end }}
+{{- if or .Values.database.externalUrl (include "agledger.bundledPostgres" .) }}true{{ end }}
 {{- end }}
 {{- end }}
 
@@ -316,6 +396,23 @@ Mounts each subdirectory from its ConfigMap.
 {{- range $subdir := $subdirs }}
 - name: provisioning-{{ $subdir }}
   mountPath: {{ $.Values.provisioning.configPath }}/{{ $subdir }}
+  readOnly: true
+{{- end }}
+{{- /* trusted-issuers.yaml is a FILE at the provisioning root, not a
+       subdirectory: the loader reads exactly
+       ${PROVISIONING_CONFIG_PATH}/trusted-issuers.yaml. A whole-directory mount
+       at the root would shadow the four subdirectory mounts above, so this one
+       is projected with subPath.
+
+       subPath does not track ConfigMap updates, which costs nothing here: the
+       loader reads the file at boot and on an explicit reload, and a values
+       change rolls the pods anyway. Rendered only when there is content to
+       project, because a subPath naming a key the ConfigMap does not carry
+       fails the container at startup even with `optional: true`. */}}
+{{- if or (($.Values.provisioning).trustedIssuers) ((($.Values.provisioning).existingConfigMaps | default dict).trustedIssuers) }}
+- name: provisioning-trusted-issuers
+  mountPath: {{ $.Values.provisioning.configPath }}/trusted-issuers.yaml
+  subPath: trusted-issuers.yaml
   readOnly: true
 {{- end }}
 {{- end }}
@@ -367,8 +464,205 @@ Two modes per subdirectory:
   emptyDir: {}
   {{- end }}
 {{- end }}
+{{- $issuersCM := (($.Values.provisioning).existingConfigMaps | default dict).trustedIssuers }}
+{{- if or (($.Values.provisioning).trustedIssuers) $issuersCM }}
+- name: provisioning-trusted-issuers
+  configMap:
+    name: {{ $issuersCM | default $chartCM }}
+    defaultMode: 292  # 0444
+    items:
+      - key: trusted-issuers.yaml
+        path: trusted-issuers.yaml
 {{- end }}
 {{- end }}
+{{- end }}
+
+{{/*
+Backup pod template — shared by the CronJob and the pre-upgrade hook Job.
+
+Produces the SAME archive shape deploy/scripts/restore.sh reads:
+`backup-<UTC timestamp>.tar.gz` holding `<timestamp>/db.dump` (pg_dump custom
+format) and `<timestamp>/vault-public-keys.csv`. A Kubernetes backup a customer
+cannot hand to the documented restore path is not a backup.
+
+It also runs the same PGDMP header check the script does, for the same reason:
+both ways this file has been silently unreadable (bytes ahead of the archive,
+or no archive at all) are invisible at write time and are discovered at restore
+time, which is after the database has been dropped.
+
+Usage: {{- include "agledger.backupPodTemplate" (dict "root" . "component" "backup") }}
+*/}}
+{{- define "agledger.backupPodTemplate" -}}
+{{- $root := .root -}}
+{{- $backup := $root.Values.backup | default dict -}}
+{{- $s3 := $backup.s3 | default dict -}}
+{{- $persist := $backup.persistence | default dict -}}
+{{- $keep := $backup.keep | default 7 -}}
+metadata:
+  labels:
+    {{- include "agledger.selectorLabels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ .component }}
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{ include "agledger.serviceAccountName" $root }}
+  {{- with $root.Values.image.pullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if not ($root.Values.openshift).enabled }}
+  {{- with $root.Values.api.podSecurityContext }}
+  securityContext:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  containers:
+    - name: dump
+      {{- /* A PostgreSQL client image, not the AGLedger image: the runtime base
+             carries no pg_dump. pg_dump refuses a server NEWER than itself, so
+             this tracks the bundled version and an external Postgres 18 needs
+             an 18 client here. */}}
+      image: {{ $backup.image | default ((($root.Values).postgres).bundled).image | default "postgres:18-alpine" }}
+      imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agledger.secretName" $root }}
+              key: DATABASE_URL
+        {{- /* On a role-separated install the runtime role holds DML only, and
+               pg_dump needs to read every object it is asked to dump. The owner
+               URL is already in the Secret for the migration Job; use it here
+               when it exists. `optional` so the key's absence leaves the
+               variable unset rather than blocking the pod. */}}
+        - name: DATABASE_URL_MIGRATE
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agledger.secretName" $root }}
+              key: DATABASE_URL_MIGRATE
+              optional: true
+        - name: KEEP
+          value: {{ $keep | quote }}
+      command: ["/bin/sh", "-eu", "-c"]
+      args:
+        - |
+          TS=$(date -u '+%Y-%m-%d-%H%M%S')
+          WORK="/work/${TS}"
+          mkdir -p "$WORK"
+
+          # The owner role where the install separates them, the runtime role
+          # otherwise. A DML-only role dumps whatever it can read and pg_dump
+          # errors on the rest, which fails the Job rather than keeping a
+          # partial archive, but the right answer is to connect as the role
+          # that can read all of it.
+          DB="${DATABASE_URL_MIGRATE:-$DATABASE_URL}"
+
+          # -d with the URI, rather than PG* variables parsed out of it in
+          # shell. The credential is in this container's argv only, in its own
+          # PID namespace, in a pod whose single container already holds the
+          # same Secret in its environment.
+          echo "Dumping to ${WORK}/db.dump"
+          pg_dump -Fc -d "$DB" > "${WORK}/db.dump"
+
+          # A backup is worth what a restore can read. PGDMP is the magic of a
+          # custom-format archive; anything else means something wrote to the
+          # dump's stdout ahead of pg_dump, or pg_dump wrote nothing at all.
+          if [ "$(head -c 5 "${WORK}/db.dump")" != "PGDMP" ]; then
+            echo "ERROR: ${WORK}/db.dump does not begin with the PGDMP magic of a"
+            echo "       PostgreSQL custom-format archive. It begins with:"
+            head -c 64 "${WORK}/db.dump" | od -c | head -2
+            echo "       No backup was kept."
+            rm -rf "$WORK"
+            exit 1
+          fi
+
+          # Public keys only. Private key material is never in the database.
+          psql -d "$DB" -c "COPY (SELECT key_id, public_key, algorithm, status, activated_at, retired_at FROM vault_signing_keys ORDER BY activated_at DESC) TO STDOUT WITH CSV HEADER" \
+            > "${WORK}/vault-public-keys.csv" 2>/dev/null \
+            || echo "Vault key metadata export skipped (table may not exist)."
+          if [ -s "${WORK}/vault-public-keys.csv" ]; then
+            case "$(head -1 "${WORK}/vault-public-keys.csv")" in
+              key_id,*) : ;;
+              *) echo "WARN: vault-public-keys.csv does not start with the expected header; dropping it."
+                 rm -f "${WORK}/vault-public-keys.csv" ;;
+            esac
+          else
+            rm -f "${WORK}/vault-public-keys.csv"
+          fi
+
+          # Written under a name the retention glob does not match, then moved.
+          # `tar` straight to the final name leaves a truncated
+          # backup-<ts>.tar.gz behind when the Job is killed mid-write, and
+          # retention counts it: `ls -t` keeps the newest N, so an unreadable
+          # partial evicts a readable archive. `mv` within one filesystem is
+          # atomic, so a backup either exists whole or does not exist.
+          TARBALL="{{ if $s3.enabled }}/work{{ else }}/backups{{ end }}/backup-${TS}.tar.gz"
+          tar -czf "${TARBALL}.partial" -C /work "$TS"
+          mv "${TARBALL}.partial" "$TARBALL"
+          rm -rf "$WORK"
+          echo "Wrote ${TARBALL} ($(du -h "$TARBALL" | cut -f1))"
+          {{- if $s3.enabled }}
+
+          # Object storage. Retention is the bucket's lifecycle policy: expiring
+          # objects from a Job means the Job holding delete rights on the
+          # bucket that holds every backup.
+          aws {{ with $s3.endpoint }}--endpoint-url {{ . | quote }} {{ end }}s3 cp "$TARBALL" \
+            "s3://{{ $s3.bucket }}/{{ with $s3.prefix }}{{ trimSuffix "/" . }}/{{ end }}backup-${TS}.tar.gz"
+          echo "Uploaded to s3://{{ $s3.bucket }}/{{ with $s3.prefix }}{{ trimSuffix "/" . }}/{{ end }}backup-${TS}.tar.gz"
+          {{- else }}
+
+          # Keep the newest $KEEP. The glob does not match the `.partial` name
+          # above, so a killed Job's leftover is never counted as a backup and
+          # never evicts one. It is also never cleaned up here: a `.partial`
+          # sitting in the directory is the evidence that a run died, and the
+          # next successful run overwrites it.
+          echo "Retaining the newest ${KEEP} backups"
+          ls -1t /backups/backup-*.tar.gz 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r old; do
+            echo "Removing $old"
+            rm -f "$old"
+          done
+          {{- end }}
+      {{- if $s3.enabled }}
+      envFrom:
+        {{- /* Credentials for the upload. On EKS with IRSA, or any cluster with
+               a workload-identity provider, leave this empty and annotate the
+               service account instead. */}}
+        {{- with $s3.existingSecret }}
+        - secretRef:
+            name: {{ . }}
+        {{- end }}
+      {{- end }}
+      volumeMounts:
+        - name: work
+          mountPath: /work
+        {{- if not $s3.enabled }}
+        - name: backups
+          mountPath: /backups
+        {{- end }}
+      resources:
+        {{- toYaml ($backup.resources | default (dict "requests" (dict "memory" "128Mi" "cpu" "100m") "limits" (dict "memory" "512Mi"))) | nindent 8 }}
+  volumes:
+    - name: work
+      emptyDir:
+        sizeLimit: {{ $backup.workDirSize | default "8Gi" }}
+    {{- if not $s3.enabled }}
+    - name: backups
+      persistentVolumeClaim:
+        claimName: {{ $persist.existingClaim | default (printf "%s-backups" (include "agledger.fullname" $root)) }}
+    {{- end }}
+  {{- with $backup.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $backup.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end -}}
 
 {{/*
 Refuse an API grace period the app's own drain budget does not fit inside.

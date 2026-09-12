@@ -101,11 +101,12 @@ groups:
           summary: "Gate-worker jobs gave up after exhausting their retries"
           description: >-
             A cascade rollup that exhausts its retries on the last child's job leaves the
-            parent stranded ACTIVE with every child terminal; check
-            agledger_auto_rollup_stuck_parents_total, which the consistency sweep raises
-            within five minutes if that is what happened. A lost advisory pass leaves the
-            record correctly awaiting its principal, minus the advisory annotation,
-            permanently.
+            parent ACTIVE with every child terminal. The consistency sweep settles it five
+            to ten minutes after the tree goes quiet, so watch
+            agledger_auto_rollup_repaired_parents_total keep pace with
+            agledger_auto_rollup_stuck_parents_total and only intervene if it does not.
+            A lost advisory pass leaves the record correctly awaiting its principal, minus
+            the advisory annotation, permanently.
 
       - alert: AGLedgerSiemExportDegraded
         # The compliance feed. A customer discovers this at audit time.
@@ -380,10 +381,15 @@ groups:
   - name: agledger-partitions
     rules:
       - alert: AGLedgerPartitionMaintenanceFailing
-        # The direct reading of the wedge. ensure_future_partitions() has no
-        # per-table exception handling and runs as one statement, so a single
-        # table it cannot extend rolls back the partitions already created for
-        # the other three: one failure stops maintenance for all four.
+        # The direct reading of a job that is not keeping up.
+        # ensure_future_partitions() isolates each table in its own
+        # subtransaction and increments this counter once per table it could not
+        # extend, so one stuck table no longer takes the other three down with
+        # it. The counter therefore reads "at least one table gained nothing"
+        # rather than "nothing gained anything". Two other sites increment it
+        # and neither can name a table: the call failing outright before the
+        # function returns anything, and the gauge refresh that follows it. The
+        # log line is what tells the three apart.
         # 25h, not 15m, because the job runs once a day and a shorter window
         # resolves the alert before anyone reads it.
         expr: increase(agledger_partition_management_failures_total[25h]) > 0
@@ -393,11 +399,12 @@ groups:
         annotations:
           summary: "The daily partition-management job is failing"
           description: >-
-            No partitioned table gained runway on the last run, or the runway gauges could
-            not be refreshed. Runway is draining and the gauges may be reporting the last
-            healthy reading. Check the worker log for ensure_future_partitions();
-            the usual cause is a row in a DEFAULT partition blocking the CREATE for
-            its month.
+            At least one partitioned table gained no runway on the last run, or the runway
+            gauges could not be refreshed. Runway is draining on whatever failed and the
+            gauges may be reporting the last healthy reading. Check the worker log: a
+            single table that could not be extended is logged with its name and the
+            Postgres error, while a call that failed outright, on a lock wait or a lost
+            connection, is logged without one and means no table gained runway at all.
 
       - alert: AGLedgerPartitionMaintenanceNotRunning
         # The other half: the job is not failing, it is not running. Covers a
@@ -455,22 +462,25 @@ groups:
 
       - alert: AGLedgerPartitionDefaultRowsPresent
         # Only system_audit_log has a DEFAULT partition today, so this fires for
-        # it alone. Two different situations land a row there and they are not
-        # equally urgent, which is why this stays a warning and says both:
+        # it alone. A row here is a lag signal rather than a latch:
+        # ensure_future_partitions() detaches the default, creates the months,
+        # moves the rows that now have a home and re-attaches, so a row for any
+        # month within the next three drains itself at the following 02:00. Two
+        # situations reach this rule and neither is urgent on its own, which is
+        # why it stays a warning:
         #
-        #   - A row for a month at or after the earliest monthly partition,
-        #     which ensure_future_partitions() would otherwise have covered.
-        #     That one wedges the job: CREATE TABLE ... PARTITION OF for the
-        #     month is refused ("would be violated by some row") and, because
-        #     the function has no per-table exception handling, the whole daily
-        #     run aborts for every table. AGLedgerPartitionMaintenanceFailing is
-        #     the rule that pages for it.
-        #   - A row backdated before the earliest monthly partition. Nothing is
-        #     blocked, because ensure_future_partitions() only ever creates
-        #     months from CURRENT_DATE forward and would never have created that
-        #     one. Migration 006 gave system_audit_log the MINVALUE partition its
-        #     siblings already had, so this is only reachable on an install
-        #     whose default already held such a row at upgrade time.
+        #   - A row for a month at or after the earliest monthly partition. The
+        #     job resolves it on the next run. Still firing a day later means
+        #     the job is not running or not succeeding, and
+        #     AGLedgerPartitionMaintenanceFailing or
+        #     AGLedgerPartitionMaintenanceNotRunning is the rule that says which.
+        #   - A row backdated before the earliest monthly partition, or dated
+        #     further ahead than the job creates. Nothing is blocked, because
+        #     ensure_future_partitions() only covers CURRENT_DATE through three
+        #     months out and would never have created that month. Migration 006
+        #     gave system_audit_log the MINVALUE partition its siblings already
+        #     had, so the backdated half is only reachable on an install whose
+        #     default already held such a row at upgrade time.
         expr: max by (table) (agledger_partition_default_rows) > 0
         for: 15m
         labels:
@@ -480,10 +490,12 @@ groups:
           description: >-
             {{ $value | printf "%.0f" }} row(s) in the catch-all partition of
             {{ $labels.table }}, which should read zero. Check the created_at of those
-            rows. If any fall in a month at or after the earliest monthly partition,
-            partition maintenance is wedged for every table until the default is drained
-            and AGLedgerPartitionMaintenanceFailing will be firing alongside this. If they
-            are all older than that, nothing is blocked and the row is simply parked.
+            rows. If any fall within the next three months, the nightly job drains them
+            into their own partition on its next run, so this should clear by itself; if
+            it has not, the job is not running and AGLedgerPartitionMaintenanceFailing or
+            AGLedgerPartitionMaintenanceNotRunning will say so. If they are all older than
+            the earliest monthly partition, or further ahead than the job creates, nothing
+            is blocked and the rows are simply parked.
 
   # ---------------------------------------------------------------------------
   # Federation delivery. Retries are normal; exhausting them is not.
@@ -604,3 +616,28 @@ groups:
         annotations:
           summary: "Over 10% of worker jobs are failing"
           description: "{{ $value | humanizePercentage }} of jobs over the last 10m."
+
+      - alert: AGLedgerApiKeyExpiringTomorrow
+        # The 24h window, not the 7d one. On an install that sets
+        # API_KEY_MAX_LIFETIME_SECONDS, keys inside a 7-day window are the
+        # steady state rather than an event: a 90-day cap over twenty keys puts
+        # roughly one in the window at all times, so `7d > 0` would be a warning
+        # that never clears on exactly the installs that adopted the control.
+        # A key that stops authenticating tomorrow is an event on any install.
+        #
+        # max, not sum: only the API process publishes this gauge, and every API
+        # replica publishes the same table. Adding them would multiply by the
+        # replica count.
+        expr: max(agledger_api_keys_expiring_soon{window="24h"}) > 0
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | printf \"%.0f\" }} active API keys expire within 24 hours"
+          description: >-
+            An expired key stops authenticating with no warning to its holder, and the failure
+            surfaces as the agent it belonged to going quiet. Rotate with
+            POST /v1/auth/keys/rotate, which issues the replacement and leaves the old key valid
+            for a grace window. To list them, GET /v1/admin/api-keys?isActive=true with
+            expiresBefore set to tomorrow; note that filter has no lower bound, so it also
+            returns keys that expired earlier.

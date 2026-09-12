@@ -34,6 +34,12 @@ scrape_configs:
         refresh_interval: 30s
     metrics_path: /metrics
     scrape_interval: 10s
+    # /metrics is gated by default under NODE_ENV=production. The token comes
+    # from METRICS_AUTH_TOKEN in .env, projected here as a file by the compose
+    # `configs` block, so the secret is not duplicated into this file.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/metrics-token
 
   # Worker process exposes its own /metrics on the health port. Federation
   # outbound, webhook delivery, worker_jobs_processed, persist_event_unmapped,
@@ -47,7 +53,22 @@ scrape_configs:
         refresh_interval: 30s
     metrics_path: /metrics
     scrape_interval: 10s
+    # Same token. The worker's health port serves /metrics behind the same
+    # bearer gate; /health and /health/ready stay open for the probes.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/metrics-token
 
+  # The collector's Prometheus exporter. It carries the OpenTelemetry SDK's own
+  # auto-instrumentation metrics for HTTP and PostgreSQL, and NOT the
+  # `agledger_*` namespace: each AGLedger process emits the metrics it records
+  # twice, to prom-client and over OTLP, and the OTLP copy is re-bucketed onto
+  # the SDK's default millisecond boundaries. Scraped alongside the two jobs
+  # above it made every unscoped expression sum a correct copy with a wrong one,
+  # so a p95 panel read about 4.75 s on an install whose sweeps take 4 ms. The
+  # namespace is dropped in otel-collector-config.yaml, where the comment
+  # explains it; this job stays for what the collector alone produces, which no
+  # shipped dashboard or rule reads yet.
   - job_name: otel-collector
     static_configs:
       - targets: ['otel-collector:8889']
