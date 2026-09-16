@@ -1,6 +1,6 @@
 # Changelog
 
-This changelog tracks changes to the AGLedger installer (this repository). For AGLedger server changes, see <https://agledger.ai/docs/changelog>.
+This changelog tracks changes to the AGLedger installer (this repository) and, from v1.7.0 on, the server changes each release ships against.
 
 Releases here are tagged to match the AGLedger server version they ship against.
 
@@ -10,6 +10,15 @@ Releases here are tagged to match the AGLedger server version they ship against.
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.7.0.
 
+Server changes in v1.7.0:
+
+Removes commission tracking: the engine no longer accepts `commissionPct` on a record or `commissionSourceField` on a registered type, and no longer computes or returns `commissionAmount`.
+
+Removes nine routes and answers each with a 410 naming its replacement: counter-proposal (`POST /v1/records/{id}/counter-propose`, `POST /v1/records/{id}/accept-counter`), the dispute tier ladder (`POST /v1/records/{recordId}/dispute/escalate`), agent reputation (`GET /v1/agents/{agentId}/reputation`, `GET /v1/agents/{agentId}/reputation/{type}`, `GET /federation/v1/agents/{agentId}/reputation`, `POST /federation/v1/reputation/contribute`), and the peer agent directory (`POST /federation/v1/peer/agent-sync`, `POST /federation/v1/admin/peers/{peerHubId}/resync`).
+
+Adds agent drift (`GET /v1/agents/drift`, `GET /v1/agents/{agentId}/drift`) in place of the removed reputation score, `POST /v1/disputes/{id}/resolve`, and `POST /v1/admin/agents/{id}/reactivate` and `POST /v1/admin/orgs/{id}/reactivate`.
+
+`/v1/events`, SIEM polling and `GET /v1/agents/{agentId}/history` project record status at read time, including for rows written before this upgrade: `DRAFT` and `REGISTERED` read as `CREATED`, `COMPLETION_ACCEPTED` and `PENDING_VERDICT` read as `PROCESSING`, `COMPLETION_INVALID` reads as `ACTIVE`, `VERDICT_REJECTED` reads as `FAILED`, `TIMED_OUT` reads as `EXPIRED`, and both cancel states read as `CANCELLED` with the distinction carried in `terminalReason`. Migration 007 takes exclusive locks on the record tables and wants a maintenance window.
 
 ## v1.6.0 — 2026-08-29
 
