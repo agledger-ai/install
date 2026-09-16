@@ -6,6 +6,10 @@ Releases here are tagged to match the AGLedger server version they ship against.
 
 ## Unreleased
 
+Compose keeps Prometheus series on a named `prometheus-data` volume, bounded at 30 days or 10 GB, so they survive `docker compose down`. The first start on this version begins an empty Prometheus store: the previous store sits on an anonymous volume the new mount no longer reads. Grafana dashboards and the chain are unaffected.
+
+Every shipped alert links to a runbook section in `monitoring/runbooks.md`, and a new `agledger-targets` rule group covers a process that stops being scraped, a failing scrape, restarts and event-loop lag. On Kubernetes, `monitoring.prometheusRule.overrides` retunes a named alert's severity, `for`, `keep_firing_for` or `expr` without forking the file, `monitoring.prometheusRule.runbookUrl` rebases the runbook links, and `config.otelExporterOtlpEndpoint` enables tracing and opens egress to the collector. Dashboards read through `datasource` and `job` variables.
+
 ## v1.7.0 — 2026-09-12
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.7.0.
