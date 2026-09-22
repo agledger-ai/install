@@ -93,18 +93,24 @@ Secret name — either the user-supplied existing secret or the chart-generated 
 
 {{/*
 License file volumeMount (use inside container.volumeMounts).
+
+A directory, not a subPath mount of the file: kubelet never refreshes a subPath
+projection, so a rotated license Secret followed by POST /v1/admin/license/reload
+(which re-reads AGLEDGER_LICENSE_KEY_FILE for exactly that case) would read the
+original bytes for the life of the pod. The env var points at the file inside
+the directory; see configmap.yaml.
 */}}
 {{- define "agledger.licenseVolumeMount" -}}
 {{- if ((.Values.license).keyFile).enabled }}
 - name: license
   mountPath: {{ ((.Values.license).keyFile).mountPath | quote }}
-  subPath: {{ ((.Values.license).keyFile).secretKey | quote }}
   readOnly: true
 {{- end }}
 {{- end }}
 
 {{/*
-License file volume (use inside pod.volumes).
+License file volume (use inside pod.volumes). Projects only secretKey so other
+keys in a shared Secret do not land in the directory.
 */}}
 {{- define "agledger.licenseVolume" -}}
 {{- if ((.Values.license).keyFile).enabled }}
@@ -112,6 +118,9 @@ License file volume (use inside pod.volumes).
   secret:
     secretName: {{ ((.Values.license).keyFile).secretName | quote }}
     defaultMode: 292  # 0444
+    items:
+      - key: {{ ((.Values.license).keyFile).secretKey | quote }}
+        path: {{ ((.Values.license).keyFile).secretKey | quote }}
 {{- end }}
 {{- end }}
 
@@ -181,7 +190,7 @@ Refuse a values file that nulls a block the chart cannot render without.
 
 `<block>: null` is the documented Helm idiom for dropping a default map, and a
 key whose body is commented out parses the same way. For an optional-feature
-block (ingress, hpa, provisioning, license, marketplace, openshift, postgres)
+block (ingress, hpa, provisioning, license, marketplace, signing, openshift, postgres)
 that reads as "not using this", and the chart renders with the feature off. For
 the two groups below it does not, so the operator has to say what they meant:
 
@@ -247,7 +256,13 @@ differ in emphasis, and neither may be unsafe on its own.
 {{- if and (not $extUrl) (.Values.ingress).enabled (gt (len ((.Values.ingress).hosts | default list)) 0) -}}
 {{- $firstHost := (index .Values.ingress.hosts 0).host -}}
 {{- $hasAlbSsl := hasKey ((.Values.ingress).annotations | default dict) "alb.ingress.kubernetes.io/certificate-arn" -}}
-{{- $scheme := ternary "https" "http" (or (gt (len ((.Values.ingress).tls | default list)) 0) $hasAlbSsl) -}}
+{{- /* `allowPlainHttp` says TLS terminates in FRONT of this Ingress: a service
+       mesh, or a load balancer holding the certificate and speaking HTTP to the
+       cluster. The public URL in that arrangement is https, and this value is
+       the permanent `iss` of every record, so reading the missing `tls` block
+       as http would sign a scheme the Server is not reached on. Same reasoning
+       as $hasAlbSsl above, which is one concrete instance of it. */}}
+{{- $scheme := ternary "https" "http" (or (gt (len ((.Values.ingress).tls | default list)) 0) $hasAlbSsl ((.Values.ingress).allowPlainHttp)) -}}
 {{- $extUrl = printf "%s://%s" $scheme $firstHost -}}
 {{- end -}}
 {{- if and (not $extUrl) (.Values.route).enabled ((.Values.route).host) -}}
@@ -258,7 +273,7 @@ differ in emphasis, and neither may be unsafe on its own.
 {{- if .Release.IsUpgrade -}}
 {{- fail (printf "config.externalUrl is not set and nothing else supplies one, and this is an UPGRADE, so this install already has an issuer.\n\nAGLEDGER_EXTERNAL_URL is the issuer (`iss`) signed into every record, receipt and certificate already written. Those rows keep the issuer they were signed with. Setting a DIFFERENT value now does not correct them, it splits the chain into two issuers, and an offline verifier reading the old rows still resolves keys against the old one. Releases before this one defaulted to https://localhost when nothing supplied a value, so that is very likely what yours is signing with today.\n\nRead what this install actually uses, and set exactly that:\n  kubectl -n %s get configmap %s -o jsonpath='{.data.AGLEDGER_EXTERNAL_URL}'\n  --set config.externalUrl=<the value that prints>\n\nGET /v1/records/{id} on any existing record answers it too: the `iss` of its signed envelope. Choose a new value only if you intend a new issuer and accept that the chain splits at this upgrade." .Release.Namespace (include "agledger.fullname" .)) -}}
 {{- else -}}
-{{- fail "config.externalUrl is not set and nothing else supplies one. It becomes AGLEDGER_EXTERNAL_URL, the issuer (`iss`) signed into every record, receipt and certificate this Server writes, and it is permanent: rows already signed keep the issuer they were signed with, so changing it later splits the chain rather than correcting it. Set the public URL this Server will be reachable at:\n  --set config.externalUrl=https://agledger.example.com\nAn ingress host or a route.host answers it too. For a single node with no domain, say so explicitly:\n  --set config.externalUrl=https://localhost\n\nIf this release ALREADY EXISTS (a GitOps renderer such as Argo CD runs `helm template`, which cannot tell an upgrade from an install), read the issuer it is already signing with and set exactly that, rather than choosing a new one here:\n  kubectl -n <namespace> get configmap <release>-agledger-chart -o jsonpath='{.data.AGLEDGER_EXTERNAL_URL}'" -}}
+{{- fail (printf "config.externalUrl is not set and nothing else supplies one. It becomes AGLEDGER_EXTERNAL_URL, the issuer (`iss`) signed into every record, receipt and certificate this Server writes, and it is permanent: rows already signed keep the issuer they were signed with, so changing it later splits the chain rather than correcting it. Set the public URL this Server will be reachable at:\n  --set config.externalUrl=https://agledger.example.com\nAn ingress host or a route.host answers it too. For a single node with no domain, say so explicitly:\n  --set config.externalUrl=https://localhost\n\nIf this release ALREADY EXISTS (a GitOps renderer such as Argo CD runs `helm template`, which cannot tell an upgrade from an install), read the issuer it is already signing with and set exactly that, rather than choosing a new one here:\n  kubectl -n %s get configmap %s -o jsonpath='{.data.AGLEDGER_EXTERNAL_URL}'" .Release.Namespace (include "agledger.fullname" .)) -}}
 {{- end -}}
 {{- else -}}
 {{- $extUrl = "https://localhost" -}}
@@ -288,7 +303,7 @@ Rendered entry by entry rather than with a bare `toYaml` over the whole list.
 Helm's `--set extraEnv[0].value=500` yields an int64 and `...=true` a bool, but a
 Kubernetes EnvVar `value` must be a string, so a whole-list `toYaml` passes the
 native type through and the apiserver rejects the apply with "expected string,
-got &value.valueUnstructured" (api#1018). Quoting here means `--set` works
+got &value.valueUnstructured". Quoting here means `--set` works
 without `--set-string`.
 
 `value` and `valueFrom` are branched, never both emitted: an empty `value`
@@ -398,21 +413,20 @@ Mounts each subdirectory from its ConfigMap.
   mountPath: {{ $.Values.provisioning.configPath }}/{{ $subdir }}
   readOnly: true
 {{- end }}
-{{- /* trusted-issuers.yaml is a FILE at the provisioning root, not a
-       subdirectory: the loader reads exactly
-       ${PROVISIONING_CONFIG_PATH}/trusted-issuers.yaml. A whole-directory mount
-       at the root would shadow the four subdirectory mounts above, so this one
-       is projected with subPath.
+{{- /* trusted-issuers.yaml is projected into its OWN subdirectory,
+       ${PROVISIONING_CONFIG_PATH}/trusted-issuers/, and the loader accepts the
+       file at either that path or the provisioning root.
 
-       subPath does not track ConfigMap updates, which costs nothing here: the
-       loader reads the file at boot and on an explicit reload, and a values
-       change rolls the pods anyway. Rendered only when there is content to
-       project, because a subPath naming a key the ConfigMap does not carry
-       fails the container at startup even with `optional: true`. */}}
+       A directory, not a subPath mount of the file: kubelet never refreshes a
+       subPath projection, so an operator editing the ConfigMap and calling
+       POST /v1/admin/provisioning/reload read the original bytes for the life
+       of the pod and got a 200 with a clean report. A whole-directory mount at
+       the ROOT is not an option either, since it would shadow the four
+       subdirectory mounts above; its own subdirectory is what leaves both
+       working. Rendered only when there is content to project. */}}
 {{- if or (($.Values.provisioning).trustedIssuers) ((($.Values.provisioning).existingConfigMaps | default dict).trustedIssuers) }}
 - name: provisioning-trusted-issuers
-  mountPath: {{ $.Values.provisioning.configPath }}/trusted-issuers.yaml
-  subPath: trusted-issuers.yaml
+  mountPath: {{ $.Values.provisioning.configPath }}/trusted-issuers
   readOnly: true
 {{- end }}
 {{- end }}
@@ -716,3 +730,46 @@ Usage: {{- include "agledger.assertApiGracePeriodFitsDrain" . }}
 {{- fail (printf "%s leaves the API process only %ds after SIGTERM (preStop sleep of %ds burns inside the grace period), but it drains for up to %ds and needs %ds of headroom. The kubelet would SIGKILL mid-drain: in-flight requests severed, the last SIEM export batch dropped, the database pool never released. Set api.terminationGracePeriodSeconds to at least %d, or lower api.preStopSleepSeconds." $source $effective $preStop $drain $headroom (add (add $drain $headroom) $preStop)) -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Checksum of the chart-managed Secret's operator-visible contents.
+
+Used as a pod-template annotation so that changing a secret VALUE rolls the api
+and worker pods. Without it a Secret-only change leaves both Deployments running
+the old values: `envFrom` resolves a Secret once, at pod start.
+
+It hashes the RESOLVED values (operator value, else what the release Secret
+already carries) rather than re-rendering secret.yaml, because that template
+generates API_KEY_SECRET, METRICS_AUTH_TOKEN and the bundled-PostgreSQL password
+with `randAlphaNum` when none is supplied. Re-rendering it inside a checksum
+would produce different random values on every render, so the annotation would
+change on every upgrade and roll both Deployments whether or not anything moved.
+
+Empty under `secrets.existingSecret`: the chart writes no Secret then, and
+nothing here can see what is in the operator's. Rolling the Deployments after a
+change to that Secret is the operator's job, and values.yaml says so.
+*/}}
+{{- define "agledger.secretChecksum" -}}
+{{- if .Values.secrets.existingSecret -}}
+{{- "" -}}
+{{- else -}}
+{{- $existing := ((lookup "v1" "Secret" .Release.Namespace (include "agledger.fullname" .)).data) | default dict -}}
+{{- $parts := list
+  (.Values.secrets.vaultSigningKey        | default ($existing.VAULT_SIGNING_KEY | default "" | b64dec))
+  (.Values.secrets.vaultSigningKeyPrevious | default "")
+  ((.Values.signing).kmsKeyArn            | default "")
+  (.Values.secrets.apiKeySecret           | default ($existing.API_KEY_SECRET | default "" | b64dec))
+  (.Values.secrets.apiKeySecretPrevious   | default "")
+  (.Values.secrets.metricsAuthToken       | default ($existing.METRICS_AUTH_TOKEN | default "" | b64dec))
+  (.Values.secrets.webhookEncryptionKey   | default "")
+  (.Values.secrets.webhookEncryptionKeyPrevious | default "")
+  (.Values.secrets.databaseUrlMigrate     | default "")
+  (.Values.secrets.databaseUrlDirect      | default "")
+  (.Values.secrets.license                | default "")
+  (.Values.secrets.licenseKey             | default "")
+  (.Values.database.externalUrl           | default "")
+  (((.Values.postgres).bundled).password  | default ($existing.POSTGRES_PASSWORD | default "" | b64dec))
+-}}
+{{- join "|" $parts | sha256sum -}}
+{{- end -}}
+{{- end -}}

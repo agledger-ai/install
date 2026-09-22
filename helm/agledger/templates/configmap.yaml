@@ -20,6 +20,16 @@ data:
   AGLEDGER_LAUNCH_FROZEN: "true"
   TRUST_PROXY: {{ .Values.config.trustProxy | quote }}
   OTEL_PROVIDER: {{ .Values.config.otelProvider | quote }}
+  {{- /* Absent by default, and absent is the off switch: the Server starts its
+         OTel SDK only when this variable is set, so an empty value has to be
+         left out rather than written as "". It must be the BASE url of the
+         collector's HTTP receiver (`:4318`), with no `/v1/...` suffix, because
+         the exporters append the per-signal path themselves and this build
+         speaks OTLP over HTTP rather than gRPC. A `:4317` value or one
+         carrying a signal path boots and WARNs, and nothing arrives. */}}
+  {{- if .Values.config.otelExporterOtlpEndpoint }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelExporterOtlpEndpoint | quote }}
+  {{- end }}
   AGLEDGER_EXAMPLE_CONTRACT_TYPE: {{ .Values.config.exampleType | quote }}
   RATE_LIMIT_ENABLED: {{ .Values.config.rateLimitEnabled | quote }}
   {{- /* RATE_LIMIT_STORE defaults to `memory`, which counts per replica: two
@@ -52,7 +62,7 @@ data:
   AGLEDGER_RELEASE_DATE: {{ (.Values.license).releaseDate | quote }}
   {{- end }}
   {{- if ((.Values.license).keyFile).enabled }}
-  AGLEDGER_LICENSE_KEY_FILE: {{ ((.Values.license).keyFile).mountPath | quote }}
+  AGLEDGER_LICENSE_KEY_FILE: {{ printf "%s/%s" ((.Values.license).keyFile).mountPath ((.Values.license).keyFile).secretKey | quote }}
   {{- end }}
   {{- if (include "agledger.bundledPostgres" .) }}
   ALLOW_DB_WITHOUT_SSL: "true"
@@ -69,6 +79,15 @@ data:
   {{- end }}
   {{- if (.Values.marketplace).productId }}
   AWS_MARKETPLACE_PRODUCT_ID: {{ (.Values.marketplace).productId | quote }}
+  {{- end }}
+  {{- if (.Values.signing).kmsKeyArn }}
+  VAULT_SIGNING_KEY_KMS_ARN: {{ .Values.signing.kmsKeyArn | quote }}
+  {{- if .Values.signing.kmsEndpoint }}
+  VAULT_SIGNING_KEY_KMS_ENDPOINT: {{ .Values.signing.kmsEndpoint | quote }}
+  {{- end }}
+  {{- if .Values.signing.remoteMaxPerSecond }}
+  VAULT_SIGNING_REMOTE_MAX_PER_SECOND: {{ .Values.signing.remoteMaxPerSecond | quote }}
+  {{- end }}
   {{- end }}
   {{- if (.Values.marketplace).publicKeyVersion }}
   AWS_MARKETPLACE_PUBLIC_KEY_VERSION: {{ (.Values.marketplace).publicKeyVersion | quote }}

@@ -6,8 +6,13 @@
 # Usage (external DB):
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --wait
 #
-# Adds: restart policies, resource limits, security hardening, read-only
-# filesystems, and log rotation for application services.
+# Adds: restart policies, resource limits, read-only filesystems, and log
+# rotation for application services.
+#
+# Dropped capabilities and no-new-privileges are NOT here. They are in the base
+# docker-compose.yml, which every one of the invocations above includes, so they
+# hold on an eval stack as well as a production one. Repeating them here would
+# read as this overlay being what turns them on.
 # =============================================================================
 
 services:

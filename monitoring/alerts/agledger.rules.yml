@@ -37,6 +37,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerchainentrydropped"
           summary: "A federation audit-vault append was dropped"
           description: >-
             {{ $value | printf "%.0f" }} chain append(s) failed and were swallowed in the
@@ -59,6 +60,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgeraudittraildropped"
           summary: "Audit-trail writes are being dropped"
           description: >-
             A state change committed and the event recording it did not. /v1/events and
@@ -79,6 +81,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerworkenqueuedropped"
           summary: "Queued work was dropped instead of enqueued"
           description: >-
             An enqueue failed and was swallowed. Cascade-cancel drops leave a child record
@@ -98,6 +101,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgergatejobretriesexhausted"
           summary: "Gate-worker jobs gave up after exhausting their retries"
           description: >-
             A cascade rollup that exhausts its retries on the last child's job leaves the
@@ -119,11 +123,55 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgersiemexportdegraded"
           summary: "SIEM export is dropping records"
           description: >-
-            The SIEM feed is lossy. Poll failures and refused poll batches retry from an
-            unadvanced cursor and recover; dropped bus-event batches and file lines do
-            not. agledger_siem_poll_delivery_retries_total separates the two.
+            The SIEM feed is lossy. Three of the four terms are permanent loss: a mapper
+            failure skips the row and advances the cursor past it, and dropped bus-event
+            batches and file lines are gone. agledger_siem_poll_failures_total is the
+            exception, retrying from an unadvanced cursor. A sink that merely refused a
+            polled batch is not in this rule at all.
+
+      - alert: AGLedgerSiemCollectorRejecting
+        # The other half of "the SIEM stopped receiving", and the half the lag
+        # gauge and the retry counter cannot separate: a collector that is DOWN
+        # and a collector that is REFUSING THIS SERVER'S REQUESTS look identical
+        # from agledger_siem_poll_delivery_retries_total, and only one of them
+        # recovers without somebody changing a setting.
+        #
+        # Every status behind this counter is the collector answering on the
+        # request's own terms: a body shape it will not take (400 from Splunk's
+        # /services/collector/event on an NDJSON body, which is SIEM_HTTP_MODE
+        # left at ndjson against an HEC endpoint), a credential it will not
+        # accept (401, 403), a path that is not there (404), a body it considers
+        # too large (413), or a document it cannot parse (422). Retrying changes
+        # none of them, and the poller backs off to its ceiling rather than
+        # climbing the ladder.
+        #
+        # Nothing is LOST while this fires. The cursor does not advance, the
+        # rows stay in `events` and `system_audit_log`, and delivery resumes
+        # from where it stopped. What IS lost is detection latency, for as long
+        # as it takes to fix, which is why this is a warning and not silence.
+        # The Server logs the collector's own reply at ERROR once per state
+        # change; that line is what says which of the statuses above it is.
+        expr: |
+          sum by (status) (increase(agledger_siem_http_permanent_rejections_total[15m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgersiemcollectorrejecting"
+          summary: "SIEM collector is refusing this Server's batches"
+          description: >-
+            The SIEM HTTP collector answered {{ $labels.status }} to every batch for the last
+            15 minutes. That is the collector rejecting the request rather than being unable
+            to take one, so it will not clear by waiting: the poller has backed off to its
+            ceiling and is holding the cursor. Nothing is lost, and delivery resumes from the
+            same position once the configuration is fixed. Read the Server's own log for the
+            collector's reply, logged at ERROR once per state change. 400 on a Splunk HEC
+            endpoint means SIEM_HTTP_MODE is still ndjson; 401 and 403 mean the token in
+            SIEM_HTTP_AUTH_HEADER; 404 means SIEM_HTTP_URL; 413 means the collector's own body
+            limit against SIEM_BATCH_SIZE and SIEM_MAX_EVENT_BYTES.
 
       - alert: AGLedgerSiemPollerFallingBehind
         # Age of the oldest system_audit_log row the poller has not forwarded,
@@ -131,16 +179,41 @@ groups:
         # it reads the same whether the poller is saturated, blocked behind a
         # long write transaction it must not page over, or simply stopped.
         #
-        # `max_over_time`, not the bare gauge: a poller runs in the API and in
-        # the worker, only one holds the cursor row per cycle, and a process that
-        # spends a while losing that race publishes nothing new. Sampling the
+        # `max_over_time`, not the bare gauge: the worker is the process that
+        # drains, only one of its replicas holds the cursor row per cycle, and a
+        # process that spends a while losing that race publishes nothing new. Sampling the
         # window's maximum keeps the alert on a series that goes quiet or dips
         # between scrapes instead of resetting the `for:` hold every time it does.
-        expr: max_over_time(agledger_siem_poll_lag_seconds[5m]) > 300
+        #
+        # Gated on the process's own freshness stamp. Only a cycle that held
+        # the cursor writes the lag gauge, and @prometheus-io/client serves the
+        # last value it was given for the life of the process, so a process
+        # that stops winning the cursor, or stops polling, would otherwise
+        # publish its last reading until it restarts. No aggregation across
+        # processes fixes that: max() keeps the stale high and min() hides a
+        # real one. The window equals the `for:` hold, so a reading must be
+        # re-measured after the hold began before the rule can fire, and a
+        # process that stops measuring clears within the window. At the default
+        # settings it is wider than the longest gap between one process's
+        # measurements while it holds the cursor: the poll interval, the
+        # delivery backoff cap (MAX_DELIVERY_BACKOFF_MS), and a saturated
+        # cycle's POLL_CYCLE_MAX_ROWS at SIEM_BATCH_SIZE rows a batch, each
+        # batch taking up to POLL_DELIVERY_DEADLINE_MS against a slow sink. An
+        # install that sets SIEM_FLUSH_INTERVAL_MS longer than the window, or
+        # shrinks SIEM_BATCH_SIZE far enough that a saturated cycle outlasts
+        # it, loses this rule.
+        #
+        # Plain `and`, which matches on every label: the stamp and the lag are
+        # unlabelled gauges in one process's registry, so each lag series has
+        # exactly one stamp series from the same scrape with the same labels.
+        expr: |
+          max_over_time(agledger_siem_poll_lag_seconds[5m]) > 300
+          and (time() - agledger_siem_poll_lag_updated_timestamp_seconds < 600)
         for: 10m
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgersiempollerfallingbehind"
           summary: "SIEM poller is behind the audit write rate"
           description: >-
             The oldest audit row the SIEM poller has not forwarded is
@@ -200,18 +273,22 @@ groups:
             audit write rate before ruling the watermark out.
 
       - alert: AGLedgerSiemPollerStatsBlanked
-        # Below pg_read_all_stats, Postgres blanks other roles' xact_start. The
-        # watermark then degrades to now() for that writer and its in-flight
-        # rows are skipped permanently, BEHIND the advanced cursor where
-        # measureBacklogSeconds cannot see them: the lag gauge reads 0 through
-        # the whole loss, so AGLedgerSiemPollerFallingBehind never fires. The
-        # poller halts rather than run unprotected, so this fires on the halt
-        # rather than on a skip that leaves no trace.
+        # Below pg_read_all_stats, Postgres blanks other roles' xact_start. A
+        # poller that paged anyway would degrade the watermark to now() for that
+        # writer and skip its in-flight rows permanently, BEHIND the advanced
+        # cursor where measureBacklogSeconds cannot see them: the lag gauge would
+        # read 0 through the whole loss and AGLedgerSiemPollerFallingBehind would
+        # never fire. It halts instead, so this fires on the halt rather than on
+        # a skip that leaves no trace. The halted cycle still holds the cursor
+        # and still measures the backlog, so the lag gauge climbs and
+        # AGLedgerSiemPollerFallingBehind follows this alert rather than
+        # replacing it.
         expr: increase(agledger_siem_poll_skipped_total{reason="stats_blanked"}[15m]) > 0
         for: 0m
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgersiempollerstatsblanked"
           summary: "SIEM poller cannot see an in-flight writer's transaction"
           description: >-
             The SIEM poller is running on a role without pg_read_all_stats while another
@@ -221,9 +298,10 @@ groups:
 
       - alert: AGLedgerSiemStreamHalted
         # The pull channel's equivalent of AGLedgerSiemPollerStatsBlanked, and
-        # NOT covered by it: an install that configured no push sink runs no
+        # NOT covered by it: an install that left SIEM_ENABLED off runs no
         # poller at all, so the poller's series never appear while collectors
-        # pull GET /v1/siem/stream. The route answers 503 rather than serve a
+        # pull GET /v1/siem/stream, which is registered either way. The route
+        # answers 503 rather than serve a
         # page it cannot prove is complete, so a halt is loud on the caller's
         # side too; this is what tells the operator which database setting to
         # change.
@@ -232,6 +310,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgersiemstreamhalted"
           summary: "SIEM pull stream halted ({{ $labels.reason }})"
           description: >-
             GET /v1/siem/stream refused to serve on {{ $labels.instance }} because it
@@ -239,7 +318,8 @@ groups:
             (reason={{ $labels.reason }}). SIEM collectors pulling this endpoint are
             receiving 503 and are not ingesting. For track_activities_off, set
             track_activities = on. For stats_blanked, grant the Server's role
-            pg_read_all_stats.
+            pg_read_all_stats. For unreadable, the watermark query came back with no row
+            at all, so look at what sits between the Server and Postgres.
 
       - alert: AGLedgerSiemStreamWatermarkStalled
         # The DEFERRAL alarm, and the one AGLedgerSiemStreamHalted does not
@@ -252,11 +332,25 @@ groups:
         # collector cannot tell from "caught up", with no 503 and no halt
         # counter. Rows are withheld and not lost, so this is a latency alarm:
         # warning, and held long enough that a routine backup does not page.
-        expr: min_over_time(agledger_siem_stream_watermark_lag_seconds[10m]) > 600
+        #
+        # Gated on the process's own freshness stamp. Only a stream request
+        # writes the lag gauge, and @prometheus-io/client serves the last value
+        # it was given for the life of the process, so a replica that stops
+        # receiving collector pulls would otherwise publish its last ceiling
+        # until it restarts. The window equals the `for:` hold, so a reading
+        # must be re-measured after the hold began before the rule can fire,
+        # and a replica that stops being pulled clears within the window. The
+        # cost is that a collector pulling a given replica less often than the
+        # window never trips it there. Plain `and` for the same reason as the
+        # poller rule: one unlabelled stamp per process, same labels as the lag.
+        expr: |
+          min_over_time(agledger_siem_stream_watermark_lag_seconds[10m]) > 600
+          and (time() - agledger_siem_stream_watermark_updated_timestamp_seconds < 600)
         for: 10m
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgersiemstreamwatermarkstalled"
           summary: "SIEM pull stream is withholding rows behind a long transaction"
           description: >-
             The visibility ceiling on {{ $labels.instance }} has been
@@ -269,11 +363,24 @@ groups:
       - alert: AGLedgerSiemStreamStatsRestricted
         # Same pre-failure signal as AGLedgerSiemPollerStatsRestricted, on the
         # gauge the pull channel publishes for itself.
-        expr: max_over_time(agledger_siem_stream_blanked_backends[15m]) > 0
+        #
+        # Gated on the same freshness stamp as
+        # AGLedgerSiemStreamWatermarkStalled, which is written beside this
+        # gauge on every stream request. A replica that stops being pulled
+        # would otherwise publish its last count until it restarts. The window
+        # equals the `for:` hold, so a count must be re-measured after the hold
+        # began before the rule can fire, and a replica that stops being pulled
+        # clears within the window; a collector pulling a replica less often
+        # than that never trips it there. Plain `and`: one unlabelled stamp per
+        # process, same labels as the count.
+        expr: |
+          max_over_time(agledger_siem_stream_blanked_backends[15m]) > 0
+          and (time() - agledger_siem_stream_watermark_updated_timestamp_seconds < 1800)
         for: 30m
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgersiemstreamstatsrestricted"
           summary: "SIEM pull stream has restricted visibility into pg_stat_activity"
           description: >-
             {{ $value | printf "%.0f" }} same-database backend(s) are invisible to the
@@ -286,11 +393,28 @@ groups:
         # read-only session can skip nothing, but they say the poller is on a
         # role that will halt the moment one of them writes. Warning with a long
         # hold: this is a standing configuration fact, not an event.
-        expr: max_over_time(agledger_siem_poll_blanked_backends[15m]) > 0
+        #
+        # Gated on the gauge's own freshness stamp, which every poll batch
+        # that held the cursor and read the watermark writes beside it. A
+        # process that stops winning the cursor, or whose poller halts on
+        # track_activities before reaching this gauge, would otherwise publish
+        # its last count until it restarts. The window equals the `for:` hold,
+        # so a count must be re-measured after the hold began before the rule
+        # can fire, and a process that stops measuring clears within the
+        # window. At default settings it sits far above the gap between one
+        # process's batches while it holds the cursor, which the poll interval,
+        # the delivery backoff cap and one batch's delivery deadline bound; an
+        # install that sets SIEM_FLUSH_INTERVAL_MS longer than the window loses
+        # this rule. Plain `and`: one
+        # unlabelled stamp per process, same labels as the count.
+        expr: |
+          max_over_time(agledger_siem_poll_blanked_backends[15m]) > 0
+          and (time() - agledger_siem_poll_blanked_backends_updated_timestamp_seconds < 1800)
         for: 30m
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgersiempollerstatsrestricted"
           summary: "SIEM poller has restricted visibility into pg_stat_activity"
           description: >-
             {{ $value | printf "%.0f" }} same-database backend(s) are invisible to the
@@ -307,6 +431,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerratelimitstorefailing"
           summary: "The rate-limit store is failing and requests are passing unlimited"
           description: >-
             {{ $value | printf "%.0f" }} store failure(s) in the last 15m on
@@ -326,10 +451,92 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerconfigreloadfailing"
           summary: "A config reload or cache refresh is failing"
           description: >-
             The running configuration may not match what is on disk, and replicas may be
             serving stale schemas.
+
+      - alert: AGLedgerOidcJtiReplayBurst
+        # A verified token presented twice. Every other refusal in this file is
+        # a credential that did not check out; this one did, which is why the
+        # threshold is a burst rather than a single event: a client that cannot
+        # mint a token per request produces a steady trickle the operator has
+        # already decided to live with by leaving jtiSingleUse on, and a capture
+        # being replayed produces a rate that client never had.
+        #
+        # `reason="replayed"` only. The other value this counter carries,
+        # `jti_unregistrable`, is an oversized jti the register refused, which
+        # is a client defect and not a replay.
+        #
+        # Summed, because the threshold is a rate claim and the API process
+        # publishes this counter. A load balancer spreads one client's requests
+        # over every API replica, so a bare `increase()` divides the burst by
+        # `api.replicaCount`: at three replicas a capture being replayed
+        # fifteen times in ten minutes reads as five on each series and reaches
+        # the threshold on none of them. `by (reason)` keeps the label the
+        # selector pins, which is what the runbook's own breakdown query
+        # groups on.
+        expr: sum by (reason) (increase(agledger_oidc_admin_jti_replays_total{reason="replayed"}[10m])) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgeroidcjtireplayburst"
+          summary: "Admin OIDC bearers are being replayed"
+          description: >-
+            {{ $value | printf "%.0f" }} single-use admin bearer(s) were presented a second
+            time in the last 10m. The tokens verified, so a real credential from a trusted
+            IdP is being reused: either a client that holds one token for a session, or a
+            captured bearer. The paired auth.failed rows carry the issuer and the subject.
+
+      - alert: AGLedgerOidcSingleUseUnenforceable
+        # The flag that is on and enforcing nothing. A trusted_issuers row with
+        # jti_single_use set admits every presentation when the token resolves
+        # no id, so the operator who turned it on is reading the replay counter
+        # above at a healthy zero for the wrong reason.
+        #
+        # `> 0` over an hour, not a burst, because unlike a replay there is no
+        # rate at which this is acceptable: one admission proves the row cannot
+        # enforce what it promises, and the hour is only there to keep a single
+        # misconfigured client from paging on every request.
+        expr: increase(agledger_oidc_admin_jti_unenforceable_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgeroidcsingleuseunenforceable"
+          summary: "A single-use trusted issuer is admitting reusable bearers"
+          description: >-
+            {{ $value | printf "%.0f" }} admin bearer(s) were admitted in the last hour on a
+            trusted_issuers row with jtiSingleUse set, because the token carried no jti and the
+            row maps no claim to resolve one from. Single use is enforcing nothing on that row.
+            Entra ID mints uti rather than jti: add claimMapping {"jti":"uti"}. Auth0's default
+            access-token profile mints neither: switch that API to the RFC 9068 profile. Or clear
+            jtiSingleUse so the row says what it does.
+
+      - alert: AGLedgerOidcSubjectRefusalBurst
+        # The allowlist working is one refusal when someone's access is pulled.
+        # A burst is the other reading: an identity the operator excluded
+        # trying repeatedly, or an IdP projecting subjects this Server was never
+        # told about. All three doors count here because the same excluded
+        # subject can walk up to any of them with the same token.
+        expr: |
+          (sum(increase(agledger_oidc_admin_subject_refusals_total[15m])) or vector(0))
+          + (sum(increase(agledger_oidc_cert_exchange_refusals_total{reason="oidc_subject_not_allowlisted"}[15m])) or vector(0))
+          + (sum(increase(agledger_oidc_delegation_refusals_total{reason="oidc_subject_not_allowlisted"}[15m])) or vector(0)) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgeroidcsubjectrefusalburst"
+          summary: "Subjects a trusted issuer does not list are presenting valid tokens"
+          description: >-
+            {{ $value | printf "%.0f" }} subject-allowlist refusal(s) across the admin bearer
+            path, the cert exchange and the delegated on-behalf-of path in the last 15m. The
+            tokens verified against a registered trusted issuer and the subject is not on its
+            list. Either an IdP is issuing to principals this Server was not told about, or
+            somebody excluded is still trying.
 
   # ---------------------------------------------------------------------------
   # Chain integrity. Distinct from a dropped append: these fire when the chain
@@ -347,6 +554,7 @@ groups:
           # emits exactly two values, `clean` and `broken`, so excluding a third
           # that nothing emits excluded nothing: this fired CRITICAL on every
           # healthy scan.
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgervaultintegritycheckfailed"
           summary: "Vault integrity check reported a broken chain"
           description: >-
             The hash chain did not verify. Do not restart into this: capture the state
@@ -358,10 +566,47 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgercheckpointskippedbrokenchain"
           summary: "A vault checkpoint was skipped because the chain is broken"
           description: >-
             Checkpointing refused rather than anchoring over a break. Every write after
             this point is unanchored until the break is resolved.
+
+      # Key custody in AWS KMS (VAULT_SIGNING_KEY_KMS_ARN). Both rules read 0
+      # forever on an install signing with a local key.
+      - alert: AGLedgerVaultSignerUnreachable
+        # The gate itself: a process that has stopped signing because KMS did
+        # not answer. It fails its readiness probe and refuses every write; the
+        # worker holds its fetched jobs. It reopens on its own when a probe Sign
+        # is answered, so a short blip clears before `for` elapses.
+        expr: max by (instance) (agledger_vault_signer_unreachable) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgervaultsignerunreachable"
+          summary: "A process cannot reach the KMS key it signs with and has stopped writing"
+          description: >-
+            {{ $labels.instance }} refuses every chain append, checkpoint, Receipt,
+            signed webhook delivery and certificate until KMS answers a Sign call.
+            Check the KMS endpoint from that process, the key's state, and kms:Sign on
+            its role.
+
+      - alert: AGLedgerVaultRemoteSignFailing
+        # Individual Sign failures below the gate's threshold: each one is a
+        # refused write, and a steady trickle (throttling at the quota, an
+        # intermittent path) never trips the gate.
+        expr: sum(rate(agledger_vault_remote_sign_seconds_count{outcome="error"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgervaultremotesignfailing"
+          summary: "KMS Sign calls are failing"
+          description: >-
+            Every failed Sign is one write answered 503. The process log names the AWS
+            error on each; ThrottlingException means the account's Sign quota, and
+            VAULT_SIGNING_REMOTE_MAX_PER_SECOND summed across replicas should sit under it.
 
   # ---------------------------------------------------------------------------
   # Partition maintenance. The daily job (02:00 UTC) creates three months of
@@ -372,11 +617,11 @@ groups:
   # accepting appends.
   #
   # The runway and default-rows gauges below answer "how much room is left".
-  # They do NOT answer "is the job still running": prom-client holds a gauge's
-  # last value for the life of the process, so a job that stopped extending
-  # anything keeps serving a healthy 92 on every scrape. That is why the two
-  # liveness rules come first. AGLedgerWorkerJobsFailing does not cover this
-  # either, at one daily failure against ~1440 successes a day.
+  # They do NOT answer "is the job still running": @prometheus-io/client holds
+  # a gauge's last value for the life of the process, so a job that stopped
+  # extending anything keeps serving a healthy 92 on every scrape. That is why
+  # the two liveness rules come first. AGLedgerWorkerJobsFailing does not cover
+  # this either, at one daily failure against ~1440 successes a day.
   # ---------------------------------------------------------------------------
   - name: agledger-partitions
     rules:
@@ -384,7 +629,7 @@ groups:
         # The direct reading of a job that is not keeping up.
         # ensure_future_partitions() isolates each table in its own
         # subtransaction and increments this counter once per table it could not
-        # extend, so one stuck table no longer takes the other three down with
+        # extend, so one stuck table does not take the other three down with
         # it. The counter therefore reads "at least one table gained nothing"
         # rather than "nothing gained anything". Two other sites increment it
         # and neither can name a table: the call failing outright before the
@@ -397,6 +642,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerpartitionmaintenancefailing"
           summary: "The daily partition-management job is failing"
           description: >-
             At least one partitioned table gained no runway on the last run, or the runway
@@ -406,18 +652,69 @@ groups:
             Postgres error, while a call that failed outright, on a lock wait or a lost
             connection, is logged without one and means no table gained runway at all.
 
+      - alert: AGLedgerPartitionMaintenanceSkipped
+        # The third state, and the one neither rule either side of it can see.
+        # The sweep takes pg_try_advisory_xact_lock so a second copy is a no-op
+        # instead of a duplicate CREATE TABLE that reports a false failure. A
+        # skipped cycle therefore increments nothing above, and it still
+        # refreshes the runway gauges and their freshness stamp, so the
+        # not-running rule below stays green while no partition is being
+        # created.
+        #
+        # Two, not one. One skip is the guard working: a lease retry arriving
+        # while the original cycle is still going is exactly what it is for.
+        # Two is a lock held across two daily ticks, which nothing healthy does,
+        # because the lock is transaction-scoped and a cycle takes seconds. The
+        # reachable cause is a backend wedged inside ensure_future_partitions,
+        # where statement_timeout is deliberately 0 and the session is never
+        # idle in transaction, so neither database timeout ends it.
+        #
+        # 49h covers two consecutive daily ticks with an hour of slack for a
+        # tick that slid. Anything shorter can hold only one tick and could
+        # never reach two.
+        #
+        # Summed, for the same reason as the sweep rules further down: one cron
+        # tick is one job and any worker replica may take it, so two skipped
+        # ticks can land on two pods and a bare increase() counts one on each
+        # and stays silent. The counter is unlabelled, so there is nothing to
+        # group by.
+        expr: sum(increase(agledger_partition_management_skipped_total[49h])) >= 2
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerpartitionmaintenanceskipped"
+          summary: "The daily partition-management job keeps yielding to a lock holder"
+          description: >-
+            {{ $value | printf "%.0f" }} cycle(s) in the last 49h did nothing because
+            another copy of the sweep held the advisory lock. Nothing has failed and the
+            runway gauges are still being refreshed, so the other partition rules read
+            healthy, but no partition is being created either and the runway drains from
+            here. Find the holder: pg_locks where locktype = 'advisory' and objid =
+            hashtext('partition-management'), joined to pg_stat_activity.
+
       - alert: AGLedgerPartitionMaintenanceNotRunning
         # The other half: the job is not failing, it is not running. Covers a
         # dead scheduler and a worker that has never completed a run. `for: 26h`
         # clears the window after a restart, when the gauges are legitimately
         # absent until the next 02:00.
+        #
+        # `max()` over the stamp, not the bare gauge. It is unlabelled, so
+        # @prometheus-io/client materializes it at 0 on every worker process at
+        # registration, and only the replica that took the daily cron tick ever
+        # stamps it. Read per series, a second worker publishes a permanent 0,
+        # `time() - 0` is the whole Unix epoch, and the rule pages forever at
+        # `worker.replicaCount: 2` on an install whose partition job is
+        # perfectly healthy. The question the rule means is whether ANY worker
+        # has refreshed recently, which is the freshest stamp across them.
         expr: |
-          (time() - agledger_partition_gauges_updated_timestamp_seconds > 129600)
+          (time() - max(agledger_partition_gauges_updated_timestamp_seconds) > 129600)
           or absent(agledger_partition_runway_days)
         for: 26h
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerpartitionmaintenancenotrunning"
           summary: "Partition-management has not reported in over a day"
           description: >-
             The runway gauges have not been refreshed. Whatever they currently read is
@@ -432,6 +729,14 @@ groups:
         # strict subset, both `for` windows elapse together, and nothing here
         # ships an Alertmanager inhibit rule, so without this the same table
         # pages twice.
+        #
+        # `min by (table)`, and the `min` is the load-bearing half at
+        # `worker.replicaCount: 2`. Every worker that has run the job holds its
+        # own copy of the reading and holds it for the life of the process, so
+        # a replica that ran it last month and has taken no tick since keeps
+        # serving the healthy 92 it saw then. `max` would let that stale copy
+        # hide the fresh one. `min` takes the worst reading any worker holds,
+        # so the rule errs toward firing rather than toward silence.
         expr: |
           (min by (table) (agledger_partition_runway_days) < 31)
           unless (min by (table) (agledger_partition_runway_days) < 7)
@@ -439,6 +744,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerpartitionrunwaylow"
           summary: "Partition runway on {{ $labels.table }} is under a month"
           description: >-
             {{ $value | printf "%.0f" }} days of future partitions remain on
@@ -448,11 +754,13 @@ groups:
       - alert: AGLedgerPartitionRunwayExhausted
         # Same gauge, paging threshold. Under a week there is no longer room to
         # schedule the fix, and on audit_vault the failure is a write outage.
+        # `min by (table)` for the reason given on the warning rule above.
         expr: min by (table) (agledger_partition_runway_days) < 7
         for: 0m
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerpartitionrunwayexhausted"
           summary: "Partition runway on {{ $labels.table }} runs out this week"
           description: >-
             {{ $value | printf "%.0f" }} days left on {{ $labels.table }}. When it reaches
@@ -481,11 +789,17 @@ groups:
         #     gave system_audit_log the MINVALUE partition its siblings already
         #     had, so the backdated half is only reachable on an install whose
         #     default already held such a row at upgrade time.
+        #
+        # `max by (table)`, the opposite of the runway rules above and for the
+        # same reason: here the unsafe direction is silence, so the rule takes
+        # the highest count any worker holds rather than letting a replica that
+        # last read zero speak for the table.
         expr: max by (table) (agledger_partition_default_rows) > 0
         for: 15m
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerpartitiondefaultrowspresent"
           summary: "Rows are landing in the DEFAULT partition of {{ $labels.table }}"
           description: >-
             {{ $value | printf "%.0f" }} row(s) in the catch-all partition of
@@ -508,6 +822,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerfederationdeadlettered"
           summary: "Federation jobs exhausted their retries and dead-lettered"
           description: >-
             {{ $value | printf "%.0f" }} outbound job(s) of kind "{{ $labels.kind }}" will
@@ -520,6 +835,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerfederationschemadigestmismatch"
           summary: "A peer asserted a schema digest this Server does not hold"
           description: >-
             Operation "{{ $labels.operation }}". The two Servers registered the same
@@ -537,9 +853,14 @@ groups:
           sum(rate(agledger_http_request_duration_seconds_count{status_code=~"5.."}[5m]))
           / clamp_min(sum(rate(agledger_http_request_duration_seconds_count[5m])), 0.001) > 0.05
         for: 10m
+        # A 5m ratio crossing back under 5% for one evaluation is the shape of a
+        # restart, not a recovery, and a resolve-then-refire reads as two
+        # incidents. Hold the alert until it has stayed under for 5m.
+        keep_firing_for: 5m
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerhigherrorrate"
           summary: "Over 5% of requests are returning 5xx"
           description: "{{ $value | humanizePercentage }} of requests over the last 5m."
 
@@ -550,20 +871,40 @@ groups:
             sum by (le) (rate(agledger_http_request_duration_seconds_bucket[5m]))
           ) > 2
         for: 10m
+        # Same reason as AGLedgerHighErrorRate: a p95 that dips under 2s for one
+        # evaluation during a rollout should not close and reopen the alert.
+        keep_firing_for: 5m
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerhighlatency"
           summary: "P95 request latency is above 2s"
           description: "P95 is {{ $value | printf \"%.2f\" }}s."
 
       - alert: AGLedgerDbPoolSaturated
         # Waiting connections mean requests are queued behind the pool. This is
         # the shape a pool deadlock takes from the outside.
+        #
+        # Read per series on purpose, with no aggregation. Every process owns
+        # its own pool and this gauge is that pool's own waiter count, so one
+        # saturated replica is one saturated replica: summing would hide which,
+        # and would make a threshold that means "this process is blocked" into
+        # a number that grows with the replica count.
+        #
+        # "Every process" includes the worker, and only because the worker
+        # publishes these three gauges itself. They are set inside the Fastify
+        # metrics plugin, which the worker never runs, so its series came from
+        # the import alone: unlabelled gauges materialize at 0 at registration
+        # and the worker's /metrics served that 0 forever. The worker's pool is
+        # the one the maintenance sweeps, the gate worker and the delivery
+        # workers contend for, so the per-series reading was true of the API
+        # replicas and silent on the likeliest saturation of the two.
         expr: agledger_db_pool_waiting_connections > 0
         for: 5m
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerdbpoolsaturated"
           summary: "Requests are queued waiting for a database connection"
           description: >-
             {{ $value | printf "%.0f" }} waiter(s) for 5m. Sustained waiting is either an
@@ -580,7 +921,9 @@ groups:
         # path to an external database, an OOM-killer cycling the Postgres
         # process, or something terminating backends on a timer. Every trip
         # costs the transaction that was open, which for a pg-boss job is a
-        # retry and for a request is a 500.
+        # retry and for a request is a 503 /problems/database-unavailable (a
+        # terminated backend is 57P01 or the driver's `Connection terminated`,
+        # both of which the API classifies rather than answering 500).
         #
         # Counts roughly double: one backend death raises both the FATAL
         # message and the socket close.
@@ -589,6 +932,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerdbconnectionsdropping"
           summary: "Database connections are being dropped under active clients"
           description: >-
             Backends have been dying under checked-out clients for 10m. Check the database
@@ -596,11 +940,19 @@ groups:
             external. Open transactions are lost each time.
 
       - alert: AGLedgerQueueBacklogGrowing
-        expr: sum by (queue) (agledger_pgboss_queue_size{state="queued"}) > 1000
+        # max, not sum, for the same reason as AGLedgerApiKeyExpiringTomorrow
+        # below. Only the API process publishes this gauge, and every API
+        # replica asks pg-boss for the same shared queue's depth on the same
+        # 15-second refresh, so each one republishes the whole install's
+        # backlog rather than a share of it. Summing multiplies it by
+        # `api.replicaCount`: two replicas watching a healthy 600-job queue
+        # would report 1200 and page.
+        expr: max by (queue) (agledger_pgboss_queue_size{state="queued"}) > 1000
         for: 15m
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerqueuebackloggrowing"
           summary: "Queue {{ $labels.queue }} has a growing backlog"
           description: >-
             {{ $value | printf "%.0f" }} jobs pending for 15m. Either the worker is down or
@@ -614,8 +966,85 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerworkerjobsfailing"
           summary: "Over 10% of worker jobs are failing"
           description: "{{ $value | humanizePercentage }} of jobs over the last 10m."
+
+      - alert: AGLedgerMaintenanceSweepFailing
+        # The rule above cannot see this. The maintenance queue multiplexes
+        # about twenty periodic sweeps, and one failing every cycle is a small
+        # fraction of a busy worker's jobs: on a minute-cadence sweep that is
+        # 60 failures an hour against everything else the worker did, which
+        # never reaches the 10% ratio. The `task` label is what makes one
+        # broken sweep visible, and it exists only on this counter.
+        #
+        # Two in three hours, not one: pg-boss retries, and a single sweep that
+        # failed on a transient pool error and succeeded on the retry is not an
+        # operator's problem. Twice is a sweep that is not getting through.
+        #
+        # Summed over the task, for the same reason as the rule below. One cron
+        # tick is one job and any worker replica may take it, and pg-boss is
+        # free to hand the retry to a different replica than the attempt. Two
+        # failed cycles of one sweep landing on two pods is still a sweep that
+        # failed twice, and a bare `increase()` counts one on each series and
+        # stays silent. This is also the query the runbook tells a responder to
+        # run, and the two have to agree.
+        expr: sum by (task) (increase(agledger_maintenance_sweep_failures_total[3h])) >= 2
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgermaintenancesweepfailing"
+          summary: "Maintenance sweep {{ $labels.task }} keeps failing"
+          description: >-
+            {{ $value | printf "%.0f" }} failed cycle(s) of the {{ $labels.task }} sweep in
+            the last 3h. What that costs depends on the task: a cleanup sweep leaves its
+            table growing, a recovery sweep leaves records waiting on it, and the vault
+            checkpoint sweep leaves the chain unanchored. Check the worker log for the
+            throw, then agledger_maintenance_sweep_rows_total for the same task to see
+            whether any cycle is getting through.
+
+      - alert: AGLedgerMaintenanceSweepFallingBehind
+        # The failure rule above cannot see this, and neither can the row
+        # counter. A sweep that bounds its own work by a clock can finish every
+        # cycle successfully, delete more rows than it has ever deleted, and
+        # still be losing: the cycle where a cleanup falls behind a sustained
+        # rate is the cycle where its row count peaks. `behind` is the sweep's
+        # own answer to "was there work left when I stopped", and it is
+        # zero-incremented on the cycles that drained, so this series exists on
+        # a healthy install and `increase` over it reads as a real zero.
+        #
+        # Six in an hour, against the twelve cycles the 5-minute
+        # oidc-jti-cleanup schedule gives: half the hour spent behind. A burst
+        # that takes two or three cycles to drain is the mechanism working, and
+        # paging on it would page on every spike of admin authentication. The
+        # threshold counts cycles, so a sweep added later on a different
+        # cadence needs its own rule rather than a share of this one.
+        #
+        # Summed over the task, NOT read per series, because one cron tick
+        # produces one job and any worker replica may take it. Bare
+        # `increase()` counts per `instance`, so the hour's twelve cycles land
+        # on as many series as there are replicas, and "half the hour" becomes
+        # "half the hour on one pod": at three replicas taking four cycles
+        # each, every cycle in the hour can be behind and no series reaches
+        # six. A pod rescheduled onto a new IP mid-window splits the count the
+        # same way. This is also the query the runbook tells a responder to
+        # run, and the two have to agree.
+        expr: sum by (task) (increase(agledger_maintenance_sweep_behind_total[1h])) >= 6
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgermaintenancesweepfallingbehind"
+          summary: "Maintenance sweep {{ $labels.task }} is not keeping up"
+          description: >-
+            {{ $value | printf "%.0f" }} cycle(s) of the {{ $labels.task }} sweep in the last
+            hour ended with rows still waiting. Nothing is failing and nothing is lost: the
+            sweep deletes rows that are already dead, so the cost is table size and index
+            bloat on the table it cleans, and it catches up on its own once the rate that
+            feeds it drops. Check agledger_maintenance_sweep_rows_total and
+            agledger_maintenance_sweep_duration_seconds for the same task to see whether the
+            cycles are hitting their time budget or the database has slowed down.
 
       - alert: AGLedgerApiKeyExpiringTomorrow
         # The 24h window, not the 7d one. On an install that sets
@@ -633,11 +1062,142 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerapikeyexpiringtomorrow"
           summary: "{{ $value | printf \"%.0f\" }} active API keys expire within 24 hours"
           description: >-
             An expired key stops authenticating with no warning to its holder, and the failure
-            surfaces as the agent it belonged to going quiet. Rotate with
-            POST /v1/auth/keys/rotate, which issues the replacement and leaves the old key valid
-            for a grace window. To list them, GET /v1/admin/api-keys?isActive=true with
-            expiresBefore set to tomorrow; note that filter has no lower bound, so it also
-            returns keys that expired earlier.
+            surfaces as the agent it belonged to going quiet. To list them, GET
+            /v1/admin/api-keys?isActive=true with expiresBefore set to tomorrow; note that
+            filter has no lower bound, so it also returns keys that expired earlier. No admin
+            route rotates a key the caller does not hold: mint the replacement for the same
+            owner with POST /v1/admin/api-keys, then revoke the old one with PATCH
+            /v1/admin/api-keys/{keyId}. POST /v1/auth/keys/rotate rotates the CALLER's own key
+            and cuts over immediately unless gracePeriodSeconds is passed.
+
+  # ---------------------------------------------------------------------------
+  # Target liveness and process health. Every other group in this file reads a
+  # value some process published, so none of them can see a process that is not
+  # there at all: a stopped Server publishes nothing, and an empty query result
+  # is what a healthy quiet install looks like too.
+  #
+  # `up == 0` is not enough on its own. Neither packaged install keeps a stopped
+  # process in the target list. The bundled Compose stack discovers both services
+  # by DNS, and a stopped one stops resolving; on Kubernetes the chart's
+  # ServiceMonitor becomes operator-generated `kubernetes_sd_configs` over
+  # endpoints, and a stopped pod leaves the endpoint set. Either way Prometheus
+  # drops the target, `up` goes ABSENT rather than to 0, and the scrape-failure
+  # rule below sees nothing. `absent()` on a series only one process can publish
+  # is what covers that, and the two rules are complementary rather than
+  # redundant: `up == 0` catches a process that answers the socket and fails the
+  # scrape, `absent()` catches one that is gone.
+  #
+  # No `job=` selector anywhere in this group. On Kubernetes the job label is the
+  # release's Service name, so no fixed value matches. The processes are told
+  # apart by a series only one of them registers:
+  #
+  #   - agledger_phase2_enqueue_failures_total is declared by the
+  #     completion-accepted event handler, which only the API server loads.
+  #   - agledger_partition_gauges_updated_timestamp_seconds is declared by the
+  #     worker entrypoint, which nothing on the API path loads.
+  #
+  # Both are unlabelled, and @prometheus-io/client materializes an unlabelled
+  # counter or gauge at registration time, so each is present on its own
+  # process's first scrape and on no scrape of the other. A labelled metric would
+  # not work here: it has no series until its first increment.
+  # ---------------------------------------------------------------------------
+  - name: agledger-targets
+    rules:
+      - alert: AGLedgerApiTargetAbsent
+        expr: absent(agledger_phase2_enqueue_failures_total)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerapitargetabsent"
+          summary: "No AGLedger API process is being scraped"
+          description: >-
+            Nothing has published an API-only series for 5 minutes. On both packaged installs
+            a stopped API disappears from the target list instead of reporting up == 0, so
+            AGLedgerScrapeFailing stays silent and this is the only rule that sees it. Either
+            every API replica is down, or Prometheus can no longer resolve or authenticate to
+            them. Check the process first, then the scrape config and METRICS_AUTH_TOKEN.
+
+      - alert: AGLedgerWorkerTargetAbsent
+        expr: absent(agledger_partition_gauges_updated_timestamp_seconds)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerworkertargetabsent"
+          summary: "No AGLedger worker process is being scraped"
+          description: >-
+            Nothing has published a worker-only series for 5 minutes. On both packaged installs
+            a stopped worker disappears from the target list instead of reporting up == 0, so
+            AGLedgerScrapeFailing stays silent and this is the only rule that sees it. With no
+            worker, gate evaluation, webhook delivery, record expiry, partition maintenance and
+            every recovery sweep have stopped, and the API keeps returning 200 the whole time.
+
+      - alert: AGLedgerScrapeFailing
+        # The other half of the two absent() rules above: a target Prometheus
+        # still has, whose scrape does not succeed. A refused /metrics counts,
+        # and so does a scrape that trips `sample_limit`, which Prometheus
+        # reports as a failed scrape with the target still present.
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerscrapefailing"
+          summary: "Prometheus cannot scrape {{ $labels.instance }}"
+          description: >-
+            The target {{ $labels.instance }} in job {{ $labels.job }} has failed its scrape
+            for 5 minutes. Every rule in this file that reads a metric from it is now
+            evaluating stale or absent data. Common causes: the process is refusing
+            /metrics (METRICS_AUTH_REQUIRED with no METRICS_AUTH_TOKEN makes the worker
+            answer 503 by design), the scrape token does not match, or the scrape tripped
+            `sample_limit` and Prometheus discarded the whole payload.
+
+      - alert: AGLedgerProcessRestarting
+        # Three starts in an hour is past anything a rollout explains on a
+        # stable install. The gauge is the process start time, so `changes()`
+        # counts restarts directly rather than inferring them from a counter
+        # reset.
+        #
+        # Per series, not aggregated: a restart loop is a property of one
+        # process, and the summary names the instance the responder has to
+        # look at. The cost is that a Kubernetes pod which comes back on a new
+        # IP arrives as a new series with no history, so what this catches on
+        # that platform is a container restarting in place. The two absent()
+        # rules above are what see the pod that is gone entirely.
+        expr: changes(agledger_process_start_time_seconds[1h]) > 2
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerprocessrestarting"
+          summary: "{{ $labels.instance }} has restarted {{ $value | printf \"%.0f\" }} times in an hour"
+          description: >-
+            A restart loop discards whatever was in flight each time: an open transaction
+            rolls back, a pg-boss job goes back for retry, and in-memory rate-limit state
+            starts over. It also resets every counter in this file, which makes the
+            increase() windows elsewhere read low. Check the container exit reason and the
+            process log for a boot failure or an OOM kill.
+
+      - alert: AGLedgerEventLoopLagging
+        # Saturation ahead of symptom. Node is single-threaded, so a p99 event
+        # loop lag of half a second means work is queued behind the loop before
+        # any of it shows up as request latency, and AGLedgerHighLatency needs
+        # the p95 of completed requests to move before it can say anything.
+        expr: agledger_nodejs_eventloop_lag_p99_seconds > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgereventlooplagging"
+          summary: "Event loop p99 lag on {{ $labels.instance }} is above 0.5s"
+          description: >-
+            {{ $value | printf "%.2f" }}s of p99 event loop lag for 10 minutes on
+            {{ $labels.instance }}. This process is saturated: every request on it is
+            waiting behind the loop, and that will reach p95 latency before it reaches
+            errors. Usual causes are CPU starvation from the container limit, a large
+            synchronous JSON body, or a gate rule doing heavy regex work.

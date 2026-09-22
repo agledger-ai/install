@@ -18,12 +18,11 @@ COMPOSE_DIR="${DEPLOY_DIR}/compose"
 # install: there is one `compose/.env` per checkout, and the backups belong to
 # the database that .env names.
 #
-# It used to default to the checkout's PARENT, and the README's own two-stack
-# recipe (`cp -r <this-install> ../agledger-2`) puts two checkouts in one
-# parent. Both then wrote to one directory: `backup.sh --keep` in either deleted
-# the other's pre-upgrade archive on retention, one `.pre-upgrade-version` named
-# whichever install wrote it last, and two installs' tarballs were
-# indistinguishable by name.
+# Not the checkout's parent: the two-stack recipe (`cp -r <this-install>
+# ../agledger-2`) puts two checkouts in one parent, and a shared backup
+# directory makes `backup.sh --keep` in either delete the other's pre-upgrade
+# archive on retention, leaves one `.pre-upgrade-version` naming whichever
+# install wrote it last, and gives two installs tarballs with the same name.
 #
 # BACKUP_DIR overrides it, which is what a mounted backup volume wants. Archive
 # names carry the compose project name, so several installs can share one
@@ -190,6 +189,7 @@ env_file_carries_install_state() {
   [[ -f "$env_file" ]] || return 1
   if [[ -n "$(get_env_value PLATFORM_API_KEY "$env_file")" ]]; then return 0; fi
   if [[ -n "$(get_env_value VAULT_SIGNING_KEY "$env_file")" ]]; then return 0; fi
+  if [[ -n "$(get_env_value VAULT_SIGNING_KEY_KMS_ARN "$env_file")" ]]; then return 0; fi
   return 1
 }
 
@@ -297,6 +297,19 @@ pgdata_volume_exists() {
 # only time Postgres applies POSTGRES_PASSWORD. `PG_VERSION` is the marker the
 # postgres image's own entrypoint checks.
 #
+# WHERE that marker sits is the whole difficulty. docker-compose.postgres.yml
+# mounts the volume at `/var/lib/postgresql`, the parent, because postgres:18
+# refuses to initialize on the legacy `/var/lib/postgresql/data` path and
+# places its data directory under a major-version subdirectory instead. On the
+# bundled database the marker is therefore at `<mount>/18/docker/PG_VERSION`,
+# and a probe that tests only `<mount>/PG_VERSION` reads a live database as
+# `empty`, which is how a fresh install came to write new credentials onto a
+# surviving volume and then die on the raw 28P01 this function exists to
+# prevent. Every layout is probed: the mount itself (an external volume
+# mounted at the data directory, and every postgres image before 18), and one
+# and two levels down (`18/docker` today; the pattern, not the number, is what
+# is pinned).
+#
 # `unknown` is reported rather than folded into either real answer, because
 # the two wrong guesses fail in opposite directions and the caller is the only
 # one that knows which one it is about to make. It IS reachable: an air-gapped
@@ -308,6 +321,20 @@ pgdata_volume_exists() {
 # root, because a PGDATA directory is mode 0700 owned by the postgres uid and
 # the image's own non-root uid cannot stat it, which would read as `empty` on
 # a live database: the single most dangerous wrong answer here.
+#
+# The shell it runs is a constant rather than an inline string so the test can
+# run the real probe against fabricated layouts. Stubbing the answer is what
+# hid the wrong path: every case said INIT, so the one line that decides
+# initialized-vs-empty was never executed by anything but a live install.
+# PGDATA_PROBE_ROOT exists for that test; inside the container nothing sets it.
+#
+# shellcheck disable=SC2016  # the container's shell expands these, not this one
+AGLEDGER_PGDATA_PROBE='root="${PGDATA_PROBE_ROOT:-/pgdata}"
+for marker in "$root"/PG_VERSION "$root"/*/PG_VERSION "$root"/*/*/PG_VERSION; do
+  if [ -f "$marker" ]; then echo INIT; exit 0; fi
+done
+echo EMPTY'
+
 pgdata_volume_state() {
   local volume
   volume="$(compose_pgdata_volume)"
@@ -316,7 +343,7 @@ pgdata_volume_state() {
   local out rc
   out=$(docker run --rm --user 0:0 -v "${volume}:/pgdata:ro" --entrypoint sh \
     "${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}}" \
-    -c 'test -f /pgdata/PG_VERSION && echo INIT || echo EMPTY' 2>/dev/null)
+    -c "$AGLEDGER_PGDATA_PROBE" 2>/dev/null)
   rc=$?
   if [[ $rc -ne 0 || -z "$out" ]]; then
     echo unknown
@@ -325,6 +352,156 @@ pgdata_volume_state() {
   else
     echo empty
   fi
+}
+
+# --- preflight --only, across versions ---------------------------------------
+#
+# `dist/scripts/preflight.js --only=<ids>` runs a named subset of the checks.
+# The subset a script asks for is the one this tree knows about, and the image
+# it asks is whatever version is being installed or restored, which can be
+# older: `--version 1.7.0` from a 1.8.0 tree is a documented, supported install.
+#
+# preflight refuses an id it does not have, and refuses the WHOLE list rather
+# than the part it understands: exit 2, one usage line naming the unknown ids,
+# no checks run and no report printed. So a caller has to be able to hear that
+# answer and ask again with the ids that image does have, or it fails an
+# install on the argument and then describes a database problem that was never
+# diagnosed.
+#
+# These two helpers are the hearing and the re-asking. Exit 2 is the only
+# status they interpret; 0 and 1 mean what they have always meant.
+#
+# Older still: `--only` itself landed in v1.5.0, and an image before that
+# ignores the flag and runs every check. That one is not detectable from the
+# outside (no marker, no error), and it fails on a check the install has not
+# reached yet rather than on the flag.
+
+# The ids preflight named as unknown, comma-separated with no spaces, read out
+# of its own usage line. Empty when the output carries no such line, which is
+# every case except an argument refusal.
+preflight_unknown_only_ids() {
+  local text="$1" tail
+  [[ "$text" == *"unknown --only id(s): "* ]] || return 0
+  tail="${text#*unknown --only id(s): }"
+  tail="${tail%%.*}"
+  printf '%s' "${tail//[[:space:]]/}"
+}
+
+# One attempt: runs the gate through the runner function named in $1 over the
+# check list in $2, streaming everything preflight printed AND leaving it in
+# PREFLIGHT_GATE_OUTPUT. Returns preflight's exit status.
+#
+# Both, not one or the other. Streamed because the checks open a real
+# connection and an unreachable host costs the length of a connect timeout, and
+# a step that prints nothing for that long reads as a hang, which is when an
+# operator interrupts an install. Captured because the argument refusal below
+# has to be read back to be answered.
+#
+# The runner is a function NAME so a test can drive this without a Docker
+# daemon: it takes the check list as its only argument and runs preflight in
+# whatever way its own script runs one. stderr is folded into stdout because
+# the usage line is on stderr and the report is on stdout, and the answer needs
+# both.
+preflight_gate_attempt() {
+  local runner="$1" list="$2" rc=0 tmp
+  PREFLIGHT_GATE_OUTPUT=""
+  if ! tmp="$(mktemp 2>/dev/null)"; then
+    # No temp file, so streaming and capturing cannot both happen. Capture
+    # wins: the caller prints what it holds, and the reduction still works.
+    PREFLIGHT_GATE_OUTPUT="$("$runner" "$list" 2>&1)" || rc=$?
+    printf '%s\n' "$PREFLIGHT_GATE_OUTPUT"
+    return "$rc"
+  fi
+  set +e
+  "$runner" "$list" 2>&1 | tee "$tmp"
+  rc=${PIPESTATUS[0]}
+  set -e
+  PREFLIGHT_GATE_OUTPUT="$(cat "$tmp")"
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# Run a preflight gate over $2 through the runner named in $1, reducing the
+# list once if the image refuses ids it does not have. $3 labels that image in
+# the warning (a version, usually).
+#
+# Answers through three globals, because a bash that ships on macOS has no
+# namerefs:
+#
+#   PREFLIGHT_GATE_OUTPUT     what preflight printed on the run that counted,
+#                             already on the operator's screen. Held for
+#                             reading, not for re-printing.
+#   PREFLIGHT_GATE_RAN        the check list that produced it, empty when the
+#                             gate ran nothing.
+#   PREFLIGHT_GATE_UNCHECKED  the ids the image does not have, empty on the
+#                             ordinary case.
+#
+# Returns preflight's status. 2 survives only when the list was not reduced,
+# and then it means what it says: the arguments were refused and nothing was
+# checked.
+preflight_gate_run() {
+  local runner="$1" list="$2" label="${3:-requested}" rc=0 unknown remaining
+  PREFLIGHT_GATE_OUTPUT=""
+  PREFLIGHT_GATE_RAN="$list"
+  PREFLIGHT_GATE_UNCHECKED=""
+
+  preflight_gate_attempt "$runner" "$list" || rc=$?
+  if [[ $rc -ne 2 ]]; then
+    return "$rc"
+  fi
+
+  unknown="$(preflight_unknown_only_ids "$PREFLIGHT_GATE_OUTPUT")"
+  if [[ -z "$unknown" ]]; then
+    # Exit 2 for some other reason (`--only` given twice, an empty list). The
+    # caller reports it; reducing a list this function cannot read would be
+    # guessing, and the line preflight printed already says which shape it was.
+    return 2
+  fi
+
+  # shellcheck disable=SC2034  # read by the caller that sources this file
+  PREFLIGHT_GATE_UNCHECKED="$unknown"
+  # Warned here rather than by each caller, so the sentence sits directly under
+  # the refusal that provoked it and the two callers cannot drift apart on what
+  # it claims. What it must NOT claim is that the conditions are caught later:
+  # an image with no check for a condition often has no boot-time refusal for
+  # it either (v1.7.0 has neither the pooler-topology refusal nor any
+  # default-role-password detection, and its baseline migration is what creates
+  # those passwords), so unchecked here can mean unchecked for the life of that
+  # install.
+  warn "The ${label} image has no preflight check named: ${unknown//,/, }."
+  warn "It predates them, which installing an older version is allowed to do. An image with no check"
+  warn "for a condition may have no boot-time refusal for it either, so treat those conditions as"
+  warn "UNVERIFIED on this run rather than as passed. The version this tree ships checks them."
+  remaining="$(drop_csv_ids "$list" "$unknown")"
+  if [[ -z "$remaining" ]]; then
+    # The image shares no check with this gate. Skipped, not failed: failing
+    # the install over a check that release never had would refuse an install
+    # of that release from its own tree as well.
+    PREFLIGHT_GATE_OUTPUT=""
+    PREFLIGHT_GATE_RAN=""
+    return 0
+  fi
+
+  rc=0
+  # shellcheck disable=SC2034  # read by the caller that sources this file
+  PREFLIGHT_GATE_RAN="$remaining"
+  preflight_gate_attempt "$runner" "$remaining" || rc=$?
+  return "$rc"
+}
+
+# $1 (comma-separated) minus every id in $2 (comma-separated), order preserved.
+# Echoes the empty string when nothing is left, which the caller must handle:
+# it means the image shares no check with the gate being asked for.
+drop_csv_ids() {
+  local list="$1" drop="$2" out="" id
+  while IFS= read -r id; do
+    if [[ -z "$id" ]]; then continue; fi
+    case ",${drop}," in
+      *",${id},"*) continue ;;
+    esac
+    out="${out:+${out},}${id}"
+  done <<< "${list//,/$'\n'}"
+  printf '%s' "$out"
 }
 
 # Read KEY=VALUE from an env file, stripping inline comments (whitespace + '#')
@@ -450,22 +627,25 @@ get_env_value() {
 # Decode the text to the right of the `=` in one env-file assignment, printing
 # what docker-compose's dotenv parser would hand a container.
 #
-# Three readers used to decode one file three different ways, and the three
-# disagreed on any `DATABASE_URL` carrying more than one query parameter --
-# which the pg driver's own startup warning tells operators to write, and which
-# `connect_timeout` or `application_name` produce too:
+# Every reader of the env file goes through here, because the obvious
+# alternatives disagree on any value carrying more than one query parameter,
+# which a `DATABASE_URL` with `connect_timeout` or `application_name` does, and
+# which a verified TLS connection to a managed database needs:
 #
-#   DATABASE_URL=...?sslmode=require&uselibpqcompat=true
-#     `source .env` read this as UNSET, because `&` backgrounds the assignment.
-#   DATABASE_URL="...?sslmode=require&uselibpqcompat=true"
-#     `docker run --env-file` read this WITH its quotes, because --env-file is
+#   DATABASE_URL=...?sslmode=verify-full&sslrootcert=/ca.pem
+#     `source .env` reads this as UNSET, because `&` backgrounds the assignment.
+#   DATABASE_URL="...?sslmode=verify-full&sslrootcert=/ca.pem"
+#     `docker run --env-file` reads this WITH its quotes, because --env-file is
 #     not a dotenv parser: it splits on the first `=` and takes the rest
 #     literally.
 #
-# There was no third form that worked everywhere, and neither failure named
-# itself: the bare form made `detect_db_mode` report bundled and backup.sh dump
-# an empty container while the install served Aurora, and the quoted form ended
-# the install "installed, but NOT usable (no platform API key)".
+# No single spelling works in both, and neither failure names itself, so the
+# file is parsed here instead.
+#
+# `sslmode=require&uselibpqcompat=true`, which the pg driver's own startup
+# warning suggests, has the same two-parameter shape and is deliberately not the
+# example: with no `sslrootcert` beside it the driver encrypts without verifying
+# the certificate, so `missing_prod_config` reports it and the Server refuses it.
 #
 # Quoting rules, matching compose: inside quotes the value ends at the closing
 # quote and the rest of the line is a comment, so `#` is ordinary text there.
@@ -659,19 +839,16 @@ federation_hub_id_action() {
 #             would lock the operator out of their own database; the caller
 #             prints the three-way remedy instead.
 #
-# Set means chosen, with one exception this cannot retire: a password that
-# appeared in a released `.env.example` is readable by anyone and was never
-# chosen by the operator. `.env.example` ships the key empty now, so new files
-# cannot reach that state, but files written against v1.3.4 and earlier can and
-# do (that installer skipped secret generation entirely when `.env` already
-# existed, so `cp .env.example .env` before a first install left the published
-# value on disk).
+# Set means chosen, with one exception: a password that appeared in a released
+# `.env.example` is readable by anyone and was never chosen by the operator.
+# `.env.example` ships the key empty, so a new file cannot reach that state, but
+# a `.env` copied from an older example can carry a published value.
 #
-# The question is deliberately NOT "is this the placeholder", which is the
-# identity check that kept being subtly wrong. It is "are we about to hand
-# initdb a password anyone can read", which only matters on the one path where
-# a database does not exist yet, and is answered by a fixed historical list
-# that no longer tracks the shipped file.
+# The question here is NOT "is this the placeholder". It is "are we about to
+# hand initdb a password anyone can read", which matters only on the path where
+# no database exists yet, and it is answered by the fixed list below of values
+# this repo has published. The list is historical by design and does not track
+# the shipped file.
 PUBLISHED_PG_PASSWORDS=('agledger')
 
 pg_password_is_published() {
@@ -768,7 +945,7 @@ grafana_password_action() {
 #
 # Usage: while IFS= read -r gap; do ...; done < <(missing_prod_config FILE)
 missing_prod_config() {
-  local file="$1" db_url node_env
+  local file="$1" db_url node_env db_query sslmode libpq_compat sslrootcert
   # Every gate below is scoped to production, exactly as the config loader scopes them.
   #
   # Absent counts as production: the image bakes `ENV NODE_ENV=production` and
@@ -779,9 +956,12 @@ missing_prod_config() {
   node_env="$(get_env_value NODE_ENV "$file")"
   [[ -z "$node_env" || "$node_env" == "production" ]] || return 0
 
-  if [[ -z "$(get_env_value VAULT_SIGNING_KEY "$file")" ]]; then
+  # Either the key material or the ARN of the KMS key that holds it; both set
+  # is refused at boot, and the preflight names that case.
+  if [[ -z "$(get_env_value VAULT_SIGNING_KEY "$file")" && -z "$(get_env_value VAULT_SIGNING_KEY_KMS_ARN "$file")" ]]; then
     echo "VAULT_SIGNING_KEY is unset. It signs every chain entry."
     echo "    generate: docker run --rm ${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest} dist/scripts/generate-signing-key.js"
+    echo "    or set VAULT_SIGNING_KEY_KMS_ARN to sign with a key held in AWS KMS."
   fi
 
   if [[ -z "$(get_env_value AGLEDGER_EXTERNAL_URL "$file")" ]]; then
@@ -795,10 +975,60 @@ missing_prod_config() {
   # variable is empty for the same reason.
   db_url="$(get_env_value DATABASE_URL "$file")"
   if [[ -n "$db_url" ]] \
-    && [[ "$db_url" != *"sslmode="* ]] \
     && [[ "$(get_env_value ALLOW_DB_WITHOUT_SSL "$file")" != "true" ]]; then
-    echo "DATABASE_URL has no sslmode= and ALLOW_DB_WITHOUT_SSL is not true."
-    echo "    add sslmode=require to DATABASE_URL, or set ALLOW_DB_WITHOUT_SSL=true (not recommended)."
+    # The value of sslmode decides, not its presence. `disable` and `allow`
+    # permit plaintext, `prefer` falls back to it, and `no-verify` sets
+    # rejectUnauthorized: false, so the session is encrypted to whoever
+    # answered. The config loader accepts require, verify-ca and verify-full
+    # and refuses the rest, so a presence test here passes strings the Server
+    # then refuses at boot, after the install has written the .env and pulled
+    # the images.
+    #
+    # This is the Server's own rule said in shell, and the two have to keep
+    # answering the same way: the whole point of asking here is to say it before
+    # the pull rather than after. There is no portable URL parser in shell, so
+    # the query string is read by hand below. Anything the two readers cannot
+    # agree on lands on the strict side, because a gap reported here costs an
+    # operator a re-run and a gap missed here costs them a container that will
+    # not boot.
+    #
+    # Parsed by hand rather than with a URL reader, because there is no portable
+    # one in shell. A DSN with no query string, or one whose password carries a
+    # raw `?`, yields no parameters and is reported as unverified. That is the
+    # direction to be wrong in, and it is the same answer the config loader
+    # gives a connection string it cannot parse.
+    # `tail -1`, not `head -1`, and that is load-bearing. A repeated parameter
+    # is legal in a query string and the pg driver resolves it to the LAST
+    # occurrence, so reading the first makes
+    # `?sslmode=require&sslmode=disable` pass a gate the driver then answers
+    # with a plaintext connection. Reading the last is what the connection
+    # actually does.
+    db_query=""
+    [[ "$db_url" == *\?* ]] && db_query="${db_url#*\?}"
+    sslmode="$(printf '%s' "$db_query" | tr '&' '\n' | sed -n 's/^sslmode=//p' | tail -1 | tr '[:upper:]' '[:lower:]')"
+    libpq_compat="$(printf '%s' "$db_query" | tr '&' '\n' | sed -n 's/^uselibpqcompat=//p' | tail -1 | tr '[:upper:]' '[:lower:]')"
+    sslrootcert="$(printf '%s' "$db_query" | tr '&' '\n' | sed -n 's/^sslrootcert=//p' | tail -1)"
+
+    if [[ -z "$sslmode" ]]; then
+      echo "DATABASE_URL has no sslmode= and ALLOW_DB_WITHOUT_SSL is not true."
+      echo "    a managed database wants sslmode=verify-full with sslrootcert=<CA bundle path>,"
+      echo "    which is the only mode that checks the certificate names the host you dialled."
+      echo "    sslmode=require is the floor. Or set ALLOW_DB_WITHOUT_SSL=true (not recommended)."
+    elif [[ "$sslmode" != "require" && "$sslmode" != "verify-ca" && "$sslmode" != "verify-full" ]]; then
+      echo "DATABASE_URL sets sslmode=${sslmode}, which is not a verified TLS connection."
+      echo "    disable and allow permit plaintext, prefer falls back to it, and no-verify encrypts"
+      echo "    to whoever answered. The Server accepts require, verify-ca and verify-full only."
+      echo "    a managed database wants sslmode=verify-full with sslrootcert=<CA bundle path>."
+    elif [[ "$libpq_compat" == "true" && "$sslmode" == "require" && -z "$sslrootcert" ]]; then
+      echo "DATABASE_URL combines uselibpqcompat=true with sslmode=require and no sslrootcert."
+      echo "    under libpq semantics that encrypts the connection without verifying the certificate."
+      echo "    add sslrootcert=<CA bundle path>, raise it to sslmode=verify-full, or drop uselibpqcompat=true."
+    elif [[ "$libpq_compat" == "true" && "$sslmode" == "verify-ca" && -z "$sslrootcert" ]]; then
+      echo "DATABASE_URL combines uselibpqcompat=true with sslmode=verify-ca and no sslrootcert."
+      echo "    pg-connection-string refuses that combination outright and throws at connect, so the"
+      echo "    Server would start and then fail every query."
+      echo "    add sslrootcert=<CA bundle path>, raise it to sslmode=verify-full, or drop uselibpqcompat=true."
+    fi
   fi
 }
 
@@ -839,18 +1069,17 @@ urldecode() {
 # Decompose a postgres:// URL into the PG* environment variables libpq reads,
 # and export them.
 #
-# Every psql/pg_dump/pg_restore call on the external-database path used to take
-# the URL as an argument, which puts the password in the process's argv where
-# `ps` and /proc show it to every local user on the box. Backups run on a
-# schedule, and the external-database branch is exactly the one whose URL holds
-# a real managed-database password, so a scheduled backup re-exposes it on
-# every run.
+# No psql/pg_dump/pg_restore call takes the URL as an argument: that puts the
+# password in the process's argv, where `ps` and /proc show it to every local
+# user on the box. Backups run on a schedule, and the external-database branch
+# is the one whose URL holds a real managed-database password, so an argv URL
+# re-exposes it on every run.
 #
-# It also fixes a second thing. `psql URL -d postgres` does not connect to the
-# maintenance database on that server: psql takes positionals as [dbname
-# [username]], so with -d supplying the dbname the URL is consumed as a
-# *username* and host, port and password fall back to libpq defaults. Once the
-# connection lives in the environment, `-d postgres` means what it reads as.
+# It also makes `-d` mean what it reads as. `psql URL -d postgres` does not
+# connect to the maintenance database on that server: psql takes positionals as
+# [dbname [username]], so with -d supplying the dbname the URL is consumed as a
+# *username* and host, port and password fall back to libpq defaults. With the
+# connection in the environment, `-d postgres` selects that database.
 #
 # Usage: pg_env_from_url "$DATABASE_URL"   (exports; call in a subshell to scope)
 pg_env_from_url() {
@@ -900,7 +1129,7 @@ pg_env_from_url() {
 # psql does not refuse a version it does not match, so any recent one answers
 # and this needs no host client installed. Same image the bundled database
 # uses, so nothing new is pinned.
-PG_QUERY_IMAGE="${PG_QUERY_IMAGE:-postgres:18-alpine}"
+PG_QUERY_IMAGE="${PG_QUERY_IMAGE:-${PG_CLIENT_IMAGE_REPO:-postgres}:18-alpine}"
 
 # Major version of the server the PG* environment points at, or nothing.
 pg_server_major() {
@@ -990,7 +1219,7 @@ pg_client_run() {
 
   docker run --rm -i \
     -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE \
-    "${net[@]}" "postgres:${server_major}-alpine" "$tool" "$@"
+    "${net[@]}" "${PG_CLIENT_IMAGE_REPO:-postgres}:${server_major}-alpine" "$tool" "$@"
 }
 
 # Do two connection endpoints name the same PostgreSQL server?
@@ -1213,14 +1442,12 @@ host_port_held_by_this_project() {
   # A published mapping renders as `127.0.0.1:3001->3000/tcp`, so the host port
   # is what sits between the last ':' and the '->'.
   #
-  # docker COLLAPSES contiguous published ports into a single range
-  # entry, `0.0.0.0:4317-4318->4317-4318/tcp`. The anchored `:PORT->` match
-  # this used to be found every singly-rendered port and no port inside a
-  # range, so the own-stack exemption worked for the API on 3001 and the
-  # collector's metrics port on 8889 while failing for its OTLP pair. Re-running
-  # `install.sh --with-monitoring` on its own directory then refused on 4317 and
-  # 4318, held by that install's own otel-collector, and advised standing up a
-  # second stack somewhere else.
+  # docker COLLAPSES contiguous published ports into a single range entry,
+  # `0.0.0.0:4317-4318->4317-4318/tcp`, so an anchored `:PORT->` match sees
+  # singly-rendered ports only and misses every port inside a range. The
+  # monitoring stack publishes such a range (the collector's OTLP pair, 4317 and
+  # 4318), so the range branch below is what keeps a re-run of
+  # `install.sh --with-monitoring` from reading its own ports as a collision.
   #
   # Entries with no `->` (an unpublished `8080/tcp`) fall through both branches
   # and match nothing, which is correct: they hold no host port.
@@ -1287,6 +1514,149 @@ ensure_monitoring_profile() {
   echo added
 }
 
+# --- Metrics scrape token fingerprint ---
+
+# sha256 of stdin, hex, no algorithm prefix and no filename. Same three-way
+# fallback as sha256_file below and for the same reason: GNU coreutils ships
+# sha256sum, macOS ships shasum, a host with neither has openssl, and no host
+# ships all three. Reads stdin so a secret never becomes a temp file or an
+# argv entry.
+sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 -r | cut -d' ' -f1
+  else
+    return 1
+  fi
+}
+
+# Keep METRICS_TOKEN_FINGERPRINT in $1 equal to a digest of the
+# METRICS_AUTH_TOKEN beside it. Writes only on a mismatch, so a reconciled .env
+# is left alone and ENV_RECONCILED stays false.
+#
+# This is what makes a changed token reach the bundled Prometheus. The token is
+# projected into that container by a top-level `configs:` entry with inline
+# `content:`, and two properties of that mechanism combine badly: the
+# interpolated content is no part of the service definition Compose hashes, so
+# `up -d` after the token changed prints `Running` and keeps the container; and
+# Compose copies the content in at CREATE time, so `restart` does not replace it
+# either, and the container carries no `.Mounts` entry for it, which is why
+# restart_mounted_config_services cannot cover it the way it covers
+# prometheus.yml. Only a recreate replaces the file. An install whose .env
+# predated the /metrics gate therefore minted a token, recreated the API and
+# worker (they carry `env_file:`), left Prometheus holding the placeholder, and
+# reported success over a monitoring stack whose every scrape 401s.
+#
+# A label carrying this value is part of the service definition, so the mismatch
+# moves the hash and Compose's OWN decision recreates prometheus, once. No
+# `--force-recreate`: that flag recreates healthy containers on an idempotent
+# re-run, which is the churn the install-preflight guard refuses outright.
+#
+# Unconditional rather than only when the caller minted the token, and that is
+# the load-bearing half. An install already in the broken state has the token in
+# .env, so nothing mints and a mint-keyed repair never fires; it would stay
+# broken forever. Reconciling the fingerprint against whatever the token is now
+# is what repairs it, and covers an operator who rotated the token by hand.
+#
+# The write alone is not the repair: compose applies it on the next `up -d` that
+# selects the monitoring profile. install.sh and the upgrading path of upgrade.sh
+# always reach one. Two paths write and then exit without one -- upgrade.sh when
+# the stack already serves the target version, and `restore.sh --no-start` -- so
+# each says so rather than reporting a clean run over a container that still
+# holds the old token. prometheus_metrics_token_stale below is how they ask.
+#
+# The digest, not the token. `docker inspect` and `docker compose config` both
+# print labels, and the secret has one place it is written.
+sync_metrics_token_fingerprint() {
+  local env_file="$1"
+  local token current want
+  # Same guard reconcile_env_file carries, and for the same reason: upsert_env_var
+  # appends to a file it cannot read, so a wrong path here conjures a one-line
+  # .env rather than failing.
+  [[ -f "$env_file" ]] || return 0
+  token="$(get_env_value METRICS_AUTH_TOKEN "$env_file")"
+  current="$(get_env_value METRICS_TOKEN_FINGERPRINT "$env_file")"
+
+  # No token: compose falls back to its placeholder content, and the matching
+  # fingerprint is the one .env.example ships. Naming it rather than leaving the
+  # key absent keeps the two in step, so that later minting the token is still
+  # seen as a change.
+  if [[ -z "$token" ]]; then
+    want="none"
+  elif ! want="$(printf '%s' "$token" | sha256_stdin)"; then
+    # A host with no digest tool at all. The token still reaches the API and the
+    # worker through env_file; only the Prometheus recreate is lost, and saying
+    # so beats failing the install over a label.
+    warn "Could not fingerprint METRICS_AUTH_TOKEN (no sha256 tool found)."
+    warn "If the bundled Prometheus reports the agledger targets down, recreate it:"
+    warn "  docker compose --profile monitoring up -d --force-recreate prometheus"
+    return 0
+  elif [[ -z "$want" ]]; then
+    # A digest tool that exits 0 and prints nothing. Writing the empty string
+    # here would latch permanently: compose resolves `${VAR:-none}` to the same
+    # `none` it already had, and every later run reads back the same empty value
+    # on both sides of the comparison and sees no mismatch to repair.
+    warn "METRICS_AUTH_TOKEN fingerprint came back empty; leaving METRICS_TOKEN_FINGERPRINT alone."
+    warn "If the bundled Prometheus reports the agledger targets down, recreate it:"
+    warn "  docker compose --profile monitoring up -d --force-recreate prometheus"
+    return 0
+  else
+    # Truncated because this is a change detector, not a commitment: the whole
+    # digest buys nothing and a label is printed in a lot of places.
+    want="${want:0:16}"
+  fi
+
+  [[ "$current" == "$want" ]] && return 0
+
+  upsert_env_var METRICS_TOKEN_FINGERPRINT "$want" "$env_file"
+  ENV_RECONCILED=true
+  if [[ "$want" == "none" ]]; then
+    info "Wrote METRICS_TOKEN_FINGERPRINT=none (no METRICS_AUTH_TOKEN is set)."
+  else
+    info "Wrote METRICS_TOKEN_FINGERPRINT so the bundled Prometheus picks up the /metrics token."
+  fi
+}
+
+# True when a prometheus container is running and the metrics-token fingerprint
+# it was CREATED with is not the one `.env` names now.
+#
+# The gap this closes: sync_metrics_token_fingerprint writes to `.env`, and
+# compose applies that on the next `up -d`. A run that writes and then exits
+# without one leaves the two disagreeing, and because the write latches, the
+# NEXT run finds `.env` already correct, reconciles nothing, and would report a
+# clean no-op over a Prometheus still 401ing every scrape. Reading the label off
+# the running container asks the question that outlives the run that wrote it.
+#
+# The label, not the token: the container never holds the token, and this is the
+# same value compose hashes, so it answers exactly "would `up -d` recreate this".
+#
+# Requires: build_compose_cmd has run, so COMPOSE is set.
+prometheus_metrics_token_stale() {
+  local env_file="$1"
+  local want cid have
+  want="$(get_env_value METRICS_TOKEN_FINGERPRINT "$env_file")"
+  # Nothing to compare against: the reconcile did not run or could not digest.
+  [[ -n "$want" ]] || return 1
+  # `|| true` for the reason the other docker probes here carry one: a non-zero
+  # docker must not take the caller down through `pipefail` with its message
+  # already sent to /dev/null.
+  cid="$(docker ps -q \
+    --filter "label=com.docker.compose.project=$(compose_project_name)" \
+    --filter "label=com.docker.compose.service=prometheus" \
+    --filter "label=com.docker.compose.oneoff=False" 2>/dev/null | head -1 || true)"
+  # Not running: whatever `up` creates next is created with the current value.
+  [[ -n "$cid" ]] || return 1
+  have="$(docker inspect --format \
+    '{{index .Config.Labels "com.agledger.metrics-token-fingerprint"}}' \
+    "$cid" 2>/dev/null || true)"
+  # A container created before this label existed reports empty. That IS the
+  # stale case: it was created from a definition that could not carry the token.
+  [[ "$have" != "$want" ]]
+}
+
 # Repair the .env properties an install can be missing regardless of which
 # version it is on. Sets ENV_RECONCILED=true when it wrote anything and
 # MONITORING_ACTIVE to whether this host is running the monitoring stack.
@@ -1323,14 +1693,13 @@ reconcile_env_file() {
   # would treat it as an install.
   [[ -f "$env_file" ]] || return 0
 
-  # Absent OR stale. It used to be absent-only, which was enough while the list
-  # was derived from files this repo ships. It is not enough now that it can
-  # carry the operator's own override file: adding or deleting that file changes
-  # the correct list, and a `.env` still naming the old one sends every manual
+  # Rewritten when absent OR stale, not absent-only: the list can carry the
+  # operator's own override file, so adding or deleting that file changes the
+  # correct value. A `.env` still naming the old list sends every manual
   # `docker compose` from compose/ to a different stack than the scripts bring
-  # up, or, after a deletion, to a file that is not there. install.sh already
-  # rewrites this key on every run; upgrade.sh and restore.sh reach the same
-  # answer through here.
+  # up, or, after a deletion, to a file that is not there. install.sh rewrites
+  # this key on every run; upgrade.sh and restore.sh reach the same answer
+  # through here.
   local current_compose_file
   current_compose_file="$(get_env_value COMPOSE_FILE "$env_file")"
   detect_db_mode
@@ -1392,6 +1761,11 @@ reconcile_env_file() {
     fi
   fi
 
+  # Unconditional, and outside the mint branch above on purpose: an install
+  # already holding a token Prometheus never saw mints nothing, so only a
+  # reconcile against the current value repairs it.
+  sync_metrics_token_fingerprint "$env_file"
+
   # --- Monitoring Profile ---
   # An install stood up with --with-monitoring before COMPOSE_PROFILES was
   # persisted has monitoring containers running and nothing in .env that selects
@@ -1427,13 +1801,33 @@ reconcile_env_file() {
 #
 # Requires: build_compose_cmd has run, so COMPOSE is set.
 api_service_serving() {
-  "${COMPOSE[@]}" exec -T agledger-api /nodejs/bin/node -e \
+  # NODE_OPTIONS cleared: it reaches every node process in the container and
+  # this invocation overrides the image argv, so it carries neither
+  # `--permission` nor `--allow-fs-read`. An operator who set the SIEM
+  # file-sink grant in `.env` rather than on the worker service would fail this
+  # probe at pre-execution with ERR_MISSING_OPTION, and a probe that cannot
+  # start reads exactly like an API that is not serving.
+  "${COMPOSE[@]}" exec -T -e NODE_OPTIONS= agledger-api /nodejs/bin/node -e \
     "fetch('http://localhost:3000/health/ready').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" \
     >/dev/null 2>&1
 }
 
 # How many log lines a failed start prints, per failing service.
 COMPOSE_FAIL_LOG_LINES=40
+
+# Restart counts as they stood before this run started a service, one
+# `<container id>|<count>` line each. Empty until
+# capture_compose_restart_baseline runs, and empty means the restart check
+# makes no judgement.
+#
+# Keyed by container and not by service, because the two disagree the moment a
+# service has more than one container: summing a service's counts and comparing
+# the sums reads a scale-down (two replicas at one restart each, converged to
+# one) as a count that fell, and anything that falls looks like a container
+# this run replaced. Per container there is nothing to infer: an id the
+# baseline holds is judged against its own count, and an id it does not hold is
+# new and starts at zero.
+COMPOSE_RESTART_BASELINE=""
 
 # The services named in $@ that are not up. One `<service>|<status>` line each;
 # no output at all means every one of them is running and, where it declares a
@@ -1447,13 +1841,30 @@ COMPOSE_FAIL_LOG_LINES=40
 # answered nothing. Docker's own container state is the honest answer, so ask
 # for it after the wait rather than trusting the wait alone.
 #
+# The state alone is still a coin toss, which is how the same install reported
+# success over a crash-looping otel-collector: "running between restarts" is a
+# real fraction of the time (sampled at 10% on a container that dies on its
+# config), and this asks once. The restart counter closes it, read against the
+# baseline this run took before the `up`. Docker raises that counter only when
+# the restart POLICY starts a container, and zeroes it when a user does
+# (`docker start`, `compose restart`, the start half of a recreate), so what a
+# delta over this run means is unambiguous: the policy has been picking this
+# container up off the floor since the `up`, which is a loop rather than a
+# start. The baseline is what keeps an untouched container's history out of it:
+# `up -d` over a running container whose configuration has not moved leaves it
+# exactly as it found it, so whatever it accumulated before this run is still
+# on the counter, and reading the raw number would fail the documented recovery
+# of re-running install.sh. A container the same `up` recreates is a new id the
+# baseline does not hold, and starts at zero, which is the other half of why
+# this is keyed by container.
+#
 # A service with no container at all is a failure too (an image that would not
 # pull leaves nothing behind), which is why this walks the requested names
 # rather than listing what the project happens to hold.
 #
 # Requires: build_compose_cmd has run, so COMPOSE is set.
 failed_compose_services() {
-  local project svc rows state status
+  local project svc rows cid state status base now
   project="$(compose_project_name)"
   for svc in "$@"; do
     # `oneoff=False` excludes the containers `docker compose run` creates. They
@@ -1467,20 +1878,93 @@ failed_compose_services() {
       --filter "label=com.docker.compose.project=${project}" \
       --filter "label=com.docker.compose.service=${svc}" \
       --filter "label=com.docker.compose.oneoff=False" \
-      --format '{{.State}}|{{.Status}}' 2>/dev/null || true)"
+      --format '{{.ID}}|{{.State}}|{{.Status}}' 2>/dev/null || true)"
     if [[ -z "$rows" ]]; then
       printf '%s|%s\n' "$svc" "no container was created"
       continue
     fi
-    while IFS='|' read -r state status; do
+    while IFS='|' read -r cid state status; do
       [[ -n "$state" ]] || continue
       # `(health: starting)` is not reported: that is a container inside its
       # start_period, which only reaches here when the wait itself failed.
       if [[ "$state" != "running" || "$status" == *"(unhealthy)"* ]]; then
         printf '%s|%s\n' "$svc" "${status:-$state}"
+        continue
+      fi
+
+      # Running in this one sample, which is also what a crash loop reads
+      # whenever the sample lands on the moments the container is up. Its own
+      # restart counter against its own baseline is what tells the two apart.
+      # No baseline at all means this run never took one, and a caller that
+      # took none gets the states alone, which is what it got before.
+      [[ -n "${COMPOSE_RESTART_BASELINE}" ]] || continue
+      base="$(compose_restart_baseline_for "$cid" || true)"
+      # An id the baseline does not hold is a container this run created, and a
+      # new container's counter starts at zero.
+      [[ -n "$base" ]] || base=0
+      now="$(container_restart_count "$cid")"
+      if [[ "$now" -gt "$base" ]]; then
+        printf '%s|%s\n' "$svc" "${status:-$state}, restarted $((now - base)) time(s) since this run started it: crash-looping, caught between restarts"
       fi
     done <<< "$rows"
   done
+}
+
+# Where the restart counter of every container behind the services named in $@
+# stands right now: one `<container id>|<count>` line each in
+# COMPOSE_RESTART_BASELINE, read back by compose_restart_baseline_for. Call it
+# immediately before the `up` that starts those services.
+#
+# Requires: docker on PATH.
+capture_compose_restart_baseline() {
+  local svc cid
+  COMPOSE_RESTART_BASELINE=""
+  for svc in "$@"; do
+    while read -r cid; do
+      [[ -n "$cid" ]] || continue
+      COMPOSE_RESTART_BASELINE="${COMPOSE_RESTART_BASELINE}${cid}|$(container_restart_count "$cid")
+"
+    done <<< "$(compose_service_container_ids "$svc")"
+  done
+}
+
+# The baseline recorded for container $1, or nothing when this run recorded
+# none for it.
+compose_restart_baseline_for() {
+  local want="$1" id count
+  while IFS='|' read -r id count; do
+    [[ "$id" == "$want" ]] || continue
+    printf '%s\n' "$count"
+    return 0
+  done <<< "${COMPOSE_RESTART_BASELINE}"
+  return 1
+}
+
+# The ids of service $1's containers, one per line, including the ones that are
+# down: a container between restarts is not running, and leaving it out is how
+# a loop reads as absent. `oneoff=False` for the reason failed_compose_services
+# carries it.
+#
+# Requires: docker on PATH.
+compose_service_container_ids() {
+  local svc="$1" project
+  project="$(compose_project_name)"
+  docker ps -a \
+    --filter "label=com.docker.compose.project=${project}" \
+    --filter "label=com.docker.compose.service=${svc}" \
+    --filter "label=com.docker.compose.oneoff=False" \
+    --format '{{.ID}}' 2>/dev/null || true
+}
+
+# Container $1's restart count, or 0 when it answers something that is not a
+# number: no answer is not evidence of a loop.
+#
+# Requires: docker on PATH.
+container_restart_count() {
+  local n
+  n="$(docker inspect --format '{{.RestartCount}}' "$1" 2>/dev/null || true)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  printf '%s\n' "$n"
 }
 
 # True when every service named in $@ is up. The predicate half of
@@ -1536,8 +2020,10 @@ MOUNTED_CONFIG_SERVICES=(
 # Compose will not do it. A mounted file's CONTENT is no part of the service
 # definition Compose hashes, so `up -d` after the file changed prints `Running`
 # and hands back the SAME container id, with the process still on what it read
-# when it started. (A top-level `configs:` entry sourced from a file behaves
-# identically; both were driven against Compose 2.40.)
+# when it started. (A top-level `configs:` entry sourced from a file reaches
+# the same stale state, but a restart does NOT clear it: compose copies the
+# content in at create time, so only a recreate replaces it. Both were driven
+# against Compose 2.40.)
 #
 # That is how the collector's `agledger_` filter would have reached no existing
 # install. The collector is the one monitoring service whose definition the
@@ -1601,6 +2087,13 @@ restart_mounted_config_services() {
 # turns an offline reconcile into a refusal.
 local_image_matches_pin() {
   local pin="$1" digests
+  # An image-id pin, written by an install that verified a loaded image from a
+  # carried bundle (no registry, so no RepoDigest): the bytes match when the
+  # daemon resolves that id to an image whose id it is.
+  if [[ "$pin" == sha256:* ]]; then
+    [[ "$(docker image inspect --format='{{.Id}}' "$pin" 2>/dev/null || true)" == "$pin" ]]
+    return
+  fi
   [[ "$pin" == *"@sha256:"* ]] || return 1
   digests="$(docker image inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "$pin" 2>/dev/null || true)"
   [[ -n "$digests" ]] || return 1
@@ -1718,14 +2211,18 @@ fatal()   { error "$*"; exit 1; }
 
 # The release pipeline (release.yml) keyless-signs every public image + chart via
 # GitHub OIDC -> Fulcio -> public Rekor. These identify a genuine AGLedger
-# release signature; verification is fully offline against the Sigstore trust
-# root and needs NO access to the (private) source repo.
+# release signature, and need NO access to the (private) source repo.
+#
+# `cosign verify` reads the signature from the registry and the Sigstore trust
+# root over the network, so a plain verification needs both reachable. An
+# enclave that has neither verifies from carried material instead, through
+# verify_release_offline below.
 AGLEDGER_SIGNER_IDENTITY_REGEXP='^https://github\.com/agledger-ai/agledger-api/\.github/workflows/.+@refs/tags/v.+$'
 AGLEDGER_SIGNER_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 
 # Set RESOLVED_DIGEST to the digest $ref carries for THIS repo specifically.
-# RepoDigests can hold entries for other repos the same image ID was previously
-# pulled under (mirror/ECR), so blindly taking [0] could yield a foreign digest.
+# RepoDigests can hold entries for other repos the same image ID was pulled
+# under (mirror/ECR), so taking [0] blindly can yield a foreign digest.
 # Accepts only a well-formed sha256; otherwise leaves it empty so callers skip
 # pinning rather than write junk. An image built here or loaded from a tarball
 # carries no RepoDigests at all, and empty is the right answer for it: compose
@@ -1737,12 +2234,288 @@ resolve_repo_digest() {
   [[ "$RESOLVED_DIGEST" == sha256:* ]] || RESOLVED_DIGEST=""
 }
 
+# --- Offline verification (air-gapped enclaves) ---
+
+# sha256 of a file, hex, no algorithm prefix. GNU coreutils ships sha256sum,
+# macOS ships shasum, and a host with neither has openssl; no host ships all
+# three, so all three are tried.
+sha256_file() {
+  local f="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$f" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$f" | cut -d' ' -f1
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 -r "$f" | cut -d' ' -f1
+  else
+    return 1
+  fi
+}
+
+# Verify a release with no registry and no Rekor reachability, from material
+# carried into the enclave. AGLEDGER_VERIFY_BUNDLE_DIR names an unpacked
+# agledger-<version>-offline-verification.tar.gz, which every release attaches
+# to its GitHub release:
+#
+#   trusted_root.json             the Sigstore trust root the bundles verify against
+#   index.json                    the signed multi-arch index, verbatim registry bytes
+#   manifest-linux-<arch>.json    each platform manifest, verbatim registry bytes
+#   signature.sigstore.json       the cosign signature over the index digest
+#   attestation-*.sigstore.json   the CycloneDX, OpenVEX and malware-scan attestations
+#   version                       the release it is for
+#
+# Two ways in, and the first that answers wins.
+#
+# A mirror made with `oras cp -r` carries the release's OCI referrers with it,
+# either through the referrers API or through the OCI fallback tag, and then
+# `cosign verify` against the mirror is the whole check: only the trust root has
+# to be carried. `cosign copy` and `docker push` of a `docker load`ed image both
+# drop those referrers, and every registry answers "no signatures found".
+#
+# So the second way carries the bundles themselves. They are DSSE envelopes over
+# the index digest, which `cosign verify-blob-attestation --trusted-root` checks
+# with nothing reachable at all. sha256(index.json) is the digest they have to
+# name, which is what ties the carried index to the signature instead of to a
+# number an operator typed.
+#
+# The bytes this host will run then have to be IN that index. `docker save` and
+# `docker load` rebuild the manifest and a push to a mirror rewrites it again,
+# so neither the index digest nor the platform manifest digest survives the
+# trip. The image config digest does, and the daemon reports it as the image ID,
+# so the chain that holds is index -> platform manifest -> config digest ->
+# `docker image inspect --format '{{.Id}}'`.
+#
+# Returns 0 only when something was actually verified, and sets
+# SIGNATURE_VERIFIED so callers report the run honestly.
+verify_release_offline() {
+  local image="$1" ref="$2" dir="$3" version="$4"
+
+  # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+  SIGNATURE_VERIFIED=false
+  # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+  UNVERIFIED_REASON="offline verification did not complete"
+
+  if [[ ! -d "$dir" ]]; then
+    error "AGLEDGER_VERIFY_BUNDLE_DIR names '${dir}', which is not a directory."
+    error "Unpack the release's agledger-<version>-offline-verification.tar.gz and point it there."
+    return 1
+  fi
+  local trusted_root="${dir}/trusted_root.json"
+  if [[ ! -f "$trusted_root" ]]; then
+    error "${dir} holds no trusted_root.json, and that file is what every check below reads."
+    error "It ships in agledger-<version>-offline-verification.tar.gz on the GitHub release."
+    return 1
+  fi
+  if ! command -v cosign >/dev/null 2>&1; then
+    error "cosign is not installed, and the carried bundles are what it reads."
+    error "Install cosign 3.x: https://docs.sigstore.dev/system_config/installation/"
+    return 1
+  fi
+
+  # A bundle is one release's. Everything below would refuse a mismatch anyway,
+  # on a config digest the index does not name, and that refusal reads as
+  # tampering. This one names the two versions instead.
+  if [[ -f "${dir}/version" ]]; then
+    local bundle_version
+    bundle_version=$(tr -d '[:space:]' < "${dir}/version")
+    if [[ -n "$bundle_version" && "$bundle_version" != "$version" ]]; then
+      error "${dir} is the offline-verification bundle for ${bundle_version}, and this run installs ${version}."
+      error "Download agledger-${version}-offline-verification.tar.gz and unpack that instead."
+      # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+      UNVERIFIED_REASON="the carried bundle is for release ${bundle_version}"
+      return 1
+    fi
+  fi
+
+  # Way in 1: the registry still has the referrers.
+  if [[ -n "${RESOLVED_DIGEST:-}" ]] \
+    && cosign verify --new-bundle-format --trusted-root "$trusted_root" \
+         --certificate-identity-regexp "$AGLEDGER_SIGNER_IDENTITY_REGEXP" \
+         --certificate-oidc-issuer "$AGLEDGER_SIGNER_OIDC_ISSUER" \
+         "${image}@${RESOLVED_DIGEST}" >/dev/null 2>&1; then
+    # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+    SIGNATURE_VERIFIED=true
+    # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+    UNVERIFIED_REASON=""
+    info "Signature verified offline from the registry's own referrers: ${image}@${RESOLVED_DIGEST}"
+    return 0
+  fi
+
+  # Way in 2: the carried bundles.
+  local index_file="${dir}/index.json"
+  local signature="${dir}/signature.sigstore.json"
+  local missing=()
+  [[ -f "$index_file" ]] || missing+=("index.json")
+  [[ -f "$signature" ]]  || missing+=("signature.sigstore.json")
+  if (( ${#missing[@]} > 0 )); then
+    local missing_list="${missing[*]}"
+    missing_list="${missing_list// /, }"
+    error "This registry serves no release signature for ${image}, and ${dir} is missing ${missing_list}."
+    error "Unpack agledger-<version>-offline-verification.tar.gz there, or mirror with 'oras cp -r',"
+    error "which carries the signature to the mirror instead."
+    return 1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    error "jq is not installed, and the carried index and manifests are JSON this check has to read."
+    return 1
+  fi
+
+  local index_digest
+  if ! index_digest=$(sha256_file "$index_file"); then
+    error "No sha256 tool on this host (sha256sum, shasum or openssl). Install one and re-run."
+    return 1
+  fi
+
+  if ! cosign verify-blob-attestation \
+        --bundle "$signature" \
+        --trusted-root "$trusted_root" \
+        --type "https://sigstore.dev/cosign/sign/v1" \
+        --digest "$index_digest" \
+        --digestAlg sha256 \
+        --certificate-identity-regexp "$AGLEDGER_SIGNER_IDENTITY_REGEXP" \
+        --certificate-oidc-issuer "$AGLEDGER_SIGNER_OIDC_ISSUER" >/dev/null 2>&1; then
+    error "The carried signature does not verify over the carried index (sha256:${index_digest})."
+    error "These are not an AGLedger release's bytes, or one of the two files was altered in transit."
+    error "Re-download agledger-<version>-offline-verification.tar.gz. Do not install this image."
+    # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+    UNVERIFIED_REASON="the carried signature failed offline verification"
+    return 1
+  fi
+  info "Release signature verified offline: sha256:${index_digest}"
+
+  # Attestations, each checked when the operator carried it. The signature above
+  # is the gate; these say what is in the image and what the pipeline's scanners
+  # found, and a carried one that does not verify is as much a refusal as a
+  # carried signature that does not.
+  local pair name predicate_type file
+  for pair in "cyclonedx=https://cyclonedx.org/bom" \
+              "openvex=https://openvex.dev/ns" \
+              "malware-scan=https://agledger.ai/attestations/malware-scan/v1"; do
+    name="${pair%%=*}"
+    predicate_type="${pair#*=}"
+    file="${dir}/attestation-${name}.sigstore.json"
+    if [[ ! -f "$file" ]]; then
+      # Not optional. The release step that builds this bundle fails unless it
+      # collected all four, so an absent one is a bundle that was tampered with
+      # or unpacked into the wrong place, never a release that shipped without.
+      error "${dir} holds no attestation-${name}.sigstore.json."
+      error "Every release bundle carries all three attestations. Re-download and unpack it."
+      # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+      UNVERIFIED_REASON="the carried bundle is missing the ${name} attestation"
+      return 1
+    fi
+    if ! cosign verify-blob-attestation \
+          --bundle "$file" \
+          --trusted-root "$trusted_root" \
+          --type "$predicate_type" \
+          --digest "$index_digest" \
+          --digestAlg sha256 \
+          --certificate-identity-regexp "$AGLEDGER_SIGNER_IDENTITY_REGEXP" \
+          --certificate-oidc-issuer "$AGLEDGER_SIGNER_OIDC_ISSUER" >/dev/null 2>&1; then
+      error "The carried ${name} attestation does not verify over sha256:${index_digest}."
+      # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+      UNVERIFIED_REASON="the carried ${name} attestation failed offline verification"
+      return 1
+    fi
+    info "Attestation verified offline: ${name}"
+  done
+
+  # cosign checks a signature and a predicate TYPE, never a field inside the
+  # predicate, so the scan's own verdict is asserted here or nowhere. Decoded
+  # with jq's own @base64d, not `base64 -d`, whose flag is -D on macOS: a
+  # decoder that silently produces nothing turns a clean release into a refusal.
+  local scan="${dir}/attestation-malware-scan.sigstore.json" scan_result=""
+  scan_result=$(jq -r '.dsseEnvelope.payload | @base64d | fromjson | .predicate.result // empty' \
+    "$scan" 2>/dev/null || true)
+  if [[ "$scan_result" != "no-detections" ]]; then
+    error "The malware-scan attestation reports '${scan_result:-nothing readable}', not 'no-detections'."
+    # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+    UNVERIFIED_REASON="the malware-scan attestation does not report no-detections"
+    return 1
+  fi
+  info "Malware scan on this release: no-detections."
+
+  # Now tie the bytes in this host's image store to that signed index.
+  local image_id
+  image_id=$(docker image inspect --format='{{.Id}}' "$ref" 2>/dev/null || true)
+  if [[ "$image_id" != sha256:* ]]; then
+    error "The signature verified, but ${ref} is not in this host's image store, so nothing"
+    error "connects it to the release that was signed. Load the image first, then re-run."
+    # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+    UNVERIFIED_REASON="the signed index could not be tied to a local image"
+    return 1
+  fi
+
+  local manifest manifest_digest config_digest platform matched=""
+  local any_manifest=false
+  for manifest in "${dir}"/manifest-*.json; do
+    [[ -f "$manifest" ]] || continue
+    any_manifest=true
+    manifest_digest="sha256:$(sha256_file "$manifest")"
+    if ! jq -e --arg d "$manifest_digest" \
+         'any(.manifests[]?; .digest == $d)' "$index_file" >/dev/null 2>&1; then
+      error "${manifest##*/} hashes to ${manifest_digest}, which the signed index does not list."
+      error "The carried bundle is inconsistent with itself. Re-download it."
+      # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+      UNVERIFIED_REASON="a carried platform manifest is not in the signed index"
+      return 1
+    fi
+    config_digest=$(jq -r '.config.digest // empty' "$manifest" 2>/dev/null || true)
+    if [[ "$config_digest" == "$image_id" ]]; then
+      platform=$(jq -r --arg d "$manifest_digest" \
+        '.manifests[] | select(.digest == $d) | "\(.platform.os)/\(.platform.architecture)"' \
+        "$index_file" 2>/dev/null | head -1)
+      matched="${platform:-unknown platform}"
+      break
+    fi
+  done
+
+  if [[ "$any_manifest" != "true" ]]; then
+    error "${dir} holds no manifest-*.json, so nothing ties ${ref} to the index that was signed."
+    error "They ship in agledger-<version>-offline-verification.tar.gz alongside index.json."
+    # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+    UNVERIFIED_REASON="no carried platform manifest to chain the local image to"
+    return 1
+  fi
+  if [[ -z "$matched" ]]; then
+    error "${ref} in this host's image store has config digest ${image_id}, which no platform"
+    error "manifest in the signed release names. These are NOT release bytes: they were rebuilt,"
+    error "altered, or they belong to a different version. Refusing to run them."
+    # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+    UNVERIFIED_REASON="the local image does not chain to the signed index"
+    return 1
+  fi
+
+  # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+  SIGNATURE_VERIFIED=true
+  # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+  UNVERIFIED_REASON=""
+  # The identifier that survived save, load and push, and the one this check
+  # just chained to the signed index. On a host with no registry there is no
+  # RepoDigest to pin, so install.sh pins this instead; docker resolves a bare
+  # image id as an image reference without touching any registry.
+  # shellcheck disable=SC2034  # read by install.sh
+  RESOLVED_IMAGE_ID="$image_id"
+  info "Image chained to the signed index: ${matched} config ${image_id} is in sha256:${index_digest}."
+  return 0
+}
+
 # Pull + cryptographically verify a Docker Hub image BEFORE anything runs it,
 # then expose its digest in the global RESOLVED_DIGEST. The image is executed to
 # mint the vault signing key, so an unverified/tampered image is silent RCE +
 # key exfiltration; this is the gate that closes that.
 #
 # Policy (OOTB-first: a default install must still boot):
+#   AGLEDGER_REQUIRE_VERIFY=true   -> outranks every skip below: refuse any
+#                                     outcome that verifies nothing.
+#   AGLEDGER_VERIFY_BUNDLE_DIR set -> verify offline from carried material
+#                                     (verify_release_offline), whatever the
+#                                     image is named and whether or not any
+#                                     registry answers. This is the air-gap
+#                                     path, and it is a real verification, so
+#                                     it satisfies AGLEDGER_REQUIRE_VERIFY and
+#                                     contradicts AGLEDGER_SKIP_VERIFY, which
+#                                     is refused rather than ranked.
 #   AGLEDGER_SKIP_VERIFY=true      -> skip entirely (dev/local ONLY), warn.
 #   custom/private --image         -> skip (not signed by our pipeline), warn.
 #   cosign present + verify FAILS   -> abort (fail closed). The RCE gate.
@@ -1770,12 +2543,47 @@ verify_image() {
   local image="$1" version="$2"
   local ref="${image}:${version}"
   RESOLVED_DIGEST=""
+  # shellcheck disable=SC2034  # read by install.sh
+  RESOLVED_IMAGE_ID=""
   # shellcheck disable=SC2034  # read by install.sh and upgrade.sh, which source this file
   SIGNATURE_VERIFIED=false
   # shellcheck disable=SC2034  # read by install.sh and upgrade.sh, which source this file
   UNVERIFIED_REASON="not attempted"
 
   step "Verifying image signature"
+
+  # The air-gap path. What verifies the image is carried material, not a
+  # registry, so a registry this run cannot reach is not a reason to refuse and
+  # an image the pipeline never published under its own name is not a reason to
+  # skip. The image still has to be here: the check ends at the bytes the
+  # daemon holds.
+  local bundle_dir="${AGLEDGER_VERIFY_BUNDLE_DIR:-}"
+  if [[ -n "$bundle_dir" && "${AGLEDGER_SKIP_VERIFY:-false}" == "true" ]]; then
+    # One says check these bytes and the other says check nothing. A stale
+    # export of either is common enough that guessing which the operator meant
+    # would install under a flag that meant the opposite.
+    error "AGLEDGER_VERIFY_BUNDLE_DIR and AGLEDGER_SKIP_VERIFY contradict each other. Unset one."
+    return 1
+  fi
+  if [[ -n "$bundle_dir" ]]; then
+    # shellcheck disable=SC2034  # read by install.sh, which reports on it
+    IMAGE_PRESENT_LOCALLY=false
+    if docker pull "$ref" 2>/dev/null; then
+      IMAGE_PRESENT_LOCALLY=true
+    elif docker image inspect "$ref" >/dev/null 2>&1; then
+      IMAGE_PRESENT_LOCALLY=true
+      info "No registry answered for ${ref}; verifying the copy already in this host's image store."
+    else
+      error "docker pull ${ref} failed and that image is not in this host's image store."
+      error "Load it first (docker load < agledger-<version>.tar.gz), then re-run."
+      # 2, not 1: the caller reports a signature failure on 1, and an image
+      # that never arrived was never verified either way.
+      return 2
+    fi
+    resolve_repo_digest "$image" "$ref"
+    verify_release_offline "$image" "$ref" "$bundle_dir" "$version"
+    return $?
+  fi
 
   if ! docker pull "$ref"; then
     # A pull failure is only fatal where this run was going to verify something.
@@ -1801,10 +2609,9 @@ verify_image() {
     IMAGE_PRESENT_LOCALLY=false
     if docker image inspect "$ref" >/dev/null 2>&1; then IMAGE_PRESENT_LOCALLY=true; fi
 
-    # AGLEDGER_REQUIRE_VERIFY is decisive here and nowhere else in this function.
-    # On a reachable registry it only governs a missing cosign, because the other
-    # skip outcomes were the operator's own choice. A failed pull is not: the
-    # operator asked for a refusal on bytes this run did not verify, and these
+    # AGLEDGER_REQUIRE_VERIFY outranks both fallbacks here, as it outranks the
+    # skips on a reachable registry below: the operator asked for a refusal on
+    # bytes this run did not verify, and these
     # are exactly those bytes. install.sh's own copy of this check says the same.
     if [[ "$IMAGE_PRESENT_LOCALLY" == "true" && "${AGLEDGER_REQUIRE_VERIFY:-false}" != "true" ]]; then
       local local_reason=""
@@ -1834,6 +2641,8 @@ verify_image() {
       error "docker pull ${ref} failed. That image IS in this host's local image store, but a"
       error "keyless signature check reads the signature from the registry, so this run cannot"
       error "verify those bytes."
+      error "To verify them without a registry, carry the release's offline-verification bundle and"
+      error "set AGLEDGER_VERIFY_BUNDLE_DIR to where you unpacked it. See air-gap/README.md."
       if [[ "${AGLEDGER_REQUIRE_VERIFY:-false}" == "true" ]]; then
         error "AGLEDGER_REQUIRE_VERIFY=true, which is a refusal to run bytes this run did not verify."
       else
@@ -1863,6 +2672,12 @@ verify_image() {
   fi
   resolve_repo_digest "$image" "$ref"
 
+  # A stale AGLEDGER_SKIP_VERIFY in the environment must not turn the flag
+  # production hosts are told to set into one that means nothing.
+  if [[ "${AGLEDGER_SKIP_VERIFY:-false}" == "true" && "${AGLEDGER_REQUIRE_VERIFY:-false}" == "true" ]]; then
+    error "AGLEDGER_SKIP_VERIFY=true and AGLEDGER_REQUIRE_VERIFY=true contradict each other. Unset one."
+    return 1
+  fi
   if [[ "${AGLEDGER_SKIP_VERIFY:-false}" == "true" ]]; then
     UNVERIFIED_REASON="AGLEDGER_SKIP_VERIFY=true"
     warn "AGLEDGER_SKIP_VERIFY=true — skipping image signature verification (dev/local ONLY, never production)."
@@ -1870,6 +2685,18 @@ verify_image() {
   fi
   if [[ "$image" != "agledger/agledger" ]]; then
     UNVERIFIED_REASON="custom image, not signed by the AGLedger release pipeline"
+    # A mirrored release image reaches here with nothing verified: `docker push`
+    # of a loaded image and `cosign copy` both drop the release's OCI referrers,
+    # so the mirror serves no signature to check. AGLEDGER_REQUIRE_VERIFY asked
+    # for a refusal in exactly that case. AGLEDGER_VERIFY_BUNDLE_DIR is the way
+    # to satisfy it, and it never reaches this line.
+    if [[ "${AGLEDGER_REQUIRE_VERIFY:-false}" == "true" ]]; then
+      error "AGLEDGER_REQUIRE_VERIFY=true, and '${image}' is not agledger/agledger, so this run cannot verify its signature."
+      error "Carry the release's offline-verification bundle into the enclave and point"
+      error "AGLEDGER_VERIFY_BUNDLE_DIR at it, or mirror with 'oras cp -r' so the mirror keeps the"
+      error "signature. Either way this run verifies. See air-gap/README.md."
+      return 1
+    fi
     warn "Custom image '${image}' is not signed by the AGLedger release pipeline — skipping signature verification."
     return 0
   fi
@@ -2233,10 +3060,43 @@ database_url_is_bundled() {
   echo "$url" | grep -qE '@(postgres|localhost|127\.0\.0\.1):[0-9]'
 }
 
+# Which database a script is about to operate on: `bundled` or `external`.
+#
+# $1 = an explicit answer (`bundled`, `external`, or empty for none)
+# $2 = whether DATABASE_URL came from the calling environment rather than .env
+# $3 = the URL
+#
+# Prints the answer and returns 0, or prints nothing and returns 2 when it
+# refuses to guess. The one case it refuses: a URL handed in from the
+# environment that names localhost. That is what a `kubectl port-forward` looks
+# like, and it is also exactly what the bundled container looks like, so the
+# heuristic cannot tell a cluster database reached through a tunnel from the
+# container beside it. Guessing bundled there sent a restore at a local
+# container and reported the cluster restored; the caller passes `--target`.
+resolve_db_target() {
+  local explicit="${1:-}" from_env="${2:-false}" url="${3:-}"
+  case "$explicit" in
+    bundled|external) echo "$explicit"; return 0 ;;
+    '') ;;
+    *) return 2 ;;
+  esac
+  if [[ "$from_env" == true && -n "$url" ]] && echo "$url" | grep -qE '@(localhost|127\.0\.0\.1):[0-9]'; then
+    return 2
+  fi
+  if database_url_is_bundled "$url"; then echo bundled; else echo external; fi
+}
+
 # Detect whether DATABASE_URL points to the bundled postgres or an external host.
 # Sets USES_BUNDLED_PG=true (bundled) or USES_BUNDLED_PG=false (external).
+# `DB_TARGET` (bundled|external), when a script sets it from a `--target` flag,
+# answers outright. `DB_TARGET_REQUIRED=true` makes an environment-supplied
+# localhost URL a refusal rather than a bundled classification; restore.sh sets
+# it, because it is about to drop whichever database the answer names, while an
+# install or a backup against a localhost URL is the ordinary bundled case.
 detect_db_mode() {
   local url="${DATABASE_URL:-}"
+  local from_env=false
+  [[ -n "$url" && "${DB_TARGET_REQUIRED:-false}" == true ]] && from_env=true
   if [[ -z "$url" ]]; then
     url="$(get_env_value DATABASE_URL "${COMPOSE_DIR}/.env")"
     # The file declares a database and no reader here could make a value out of
@@ -2252,7 +3112,11 @@ detect_db_mode() {
       fatal "DATABASE_URL is set in ${COMPOSE_DIR}/.env but could not be read. Refusing to guess the database mode: every operator script would target the bundled container instead. Check the line for a stray quote or a line break."
     fi
   fi
-  if database_url_is_bundled "$url"; then
+  local target
+  if ! target="$(resolve_db_target "${DB_TARGET:-}" "$from_env" "$url")"; then
+    fatal "DATABASE_URL was passed in from the environment and names localhost, which is what both a port-forwarded cluster database and the bundled container look like. Refusing to guess which one to drop: pass --target external for a database reached through a tunnel, or --target bundled for the container beside this checkout."
+  fi
+  if [[ "$target" == bundled ]]; then
     USES_BUNDLED_PG=true
   else
     USES_BUNDLED_PG=false
@@ -2431,7 +3295,11 @@ verify_sibling_reachability() {
   # the agledger-migrate service definition guarantees we hit the same network
   # path migrate itself will use moments later.
   local probe='const net=require("net");const s=net.createConnection({host:"postgres",port:5432,timeout:5000},()=>{s.end();process.exit(0);});s.on("error",e=>{console.error(e.code||e.message);process.exit(1);});s.on("timeout",()=>{console.error("ETIMEDOUT");process.exit(1);});'
-  if "${COMPOSE[@]}" run --rm --no-deps --entrypoint /nodejs/bin/node agledger-migrate -e "$probe" >/dev/null 2>&1; then
+  # The compose `-e` goes before the service name; the one after it is node's.
+  # agledger-migrate carries no env_file, so .env does not reach it, but an
+  # `environment:` entry or an override file does, and a probe that cannot start
+  # reads as a database that cannot be reached.
+  if "${COMPOSE[@]}" run --rm --no-deps -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-migrate -e "$probe" >/dev/null 2>&1; then
     info "Sibling-container reachability: OK"
     return 0
   fi

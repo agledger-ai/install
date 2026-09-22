@@ -13,7 +13,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Total HTTP request rate across every route.",
       "fieldConfig": {
@@ -60,9 +60,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_http_request_duration_seconds_count[5m]))",
+          "expr": "sum(rate(agledger_http_request_duration_seconds_count{job=~\"$job\"}[5m]))",
           "legendFormat": "Requests/sec",
           "refId": "A"
         }
@@ -73,7 +73,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Share of requests answered 5xx over the last 5 minutes. Reads 0% on a healthy install rather than \"No data\": the numerator carries `or vector(0)` because sum() over an empty vector is empty, not zero, and an empty numerator would make this blank exactly when there are no errors, indistinguishable from a misconfigured datasource.",
       "fieldConfig": {
@@ -128,9 +128,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "(sum(rate(agledger_http_request_duration_seconds_count{status_code=~\"5..\"}[5m])) or vector(0)) / clamp_min(sum(rate(agledger_http_request_duration_seconds_count[5m])), 0.001)",
+          "expr": "(sum(rate(agledger_http_request_duration_seconds_count{job=~\"$job\", status_code=~\"5..\"}[5m])) or vector(0)) / clamp_min(sum(rate(agledger_http_request_duration_seconds_count{job=~\"$job\"}[5m])), 0.001)",
           "legendFormat": "Error rate (5xx)",
           "refId": "A"
         }
@@ -141,7 +141,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "95th percentile request duration. The AGLedgerHighLatency alert fires above 2s.",
       "fieldConfig": {
@@ -196,9 +196,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(agledger_http_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(agledger_http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))",
           "legendFormat": "P95 latency",
           "refId": "A"
         }
@@ -209,7 +209,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Requests currently being served. A rising floor here with flat throughput means requests are queueing somewhere, usually the pool.",
       "fieldConfig": {
@@ -255,9 +255,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(agledger_http_active_requests)",
+          "expr": "sum(agledger_http_active_requests{job=~\"$job\"})",
           "legendFormat": "In-flight requests",
           "refId": "A"
         }
@@ -281,7 +281,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Per-route throughput. Routes are the templated Fastify paths, not raw URLs, so cardinality stays bounded.",
       "fieldConfig": {
@@ -358,9 +358,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (route) (rate(agledger_http_request_duration_seconds_count[5m]))",
+          "expr": "sum by (route) (rate(agledger_http_request_duration_seconds_count{job=~\"$job\"}[5m]))",
           "legendFormat": "{{route}}",
           "refId": "A"
         }
@@ -371,7 +371,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "P50/P95/P99 across all routes. Divergence between P50 and P99 is a tail problem (a slow query, a saturated pool); all three rising together is load.",
       "fieldConfig": {
@@ -448,27 +448,27 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(agledger_http_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(agledger_http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(agledger_http_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(agledger_http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(agledger_http_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(agledger_http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -479,7 +479,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "2xx/4xx/5xx split. A 4xx rise with flat 5xx is usually an agent using the API wrong, which is a discovery-surface problem rather than an outage.",
       "fieldConfig": {
@@ -556,9 +556,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (status_code) (rate(agledger_http_request_duration_seconds_count[5m]))",
+          "expr": "sum by (status_code) (rate(agledger_http_request_duration_seconds_count{job=~\"$job\"}[5m]))",
           "legendFormat": "{{status_code}}",
           "refId": "A"
         }
@@ -569,7 +569,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "429s served. Sustained non-zero means an agent is hitting the per-key ceiling; tune RATE_LIMIT_AGENT / RATE_LIMIT_ADMIN rather than assuming abuse.",
       "fieldConfig": {
@@ -646,9 +646,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (route) (rate(agledger_http_request_duration_seconds_count{status_code=\"429\"}[5m]))",
+          "expr": "sum by (route) (rate(agledger_http_request_duration_seconds_count{job=~\"$job\", status_code=\"429\"}[5m]))",
           "legendFormat": "{{route}}",
           "refId": "A"
         }
@@ -672,7 +672,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "The spine. Notarization volume, by record type.",
       "fieldConfig": {
@@ -749,18 +749,18 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (record_type) (rate(agledger_records_created_total[5m]))",
+          "expr": "sum by (record_type) (rate(agledger_records_created_total{job=~\"$job\"}[5m]))",
           "legendFormat": "created {{record_type}}",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (record_type) (rate(agledger_completions_submitted_total[5m]))",
+          "expr": "sum by (record_type) (rate(agledger_completions_submitted_total{job=~\"$job\"}[5m]))",
           "legendFormat": "completed {{record_type}}",
           "refId": "B"
         }
@@ -771,7 +771,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Every transition by from/to. The shape of the chain moving; a stall shows here before it shows anywhere else.",
       "fieldConfig": {
@@ -848,9 +848,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (to_status) (rate(agledger_record_transitions_total[5m]))",
+          "expr": "sum by (to_status) (rate(agledger_record_transitions_total{job=~\"$job\"}[5m]))",
           "legendFormat": "-> {{to_status}}",
           "refId": "A"
         }
@@ -861,7 +861,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "The 10% slice: gate evaluation results. Nothing here on a notarize-only install is correct, not a fault.",
       "fieldConfig": {
@@ -938,9 +938,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (outcome) (rate(agledger_verdicts_total[5m]))",
+          "expr": "sum by (outcome) (rate(agledger_verdicts_total{job=~\"$job\"}[5m]))",
           "legendFormat": "{{outcome}}",
           "refId": "A"
         }
@@ -951,7 +951,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "P95 gate latency by record type. Rules run per completion, so a slow type slows every submission against it.",
       "fieldConfig": {
@@ -1028,9 +1028,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, record_type) (rate(agledger_gate_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, record_type) (rate(agledger_gate_duration_seconds_bucket{job=~\"$job\"}[5m])))",
           "legendFormat": "p95 {{record_type}}",
           "refId": "A"
         }
@@ -1054,7 +1054,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Waiting connections above zero means requests are queued behind the pool, which is also the shape a pool deadlock takes from outside. The AGLedgerDbPoolSaturated alert fires on any sustained waiter.",
       "fieldConfig": {
@@ -1131,27 +1131,27 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(agledger_db_pool_total_connections)",
+          "expr": "sum(agledger_db_pool_total_connections{job=~\"$job\"})",
           "legendFormat": "total",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(agledger_db_pool_idle_connections)",
+          "expr": "sum(agledger_db_pool_idle_connections{job=~\"$job\"})",
           "legendFormat": "idle",
           "refId": "B"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(agledger_db_pool_waiting_connections)",
+          "expr": "sum(agledger_db_pool_waiting_connections{job=~\"$job\"})",
           "legendFormat": "waiting",
           "refId": "C"
         }
@@ -1162,7 +1162,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Pending jobs per queue. A backlog that grows without the worker's processed rate rising means the worker is down or stuck.",
       "fieldConfig": {
@@ -1239,9 +1239,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (queue) (agledger_pgboss_queue_size{state=\"queued\"})",
+          "expr": "max by (queue) (agledger_pgboss_queue_size{job=~\"$job\", state=\"queued\"})",
           "legendFormat": "{{queue}}",
           "refId": "A"
         }
@@ -1252,7 +1252,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Throughput and failure split per queue. This is the worker process, scraped separately; an empty panel here with a healthy API means the worker target is down.",
       "fieldConfig": {
@@ -1329,9 +1329,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (queue, status) (rate(agledger_worker_jobs_processed_total[5m]))",
+          "expr": "sum by (queue, status) (rate(agledger_worker_jobs_processed_total{job=~\"$job\"}[5m]))",
           "legendFormat": "{{queue}} {{status}}",
           "refId": "A"
         }
@@ -1342,7 +1342,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Chain anchoring activity and integrity-check results. Any non-pass result is a chain break and pages via AGLedgerVaultIntegrityCheckFailed.",
       "fieldConfig": {
@@ -1419,27 +1419,27 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_vault_anchor_upload_total[15m]))",
+          "expr": "sum(rate(agledger_vault_anchor_upload_total{job=~\"$job\"}[15m]))",
           "legendFormat": "anchor uploads",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_vault_anchor_verify_total[15m]))",
+          "expr": "sum(rate(agledger_vault_anchor_verify_total{job=~\"$job\"}[15m]))",
           "legendFormat": "anchor verifies",
           "refId": "B"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (result) (increase(agledger_vault_integrity_check_results_total[15m]))",
+          "expr": "sum by (result) (increase(agledger_vault_integrity_check_results_total{job=~\"$job\"}[15m]))",
           "legendFormat": "integrity {{result}}",
           "refId": "C"
         }
@@ -1450,7 +1450,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "How long each periodic sweep takes, p95 over 5 minutes. The property to watch is FLATNESS as the record population grows: a sweep whose cost tracks the table rather than the page it returns climbs here while \"Worker jobs processed\" stays level. Worker process only; an empty panel with a healthy API means the worker target is down.",
       "fieldConfig": {
@@ -1527,9 +1527,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (task, le) (rate(agledger_maintenance_sweep_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (task, le) (rate(agledger_maintenance_sweep_duration_seconds_bucket{job=~\"$job\"}[5m])))",
           "legendFormat": "{{task}}",
           "refId": "A"
         }
@@ -1545,7 +1545,58 @@
     "overview"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Data source",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(agledger_process_start_time_seconds, job)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Job",
+        "multi": true,
+        "name": "job",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(agledger_process_start_time_seconds, job)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-6h",

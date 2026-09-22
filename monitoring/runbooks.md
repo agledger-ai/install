@@ -1,0 +1,1327 @@
+# Alert runbooks
+
+One section per rule in `monitoring/alerts/agledger.rules.yml`, in the order the rules appear in
+that file. Every shipped alert carries a `runbook_url` annotation pointing at its section here, so
+whatever surfaces the alert (Prometheus' own `/alerts` page, Alertmanager, a chat receiver) links
+straight to it.
+
+On Kubernetes the chart rewrites that base URL from `monitoring.prometheusRule.runbookUrl`, so an
+install that forks this file can point every rule at its own copy without touching the rules.
+
+Each section says what fired, what to check, what to do, and when silencing is safe. Silencing is
+never the fix for a `critical`: those are all cases where the engine has already lost something or
+is about to.
+
+## Conventions
+
+The commands below assume two variables:
+
+```bash
+AGLEDGER_URL=https://agledger.example.com
+AGLEDGER_KEY=agl_plt_...     # platform-role key; /v1/admin/* requires one
+```
+
+Admin calls are `curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/..."`.
+`/health` and `/health/ready` need no credential.
+
+Logs, on Compose:
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml logs --tail=200 agledger-api
+docker compose -f deploy/compose/docker-compose.yml logs --tail=200 agledger-worker
+```
+
+Logs, on Kubernetes. The rendered workload names depend on your release name and
+on `fullnameOverride`, so select by label rather than by name. Every object the
+chart renders carries `app.kubernetes.io/instance`, and the workloads carry
+`app.kubernetes.io/component`:
+
+```bash
+kubectl logs -n <ns> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=api --tail=200
+kubectl logs -n <ns> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=worker --tail=200
+```
+
+PromQL snippets are meant for Prometheus' expression browser or `curl` against
+`/api/v1/query?query=...` on your Prometheus.
+
+## AGLedgerChainEntryDropped
+
+An `audit_vault` append raised and the caller swallowed it, so a record transitioned with no chain
+entry behind it. The chain is the product, and this gap is invisible to it: the next append takes
+the next position and links to the surviving head, so neither this Server's scan nor an offline
+verifier reports a break. This alert and the record's own history (a transition with no entry behind
+it) are the only evidence, and no later write reconstructs the missing entry.
+
+Check:
+
+```promql
+increase(agledger_federation_audit_vault_dropped_total[1h])
+```
+
+and the API log around that window for the append error. Then size the damage:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/vault/scan"
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/vault/scan/<jobId>"
+```
+
+Do: the append failure is almost always the database refusing the write. Missing partition runway on
+`audit_vault`, a revoked GRANT, a full disk and a dead connection all land here, so check
+`AGLedgerPartitionRunwayExhausted` and `AGLedgerDbConnectionsDropping` before anything else. The
+entries themselves cannot be backfilled, and no verification will fail over them; record the affected
+range so the gap has an explanation when a record's transitions are compared with its chain.
+
+Silence: never. Every firing is a permanent gap in the chain.
+
+## AGLedgerAuditTrailDropped
+
+A state change committed and the event row recording it did not. `/v1/events` and anything polling
+it are missing rows for the window, while the records themselves are correct.
+
+Check which of the six counters moved, since they have different causes:
+
+```promql
+{__name__=~"agledger_(post_commit_callback_failures|federation_outbound_event_persist_dropped|cascading_gate_persist_event_failures|phase2_enqueue_persist_event_failures|federation_forensic_audit_dropped|support_bundle_audit_failures)_total"}
+```
+
+Then the API and worker logs for the write error behind it.
+
+Do: these are all post-commit paths, so the database was reachable enough to commit and not to
+insert. A statement timeout, a partition gap on `events` or `system_audit_log`, or a pool with no
+free client are the usual three. Fix the database condition; the events are not recoverable, so tell
+any consumer replaying from `/v1/events` that the window is short.
+
+Silence: no. Downgrade only if you have confirmed the cause is a one-off and the affected window is
+recorded somewhere an auditor will find it.
+
+## AGLedgerWorkEnqueueDropped
+
+An enqueue failed and was swallowed. The work will never run. Cascade-cancel is the sharpest of the
+six: a child record keeps executing after its parent terminalized.
+
+Check which counter moved, then the queue itself:
+
+```promql
+increase(agledger_cascade_cancel_enqueue_failures_total[1h])
+increase(agledger_webhook_enqueue_failures_total[1h])
+max by (queue, state) (agledger_pgboss_queue_size)
+```
+
+Do: pg-boss writes to the same database as everything else, so an enqueue failure is a database
+failure in almost every case. Once the database is healthy, the recovery sweeps re-drive most of
+this on their own: gate recovery and cascade-cancel recovery run every two minutes, federation
+pending recovery likewise. What they do not cover is webhook dispatch, so check
+`GET /v1/admin/webhook-dlq` and re-drive with `POST /v1/admin/webhook-dlq/retry-all` if deliveries
+are missing.
+
+Silence: no.
+
+## AGLedgerGateJobRetriesExhausted
+
+A gate-worker job was queued, ran, and gave up after exhausting its retries. Two counters feed this:
+a cascade rollup that ran out of retries on the last child's job, and a lost DLQ advisory pass.
+
+Check whether the consistency sweep is settling what the rollup did not:
+
+```promql
+increase(agledger_auto_rollup_stuck_parents_total[1h])
+increase(agledger_auto_rollup_repaired_parents_total[1h])
+```
+
+Do: if repaired keeps pace with stuck, the sweep is doing its job and no action is needed. It settles
+a parent five to ten minutes after its tree goes quiet. If stuck climbs and repaired does not, read
+the worker log for the repair error and look for a parent left `ACTIVE` with every child terminal. A
+lost advisory pass is not repairable: the record is correctly awaiting its principal and only the
+advisory annotation is gone.
+
+Silence: up to a week, if the sweep is keeping pace and the rollup failures are traceable to a
+database incident you have already fixed.
+
+## AGLedgerSiemExportDegraded
+
+The SIEM feed is lossy. Four counters feed this and three of them mean rows that will not arrive.
+
+Check which one moved:
+
+```promql
+increase(agledger_siem_mapper_failures_total[1h])
+increase(agledger_siem_http_batches_dropped_total[1h])
+increase(agledger_siem_file_lines_dropped_total[1h])
+increase(agledger_siem_poll_failures_total[1h])
+```
+
+`agledger_siem_poll_failures_total` is the one that is not loss: the cycle threw before the cursor
+moved, so the next cycle re-reads the same rows. The other three are. A mapper failure means the row
+would not serialize, so the poller counts it, skips it and advances the cursor past it; nothing
+re-reads it. Dropped HTTP batches and dropped file lines are the buffered bus path losing what it
+held. A sink that refuses a polled batch is a fourth thing and is deliberately not in this rule: the
+cursor is held, the rows are re-read next cycle, and it surfaces as
+`agledger_siem_poll_delivery_retries_total` and eventually `AGLedgerSiemPollerFallingBehind`, or, if
+the collector refused the request rather than failing to take it,
+`AGLedgerSiemCollectorRejecting`.
+
+Do: for HTTP drops, check the collector at `SIEM_HTTP_URL` and the credential in
+`SIEM_HTTP_AUTH_HEADER`. For file drops, check that `SIEM_FILE_PATH` is writable and its filesystem
+is not full. For mapper failures, the worker's log names the event type that would not serialize:
+the worker is the process that drains the push sinks. What the bus path
+dropped is still in `events` and `system_audit_log`, so a pull-mode collector can re-read it from
+`GET /v1/siem/stream`, which pages the same rows.
+
+Silence: not while any of the three loss counters is moving. A firing driven by
+`agledger_siem_poll_failures_total` alone, during a database incident you have already fixed, can
+wait a few hours.
+
+## AGLedgerSiemCollectorRejecting
+
+The SIEM HTTP collector is answering on the request's own terms rather than failing to take it. It
+will not clear by waiting.
+
+Nothing is lost. The cursor does not advance past a refused batch, the rows stay in `events` and
+`system_audit_log`, and delivery resumes from the same position once the configuration is fixed.
+What is lost is detection latency, for as long as it takes.
+
+The Server logs the collector's own reply at ERROR, once per state change rather than once per
+attempt. That line is the fastest answer:
+
+```bash
+docker compose logs agledger-worker | grep "SIEM collector rejected"
+```
+
+By status:
+
+| Status | Usual cause |
+|---|---|
+| 400 | The body shape. Splunk's `/services/collector/event` answers `{"text":"No data","code":5}` to bare NDJSON: set `SIEM_HTTP_MODE=hec`, or point `SIEM_HTTP_URL` at `/services/collector/raw?sourcetype=_json` instead. |
+| 401, 403 | The credential in `SIEM_HTTP_AUTH_HEADER`, or an HEC token that is disabled or not allowed on the index in `SIEM_HTTP_HEC_INDEX`. |
+| 404 | `SIEM_HTTP_URL`. Under `SIEM_HTTP_MODE=hec` the Server appends `/services/collector/event` only when the URL names no collector path. |
+| 413 | The collector's own body limit against `SIEM_BATCH_SIZE` times `SIEM_MAX_EVENT_BYTES`. Lower the batch size first. |
+| 422 | A collector that parses the documents it is sent and refused one. The Server's log carries its reply. |
+
+The poller backs off to its 60s ceiling on these rather than climbing the doubling ladder, so a fix
+takes up to a minute to show. `agledger_siem_poll_delivery_retries_total{sink="http"}` keeps moving
+alongside this counter; that one also moves for a collector that is simply down, which is the
+distinction this alert exists to make.
+
+Silence: only with the collector's operator, and only for as long as the fix takes. Rows accumulate
+behind the held cursor the whole time.
+
+## AGLedgerSiemPollerFallingBehind
+
+The oldest audit row the poller has not forwarded is over five minutes old. Detection latency on auth
+failures, scope denials and credential changes is at least that. Nothing is lost: a backlog defers
+rows rather than dropping them.
+
+The rule reads each process's lag only while that process keeps measuring it, which it does on every
+poll cycle that holds the cursor: `agledger_siem_poll_lag_updated_timestamp_seconds` says when it
+last did. A process that stops winning the cursor stops alerting even though its gauge still shows
+the old reading, so compare that stamp against `time()` before trusting a raw gauge on a dashboard.
+
+Check, in this order:
+
+```promql
+sum by (sink) (increase(agledger_siem_poll_delivery_retries_total[15m]))
+increase(agledger_siem_poll_skipped_total[15m])
+increase(agledger_siem_poll_ahead_rows_total[15m])
+```
+
+and the oldest transaction on the database:
+
+```sql
+SELECT pid, usename, state, now() - xact_start AS age, left(query, 80)
+  FROM pg_stat_activity
+ WHERE datname = current_database() AND xact_start IS NOT NULL
+ ORDER BY xact_start LIMIT 5;
+```
+
+Do: a sink refusing the batch is the common cause and shows up in the retry counter. If instead the
+oldest transaction's age tracks the lag, that transaction is holding the visibility watermark back
+and the poller is fine. `pg_dump` does this for the length of a backup, and so does a long analytics
+query or a forgotten `psql BEGIN`. End it, or wait: export resumes on its own. Past
+`SIEM_MAX_HOLDBACK_SECONDS` (default 60) the live tail is delivered from above the watermark anyway,
+which is what `agledger_siem_poll_ahead_rows_total` counts.
+
+Silence: for the length of a scheduled backup window. Not otherwise.
+
+## AGLedgerSiemPollerStatsBlanked
+
+The poller is running on a role without `pg_read_all_stats` while another role holds a write
+transaction on the same database. Postgres blanks that transaction's `xact_start`, so the poller
+cannot prove which rows are visible. It halted rather than page over them.
+
+Check the role and its grants:
+
+```sql
+SELECT current_user, pg_has_role(current_user, 'pg_read_all_stats', 'member');
+```
+
+Do: grant it.
+
+```sql
+GRANT pg_read_all_stats TO agledger_app;
+```
+
+Or point `DATABASE_URL` at a role that already has it. Until then the halt holds for as long as
+another role keeps a write transaction open. A halted cycle still takes the cursor row and still
+measures the backlog behind it, so `agledger_siem_poll_lag_seconds` climbs through the halt and
+`AGLedgerSiemPollerFallingBehind` fires once it passes five minutes. Expect both alerts, and read
+this one as the cause of the other.
+
+Silence: never while it is firing. This is the one SIEM condition that loses rows invisibly if the
+poller does not halt.
+
+## AGLedgerSiemStreamHalted
+
+`GET /v1/siem/stream` answered 503 because it could not compute the visibility watermark it pages
+against. Collectors pulling this endpoint are not ingesting, and they know it: the halt is loud on
+their side too. The `reason` label has three values and says which of them this is.
+
+Check:
+
+```promql
+sum by (reason) (increase(agledger_siem_stream_halted_total[1h]))
+```
+
+Do: for `track_activities_off`, set `track_activities = on` in `postgresql.conf` and reload. For
+`stats_blanked`, grant the Server's role `pg_read_all_stats` as in the section above. `unreadable` is
+neither: the one-row watermark query over `pg_stat_activity` came back with no row at all, which is
+the connection answering something the engine does not understand rather than a setting being wrong.
+Run that query by hand on `DATABASE_URL` and look at what sits between the Server and Postgres, a
+pooler or proxy first. Confirm with:
+
+```bash
+curl -sS -i -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/siem/stream?limit=1"
+```
+
+The push poller runs in the WORKER, and only with a sink configured. An install that pulls only from
+`GET /v1/siem/stream` runs no poller, so this is the only SIEM alert it can get and
+`AGLedgerSiemPollerStatsBlanked` stays silent on it. With `SIEM_ENABLED=true` and either
+`SIEM_FILE_ENABLED` or `SIEM_HTTP_ENABLED` on, the worker polls, and on the `stats_blanked` cause the
+two alerts fire together.
+
+Silence: no.
+
+## AGLedgerSiemStreamWatermarkStalled
+
+The pull stream's visibility ceiling has been more than ten minutes behind for ten minutes, so the
+route is serving well-formed empty pages while rows accumulate. A collector cannot tell that from
+"caught up". Rows are withheld, not lost.
+
+Only a stream request reads the ceiling, so the rule sees a replica only while collectors are pulling
+it, and `agledger_siem_stream_watermark_updated_timestamp_seconds` says when that last happened. A
+replica the collectors stopped reaching keeps its last reading on the gauge but drops out of the
+alert.
+
+Check the oldest transaction, which is what holds the ceiling:
+
+```sql
+SELECT pid, usename, state, xact_start, left(query, 80)
+  FROM pg_stat_activity
+ WHERE xact_start IS NOT NULL
+ ORDER BY xact_start LIMIT 5;
+```
+
+Do: the watermark is `min(xact_start)` over every backend with no write filter, so a read-only
+transaction holds it just as hard as a writer. `deploy/scripts/backup.sh` keeps one open for the
+whole dump, and a long anti-wraparound vacuum or an idle-in-transaction `psql` does the same. End the
+transaction and export resumes. If it is a backup, it will end on its own.
+
+Silence: for the length of a scheduled backup or vacuum window.
+
+## AGLedgerSiemStreamStatsRestricted
+
+Some same-database backends are invisible to the Server's role. This is the pre-failure signal, not a
+failure: `GET /v1/siem/stream` serves correctly while those backends stay read-only and halts with
+503 the moment one writes.
+
+Check:
+
+```promql
+agledger_siem_stream_blanked_backends
+```
+
+Do: grant `pg_read_all_stats` to the Server's role. It is a standing configuration fact rather than
+an event, so it will keep firing until you do, on every replica collectors keep pulling. Only a
+stream request measures the count, so a replica the collectors stopped reaching drops out of the
+alert while its gauge keeps the old value; `agledger_siem_stream_watermark_updated_timestamp_seconds`
+says when it last measured.
+
+Silence: reasonable for as long as it takes to schedule the grant, and only if you know the other
+backends are read-only (a monitoring role, a read replica's feedback connection). Once one of them
+can write, this is a pending outage.
+
+## AGLedgerSiemPollerStatsRestricted
+
+The same condition on the push channel's gauge. The poller's role cannot see some backends on its own
+database. Export is correct while they stay read-only and halts as soon as one writes.
+
+Only a poll batch that holds the cursor measures the count, and
+`agledger_siem_poll_blanked_backends_updated_timestamp_seconds` says when that last happened on each
+process. A process that stops winning the cursor drops out of the alert while its gauge keeps the old
+value.
+
+Check:
+
+```promql
+agledger_siem_poll_blanked_backends
+```
+
+Do: grant `pg_read_all_stats` to the role in `DATABASE_URL`.
+
+Silence: same terms as `AGLedgerSiemStreamStatsRestricted`.
+
+## AGLedgerRateLimitStoreFailing
+
+`@fastify/rate-limit` is configured with `skipOnError`, so a store query that throws lets the request
+through. Rate limiting is off and every symptom of it being on is absent: no 429s, no errors, no
+latency change. This counter is the only thing that says so.
+
+Check the API log for the store error, then:
+
+```promql
+increase(agledger_rate_limit_store_failures_total[1h])
+increase(agledger_rate_limit_exceeded_total[1h])
+```
+
+A store failing while `exceeded` sits flat at zero is the signature.
+
+Do: with `RATE_LIMIT_STORE=postgresql` the usual three causes are a missing `rate_limits` table, a
+missing GRANT on it, and the table sitting in a schema off the `search_path`. Confirm with
+`\dt rate_limits` on the app role. Setting `RATE_LIMIT_STORE=memory` restores limiting per process
+as a stopgap, at the cost of per-replica counting.
+
+Silence: no. An unthrottled public API is the exposure here.
+
+## AGLedgerConfigReloadFailing
+
+A config reload or cache refresh is failing, so the running configuration may not match what is on
+disk and replicas may be serving stale schemas. The operator edited a file, saw no error, and is
+running something else.
+
+Check which of the four moved, then the matching surface:
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/provisioning/status"
+```
+
+Do: for provisioning failures, that endpoint reports the parse or apply error against
+`PROVISIONING_CONFIG_PATH`; fix the YAML and re-run
+`POST /v1/admin/provisioning/reload`. For `llms.txt` customization failures, check the file named by
+`AGLEDGER_LLMS_TXT_OVERRIDE_PATH` (or the prepend and append paths) is readable and under the 128 KB
+cap, then `POST /v1/admin/discovery/reload`. For schema warm-cache failures,
+`POST /v1/admin/schemas/cache/flush` re-warms. Cache-invalidation drops mean the LISTEN/NOTIFY
+connection is down, which the pg listener retries on its own.
+
+Silence: a few hours, if you have confirmed which config is stale and that it does not matter yet.
+
+## AGLedgerOidcJtiReplayBurst
+
+Single-use admin OIDC bearers are being presented a second time. These tokens VERIFIED: the
+signature, the issuer, the audience and the expiry were all good, and the refusal is that this
+Server has already seen that `jti`. So a real credential from a trusted IdP is being reused, by the
+client that holds it or by somebody who captured it.
+
+Check who and from where:
+
+```promql
+sum by (reason) (rate(agledger_oidc_admin_jti_replays_total[10m]))
+```
+
+then the paired audit rows, which carry the issuer, the subject and the source address. The stream is
+NDJSON and takes no event-type filter, so the selection is jq's:
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" \
+  "$AGLEDGER_URL/v1/siem/stream?format=raw&limit=500" \
+  | jq -c 'select(.type == "auth.failed" and (.payload.reason | startswith("oidc_jti")))'
+```
+
+Read `payload.surface`: `cert_exchange` means the
+token was replayed at `POST /v1/auth/oidc/cert`, `delegated_on_behalf_of` at the delegation header,
+and its absence means the admin bearer path.
+
+Do: if the subject and address match a client you run, that client is holding one token across
+requests. Either fix it to mint a token per request, or clear `jtiSingleUse` on that
+`trusted_issuers` row (`PATCH /v1/admin/trusted-issuers/{id}` for an admin-managed row; edit the
+provisioning YAML and reload for a managed one). If the address is not one you recognise, treat the
+token as captured: revoke it at the IdP, and revoke the certs it minted with
+`POST /v1/admin/trusted-issuers/{id}/revoke-certs`.
+
+A `reason` of `jti_unregistrable` is not a replay. It means the register refused the write because
+the `jti` was oversized, which is a client or IdP defect; the bearer is still refused, because
+single use cannot be proven.
+
+Silence: while a known client is being fixed, and only if you have confirmed the source address.
+
+## AGLedgerOidcSingleUseUnenforceable
+
+A `trusted_issuers` row has `jtiSingleUse` set and is admitting every presentation anyway, because
+the tokens it validates carry no id to register. The flag is on and enforcing nothing, which is worse
+than off: `AGLedgerOidcJtiReplayBurst` above sits at zero and reads as healthy.
+
+The id is the token's `jti` claim, or the claim the row names under the `claimMapping` logical name
+`jti`, with the standard `jti` winning when both are present. Okta and Keycloak mint `jti` by
+default. Entra ID never does, on an access or an ID token, and has no setting that adds one; it mints
+`uti`. Auth0's default access-token profile mints neither. A Google service-account ID token has no
+per-token id under any name.
+
+Find which row:
+
+```promql
+sum by (role) (increase(agledger_oidc_admin_jti_unenforceable_total[1h]))
+```
+
+The counter is not labelled by issuer, because an IdP can present unbounded distinct values. The
+engine log carries the row id once per row per process, on the line
+`trusted_issuers row has jti_single_use set but this token carries no jti`:
+
+```bash
+kubectl logs -l app.kubernetes.io/name=agledger --since=24h \
+  | jq -c 'select(.msg | startswith("trusted_issuers row has jti_single_use set"))
+           | {issuerId, iss, role}'
+```
+
+Then read the row and its mapping:
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" \
+  "$AGLEDGER_URL/v1/admin/trusted-issuers" \
+  | jq -c '.data[] | select(.jtiSingleUse) | {id, issuerUrl, appliesTo, claimMapping}'
+```
+
+Do: one of three, and all of them are a `PATCH /v1/admin/trusted-issuers/{id}` (or an edit to the
+provisioning YAML plus `POST /v1/admin/provisioning/reload` for a managed row).
+
+- The IdP mints an id under another name. Add it: `{"claimMapping": {"jti": "uti"}}` for Entra ID,
+  merged with the mapping the row already carries. The same mapping also makes `POST
+  /v1/auth/oidc/cert` single use per that claim on rows serving the agent door, which is the
+  intended effect.
+- The IdP can be made to mint a `jti`. On Auth0 that is switching the API to the RFC 9068
+  access-token profile. Nothing on this Server changes.
+- Neither is available. Clear the flag: `{"jtiSingleUse": false}`. The bearer stays reusable until
+  its `exp`, which is what it already was, and the row now says so.
+
+Silence: only while one of the three changes is being made. A permanent silence here is a row
+documenting a control it does not have.
+
+## AGLedgerOidcSubjectRefusalBurst
+
+Tokens that verified against a registered trusted issuer are being refused because their subject is
+not on that issuer's `subjectAllowlist`. One refusal is the control working: somebody's access was
+pulled and their token stopped working. A burst is one of two other things, and they need different
+answers.
+
+Check which door and which subject:
+
+```promql
+sum(increase(agledger_oidc_admin_subject_refusals_total[15m]))
+sum by (reason) (increase(agledger_oidc_cert_exchange_refusals_total[15m]))
+sum by (reason) (increase(agledger_oidc_delegation_refusals_total[15m]))
+```
+
+then the subjects, from the audit rows carrying `payload.reason = oidc_subject_not_allowlisted`:
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" \
+  "$AGLEDGER_URL/v1/siem/stream?format=raw&limit=500" \
+  | jq -c 'select(.type == "auth.failed" and .payload.reason == "oidc_subject_not_allowlisted")
+           | {sub: .payload.sub, iss: .payload.iss, surface: .payload.surface}'
+```
+
+Do: if the subjects are principals you expect to have access, the allowlist on that row is behind
+the IdP. Read the row with `GET /v1/admin/trusted-issuers`, then add them with `PATCH
+/v1/admin/trusted-issuers/{id}`, or clear `subjectAllowlist` entirely if the row was never meant to
+be restricted. If the subjects are not ones you recognise, the IdP is issuing tokens for principals
+this Server was never told about: that is a question for whoever administers the IdP, and the
+allowlist is doing its job in the meantime.
+
+A refusal on the delegation counter with `reason = delegation_actor_binding_mismatch` is a different
+event and does not belong to this alert: see the CRITICAL severity that reason carries on the SIEM
+feed.
+
+Silence: a few hours while the allowlist is being brought up to date.
+
+## AGLedgerVaultIntegrityCheckFailed
+
+The daily integrity check verified a sample of chains and one did not. The hash chain did not
+verify.
+
+Do not restart into this. Capture the state first:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/vault/scan"
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/vault/scan/<jobId>"
+```
+
+and take a database backup before any remediation.
+
+Do: work out whether the break is a missing entry or a modified one. A missing entry usually has
+`AGLedgerChainEntryDropped` in its history; a modified one does not, and means something wrote to
+`audit_vault` outside the engine. Compare against the signed checkpoints, which are anchored
+independently:
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/audit-vault/checkpoints"
+```
+
+Silence: never.
+
+## AGLedgerVaultSignerUnreachable
+
+The vault signing key is held in AWS KMS (`VAULT_SIGNING_KEY_KMS_ARN`) and a process has stopped
+signing because consecutive Sign calls failed. That process answers 503 on every write and on
+`/health/ready`, so a load balancer routes around it; on the worker, fetched jobs are held rather
+than failed. It reopens on its own: every signing-key watch tick makes one probe Sign, and the
+first answered one resumes writing.
+
+Check, from the affected process:
+
+```bash
+curl -sS "$AGLEDGER_URL/health"
+# signingKey.gate "signer_unreachable"; the worker also reports jobConsumption "held_signer_unreachable"
+```
+
+and the process log, where each failed call names the AWS error. The usual causes are, in order:
+the KMS endpoint unreachable from the pod (a VPC endpoint policy, a security group, DNS), the key
+disabled or pending deletion (`KMSInvalidStateException`), and the role missing `kms:Sign`
+(`AccessDeniedException`).
+
+Do: fix the cause. Nothing on the Server needs restarting; the watch reopens the gate. If the key
+is gone for good, stage a new KMS key by setting the new ARN and restarting, then retire the old
+key id: the same two steps as any rotation.
+
+Silence: never. A process in this state writes nothing.
+
+## AGLedgerVaultRemoteSignFailing
+
+Individual KMS Sign calls are failing without tripping the gate above. Each failure is one write
+answered 503 to its caller, retryable.
+
+Check the process log for the AWS error name on the failed calls, and the latency histogram:
+
+```promql
+histogram_quantile(0.99, sum(rate(agledger_vault_remote_sign_seconds_bucket[5m])) by (le))
+```
+
+`ThrottlingException` means the account's KMS Sign quota for the key type, which is shared with
+every other caller in that account and region. `VAULT_SIGNING_REMOTE_MAX_PER_SECOND` caps each
+process; the sum across api and worker replicas is what has to sit under the quota, and the quota
+itself is raised through AWS Service Quotas. A rising p99 with no errors is the path to KMS, and
+every chain append holds its transaction open for that long.
+
+Silence: while a quota increase is pending, if the failure rate is one you accept.
+
+## AGLedgerCheckpointSkippedBrokenChain
+
+Checkpointing found a record whose chain does not verify and refused to anchor over the break. Every
+write on that chain after this point is unanchored until the break is resolved.
+
+Check:
+
+```promql
+increase(agledger_vault_checkpoint_skipped_broken_total[24h])
+```
+
+and the worker log, which names the record.
+
+Do: this is `AGLedgerVaultIntegrityCheckFailed` reached from the other direction, so follow that
+section. Checkpointing resumes on its own once the chain verifies again. Until then, the
+tamper-exposure window on that chain keeps growing: entries written since the last anchored
+checkpoint have no external evidence.
+
+Silence: never.
+
+## AGLedgerPartitionMaintenanceFailing
+
+The daily partition-management job (02:00 UTC) could not extend at least one partitioned table, or
+could not refresh the runway gauges afterwards. Runway is draining on whatever failed, and the gauges
+may be reporting the last healthy reading.
+
+Check the worker log first, because it is what tells the three cases apart. A single table that could
+not be extended is logged with its name and the Postgres error. A call that failed outright, on a
+lock wait or a lost connection, is logged without a table name and means no table gained runway at
+all. A gauge-refresh failure is logged separately.
+
+Then read the real runway from the database rather than the gauge:
+
+```sql
+SELECT table_name, runway_days, default_rows FROM partition_runway();
+```
+
+Do: refill by hand once the cause is fixed. Take the sweep's advisory lock first, so a hand refill
+that lands on the 02:00 job cannot run the same CREATE TABLE twice and report a failure that is not
+one. Waiting rather than trying, because a person at a prompt wants the refill done, not skipped:
+
+```sql
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtext('partition-management'));
+SELECT * FROM ensure_future_partitions(3);
+COMMIT;
+```
+
+A lock wait is the common failure: the call needs ACCESS EXCLUSIVE on four partitioned parents and
+gives up after 30 seconds rather than queueing ahead of every reader.
+
+Silence: no. This is the alert the gauges cannot substitute for.
+
+## AGLedgerPartitionMaintenanceSkipped
+
+The daily job has run and done nothing at least twice in 49 hours, because another copy of the sweep
+held its advisory lock both times. Nothing failed. The skipped cycle still refreshes the runway
+gauges and stamps their freshness, so `AGLedgerPartitionMaintenanceFailing` and
+`AGLedgerPartitionMaintenanceNotRunning` both read healthy while no partition is being created, and
+the next signal without this rule would be `AGLedgerPartitionRunwayLow` about two months later.
+
+One skip is the guard working: a pg-boss lease retry arriving while the original cycle is still going
+is exactly what the lock absorbs. Two across consecutive daily ticks is not, because the lock is
+transaction-scoped and a healthy cycle takes seconds. What spans two ticks is a backend wedged inside
+`ensure_future_partitions()`, where `statement_timeout` is deliberately 0 and the session is never
+idle in transaction, so neither database timeout ends it.
+
+Find the holder:
+
+```sql
+SELECT a.pid, a.state, a.wait_event_type, a.wait_event,
+       now() - a.xact_start AS in_xact, left(a.query, 120) AS query
+  FROM pg_locks l
+  JOIN pg_stat_activity a ON a.pid = l.pid
+ WHERE l.locktype = 'advisory'
+   AND l.objid = hashtext('partition-management')::oid
+ ORDER BY a.xact_start;
+```
+
+Read `in_xact` and `wait_event` together. A session hours into its transaction and waiting on a
+relation lock is blocked by a long-running reader of one of the four partitioned parents; a session
+hours in with no wait event is the worker process itself, stalled after the statement returned.
+
+Do: fix what it is waiting on rather than killing it, where there is something to fix. Where there is
+not, `SELECT pg_terminate_backend(<pid>);` ends the transaction and releases the lock, which costs
+nothing here: the sweep is idempotent and the next tick recreates whatever the killed one had not.
+Then refill by hand with the snippet in `AGLedgerPartitionMaintenanceFailing` above, and confirm with
+`SELECT table_name, runway_days FROM partition_runway();`.
+
+If nothing holds the lock and the alert is still firing, the skips are in the past and the counter is
+still inside its 49-hour window; it clears itself once two clean ticks have gone by.
+
+Silence: no. Every other partition rule reads healthy through this state, which is why it exists.
+
+## AGLedgerPartitionMaintenanceNotRunning
+
+The runway gauges have not been refreshed for over 36 hours, or they are absent entirely. The job is
+not failing, it is not running.
+
+Check that the worker is up and that its schedule still holds the entry:
+
+```sql
+SELECT name, key, cron, timezone FROM pgboss.schedule ORDER BY name, key;
+```
+
+The `key` column is what carries `partition-management`; `name` is the maintenance queue every
+scheduled task shares. Then:
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml ps agledger-worker
+```
+
+Do: a restarted worker publishes nothing until the next 02:00, which is why the rule holds for 26
+hours. Past that, either the worker is down (see `AGLedgerWorkerTargetAbsent`) or its pg-boss
+schedule lost the `partition-management` entry, which a restart re-registers. Confirm the real runway
+with `SELECT * FROM partition_runway();` before deciding how urgent it is.
+
+Silence: through a planned worker outage. Not otherwise.
+
+## AGLedgerPartitionRunwayLow
+
+A partitioned table has under 31 days of future partitions. A healthy install sits near 90, because
+the daily job creates three months ahead, so reaching 31 means it has not completed for about two
+months.
+
+Check which table and how fast it is draining:
+
+```promql
+min by (table) (agledger_partition_runway_days)
+```
+
+Do: find out why the job stopped, which is `AGLedgerPartitionMaintenanceFailing` or
+`AGLedgerPartitionMaintenanceNotRunning`. Then refill, holding the sweep's advisory lock so a hand
+refill and the daily job cannot both create the same month:
+
+```sql
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtext('partition-management'));
+SELECT * FROM ensure_future_partitions(3);
+COMMIT;
+```
+
+This rule excludes anything already under 7 days, so it and the critical rule never page for the same
+table.
+
+Silence: up to a week, once the refill has run and the gauge is climbing again.
+
+## AGLedgerPartitionRunwayExhausted
+
+Under a week of runway on a partitioned table. There is no longer room to schedule the fix. When it
+reaches zero, inserts fail with `no partition of relation found for row`, and on `audit_vault` that
+stops every chain append and with it every state transition.
+
+Do this first, then investigate. The advisory lock is the sweep's own, so taking it here is what
+stops a refill colliding with the 02:00 job on the same month:
+
+```sql
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtext('partition-management'));
+SELECT * FROM ensure_future_partitions(3);
+COMMIT;
+SELECT table_name, runway_days FROM partition_runway();
+```
+
+If the call cannot take its locks, find what is holding them:
+
+```sql
+SELECT pid, state, wait_event_type, left(query, 80) FROM pg_stat_activity
+ WHERE datname = current_database() ORDER BY xact_start LIMIT 10;
+```
+
+Do: after the refill, work out why the daily job stopped. A refill without that just moves the
+outage three months out.
+
+Silence: never.
+
+## AGLedgerPartitionDefaultRowsPresent
+
+Rows are sitting in a table's DEFAULT partition, which should read zero. Only `system_audit_log` has
+one today, so this fires for it alone. Nothing is blocked either way: this is a lag signal, not a
+latch.
+
+Check the dates on those rows:
+
+```sql
+SELECT min(created_at), max(created_at), count(*) FROM system_audit_log_default;
+```
+
+Do: if the dates fall within the next three months, the nightly job drains them into their own
+partition on its next run, because `ensure_future_partitions()` detaches the default, creates the
+months, moves what now has a home and re-attaches. Wait a day. If it is still firing,
+`AGLedgerPartitionMaintenanceFailing` or `AGLedgerPartitionMaintenanceNotRunning` will say which half
+is broken. If the dates are older than the earliest monthly partition or further ahead than three
+months, the job would never have created that month and the rows are simply parked.
+
+Silence: yes, for parked rows outside the job's window. A day at a time otherwise.
+
+## AGLedgerFederationDeadLettered
+
+Outbound federation jobs exhausted their retries and dead-lettered. They will never reach the peer
+without an operator redrive. The `kind` label says which message type.
+
+Check the queue:
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/federation/v1/admin/dlq"
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/federation/v1/admin/peers"
+```
+
+Do: the recovery sweep re-enqueues entries automatically after a cooldown, every ten minutes, so a
+transient peer outage drains on its own. Entries older than 24 hours are left for manual triage
+because they usually reflect a peer config change: a rotated signing key, a moved endpoint, a revoked
+peering. Fix the peer record, then redrive:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/federation/v1/admin/dlq/recover"
+```
+
+Silence: through a known peer maintenance window.
+
+## AGLedgerFederationSchemaDigestMismatch
+
+A peer asserted a schema digest this Server does not hold. The two Servers registered the same
+(publisher, type, version) from different bytes, so a message referencing it cannot be validated
+against the same schema on both sides.
+
+Check which type and which operation:
+
+```promql
+sum by (operation) (increase(agledger_federation_schema_digest_mismatch_total[24h]))
+```
+
+then compare the registered schema on both Servers:
+
+```bash
+curl -sS "$AGLEDGER_URL/v1/schemas/<type>"
+```
+
+`/v1/schemas` is unauthenticated on both ends, so you can read the peer's copy directly.
+
+Do: re-import the manifest on one side so the digests agree. Editing a registered schema's
+description is enough to change the digest, so a cosmetic edit on one Server is the usual cause.
+
+Silence: yes, until the next maintenance window, if the affected type is not in use across the peer
+link.
+
+## AGLedgerHighErrorRate
+
+More than 5% of requests returned 5xx for ten minutes. `keep_firing_for: 5m` holds the alert through
+a single good evaluation, so a dip does not resolve and refire it as a second incident.
+
+Check which route and which status:
+
+```promql
+topk(5, sum by (route, status_code) (rate(agledger_http_request_duration_seconds_count{status_code=~"5.."}[5m])))
+```
+
+then:
+
+```bash
+curl -sS "$AGLEDGER_URL/health/ready"
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/system-health"
+```
+
+Do: 5xx concentrated on one route is application; spread across all of them is almost always the
+database. Check `AGLedgerDbPoolSaturated` and `AGLedgerDbConnectionsDropping` before reading code.
+The API log carries the error and the request id for each.
+
+Silence: no.
+
+## AGLedgerHighLatency
+
+P95 request latency has been above 2 seconds for ten minutes. Same `keep_firing_for: 5m` hold as the
+error-rate rule, for the same reason.
+
+Check where it is:
+
+```promql
+topk(5, histogram_quantile(0.95, sum by (route, le) (rate(agledger_http_request_duration_seconds_bucket[5m]))))
+```
+
+and whether the process is saturated rather than the query:
+
+```promql
+agledger_nodejs_eventloop_lag_p99_seconds
+agledger_db_pool_waiting_connections
+```
+
+Do: event loop lag moving with the latency means the process is CPU-bound, and
+`AGLedgerEventLoopLagging` should be firing too. Pool waiters moving with it means the database is
+the bottleneck. Neither moving means a slow query on one route; the API log records the duration per
+request.
+
+Silence: during a known bulk import or backfill.
+
+## AGLedgerDbPoolSaturated
+
+Requests have been queued waiting for a database connection for five minutes. This is the shape a
+pool deadlock takes from the outside.
+
+Check the pool and the database side together:
+
+```promql
+agledger_db_pool_waiting_connections
+agledger_db_pool_total_connections
+agledger_db_pool_idle_connections
+```
+
+```sql
+SELECT state, count(*), max(now() - state_change) AS oldest
+  FROM pg_stat_activity WHERE datname = current_database() GROUP BY state;
+```
+
+Do: total at `DATABASE_POOL_MAX` with zero idle and waiters climbing is either an undersized pool or
+a handler holding a client across an await. Long `idle in transaction` backends point at the second.
+`DATABASE_IDLE_IN_TX_TIMEOUT_MS` (default 30000) rolls those back; a zero there removes the safety
+net. Raising `DATABASE_POOL_MAX` buys time and does not fix a leak.
+
+Silence: no.
+
+## AGLedgerDbConnectionsDropping
+
+Backends have been dying under checked-out clients for ten minutes. Each one rejects the in-flight
+query and evicts the client, so an open transaction is lost every time: for a pg-boss job that is a
+retry, for a request a 500.
+
+Check the rate and the shape:
+
+```promql
+sum(rate(agledger_db_client_connection_errors_total[10m]))
+```
+
+Counts roughly double, because one backend death raises both the FATAL message and the socket close.
+A burst of about twice the pool size that stops is a failover, and the ten-minute hold rides over it.
+A steady trickle is not.
+
+Do: check the database for restarts, failovers and OOM kills, and the network path if the database is
+external. `SELECT pg_postmaster_start_time();` says whether Postgres itself restarted. A flapping
+path or something terminating backends on a timer is the case this rule is written for.
+
+Silence: through a planned failover.
+
+## AGLedgerQueueBacklogGrowing
+
+A pg-boss queue has held more than 1000 pending jobs for fifteen minutes. Either the worker is down
+or it cannot keep up.
+
+Check which queue and whether anything is running:
+
+```promql
+max by (queue, state) (agledger_pgboss_queue_size)
+sum by (queue) (rate(agledger_worker_jobs_processed_total[5m]))
+```
+
+Do: zero processing rate with a growing backlog means the worker is gone, and
+`AGLedgerWorkerTargetAbsent` should be firing. A nonzero rate that cannot keep up is a throughput
+problem: scale the worker, or find the slow handler in
+`agledger_maintenance_sweep_duration_seconds`. A backlog on `webhook-delivery` specifically is often
+one slow endpoint, which `GET /v1/admin/webhooks/health` will name.
+
+Silence: during a known burst, such as a bulk import.
+
+## AGLedgerWorkerJobsFailing
+
+More than 10% of worker jobs have failed for ten minutes. Retries are counted as failures each time,
+so a persistent failure inflates this faster than the job count suggests.
+
+Check which queue:
+
+```promql
+sum by (queue, status) (rate(agledger_worker_jobs_processed_total[10m]))
+```
+
+then the worker log for the handler error.
+
+Do: a single failing queue usually points at an external dependency: a webhook endpoint that is down,
+a peer that will not accept a signed message, an S3 anchor bucket that has lost its credentials.
+Jobs that exhaust their retries surface separately as `AGLedgerGateJobRetriesExhausted` or
+`AGLedgerFederationDeadLettered`, so check those for what has already been lost.
+
+Silence: during a known outage of whatever the failing queue talks to.
+
+## AGLedgerMaintenanceSweepFailing
+
+One periodic maintenance sweep has failed at least twice in three hours. `AGLedgerWorkerJobsFailing`
+above does not cover this: the maintenance queue multiplexes about twenty sweeps into one queue
+label, so a single sweep failing every cycle stays well under that rule's 10% ratio while everything
+else on the worker succeeds.
+
+Check which sweep, and whether any cycle is getting through:
+
+```promql
+sum by (task) (increase(agledger_maintenance_sweep_failures_total[3h]))
+sum by (task) (increase(agledger_maintenance_sweep_rows_total[3h]))
+```
+
+The rows series exists only for tasks that report a row count, so its absence means one of two
+things and the task name says which. `marketplace-license-check` reports none by design: it refreshes
+an entitlement and acts on no rows. Every other task reports one, and for those an absent series
+means no cycle has completed since the worker started.
+
+Then the worker log for the throw itself:
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml logs --tail=500 agledger-worker | grep -i maintenance
+```
+
+Do: what the failure costs depends on the task, and the name says which.
+
+- `record-expiry`, `evidence-window-expiry`, `dispute-stale-recovery`: records sit past their
+  deadline in a non-terminal state. Nothing is lost, and the next successful cycle catches up.
+- `idempotency-cleanup`, `rate-limit-cleanup`, `oidc-jti-cleanup`,
+  `webhook-secret-grace-cleanup`: a table grows without bound. Check its row count before deciding
+  how long you can leave it.
+- `gate-recovery`, `cascade-cancel-recovery`, `auto-rollup-consistency`,
+  `federation-dlq-recovery`, `federation-pending-recovery`: these ARE the recovery path for work
+  the queue dropped, so a failing one means the engine's own safety net is off.
+- `vault-checkpoints`, `vault-integrity-check`, `vault-anchor-verify`,
+  `org-admin-reads-checkpoints`: the chain keeps accepting writes and stops being checkpointed or
+  checked. `POST /v1/admin/vault/scan` covers the integrity check on demand; the two checkpoint
+  sweeps have no manual door, and a gap in them is a stretch of chain with no signed
+  checkpoint over it.
+- `webhook-circuit-breaker`: a subscription that tripped its breaker is never half-opened again, so
+  an endpoint that has recovered stays cut off, and a chronically failing one is never disabled.
+  `GET /v1/admin/webhooks/health` shows the current state, and the circuit override on a
+  subscription is the manual way back.
+- `marketplace-license-check`: nothing is gated on the tier, so a failing cycle changes a label and
+  a WARN banner, not behaviour. This is the one entry here that can wait.
+- `partition-management`: this one has its own CRITICAL rule,
+  `AGLedgerPartitionMaintenanceFailing`, and its runbook above is the one to follow.
+
+Most failures here are the database: a statement timeout, a missing GRANT after a role change, or a
+pool with nothing free. The throw in the worker log names which.
+
+Silence: for a cleanup sweep whose table you have checked, while the database problem is fixed.
+Never for a recovery sweep.
+
+## AGLedgerMaintenanceSweepFallingBehind
+
+A maintenance sweep that bounds its own work has spent at least six of the last hour's cycles
+stopping with rows still waiting. Today that is `oidc-jti-cleanup` and nothing else: it drains the
+consumed-jti register (`oidc_consumed_jtis`) in batches of 1000 for up to 30 seconds a cycle, every
+5 minutes, and a cycle that hits the 30 seconds with expired rows left reports itself behind.
+
+Nothing is failing and nothing is lost. Every row the sweep deletes belongs to a token whose `exp`
+has passed, so a row left behind refuses nobody and admits nobody; what grows is the table and its
+index. This is a capacity reading, not an error.
+
+Which sweep, and how much it is getting through:
+
+```promql
+sum by (task) (increase(agledger_maintenance_sweep_behind_total[1h]))
+sum by (task) (increase(agledger_maintenance_sweep_rows_total[1h]))
+histogram_quantile(0.95, sum by (task, le) (rate(agledger_maintenance_sweep_duration_seconds_bucket[1h])))
+```
+
+Read the three together. A high row count with cycles at the full 30 seconds is a sweep losing to an
+admission rate. A low row count at the full 30 seconds is a database that has slowed down, and the
+sweep is the symptom rather than the subject.
+
+What feeds the register is admin and platform bearers accepted on a row with single use on, one row
+each. Two things narrow that. Only the bearer door writes here, so a row serving agents
+(`appliesTo: "agent"`) contributes nothing however its flag is set, and the cert exchange dedups in
+its own table (`ephemeral_certs.oidc_jti`) rather than this one. And only a token that resolves an
+id is registered: on a row whose tokens carry no `jti` and no `claimMapping` `jti`, the flag is
+inert and `agledger_oidc_admin_jti_unenforceable_total` is counting instead.
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/trusted-issuers" \
+  | jq -c '.data[] | select(.jtiSingleUse) | {id, issuerUrl, appliesTo, managedBy, label}'
+```
+
+Do: decide whether the rate is meant. An issuer whose client mints a token per request is the shape
+`jtiSingleUse` exists for, and a sustained rate past what the database can delete is a sizing
+question, not a misconfiguration. Options, in the order worth trying:
+
+- Check the table's actual size before anything else. A register holding a few million dead rows is
+  a table to leave alone; one growing without a ceiling is not.
+  `SELECT count(*), pg_size_pretty(pg_total_relation_size('oidc_consumed_jtis')) FROM oidc_consumed_jtis;`
+- Give the database what the sweep is waiting on. The batch is a `DELETE ... WHERE ctid IN (SELECT
+  ctid ... WHERE expires_at < $now LIMIT 1000)` over `idx_oidc_consumed_jtis_expires_at`, so it is
+  bound by write throughput and by autovacuum keeping up with the churn. Check for bloat
+  (`pg_stat_user_tables.n_dead_tup`) and for an autovacuum that is not running on this table.
+- Turn single use off on an issuer that does not need it (`PATCH /v1/admin/trusted-issuers/{id}`
+  with `{"jtiSingleUse": false}`, or an edit to the provisioning YAML plus
+  `POST /v1/admin/provisioning/reload` for a row whose `managedBy` is `provisioning`, which PATCH
+  answers with 409). The register stops taking rows from that issuer immediately, and bearers it
+  validates become reusable until their `exp`, which is a security decision, not a cleanup one.
+
+Silence: while the table's size is known and acceptable, and for as long as the rate that feeds it
+is expected. Not open-ended: the alert clears itself within the hour once the sweep catches up, so a
+warning that keeps coming back is a table that keeps growing.
+
+## AGLedgerApiKeyExpiringTomorrow
+
+Active API keys expire within 24 hours. An expired key stops authenticating with no warning to its
+holder, and the failure surfaces as the agent it belonged to going quiet.
+
+List them:
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" \
+  "$AGLEDGER_URL/v1/admin/api-keys?isActive=true&expiresBefore=<tomorrow-iso8601>"
+```
+
+That filter has no lower bound, so it also returns keys that already expired, and `isActive` is the
+revocation flag alone, so an expiring key still reads `true` there. Each row carries the `keyId`,
+`ownerId`, `ownerType`, `role`, `scopes` and `allowedIps` the replacement needs.
+
+Do: no admin route rotates a key the caller does not hold, so mint the replacement for the same owner
+and revoke the old one. The plaintext key is returned once by the create, so hand it to the holder
+before you revoke:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" -H 'Content-Type: application/json' \
+  -d '{"role":"agent","ownerId":"<ownerId>","ownerType":"agent","scopes":["<as listed>"]}' \
+  "$AGLEDGER_URL/v1/admin/api-keys"
+
+curl -sS -X PATCH -H "Authorization: Bearer $AGLEDGER_KEY" -H 'Content-Type: application/json' \
+  -d '{"isActive":false,"reason":"replaced ahead of expiry"}' \
+  "$AGLEDGER_URL/v1/admin/api-keys/<keyId>"
+```
+
+Both keys authenticate until the revoke lands, which is the overlap window on this path. Omitting
+`scopes` gives the new key the role's default profile rather than whatever the expiring one carried.
+For a sweep, `POST /v1/admin/api-keys/bulk-revoke` does the revoke half in one call.
+
+`POST /v1/auth/keys/rotate` is a different thing and is what a key holder runs for itself: it rotates
+the CALLER's own key, under the `ROTATE_OWN_API_KEY` authority, and names no key in the body. With no
+body `gracePeriodSeconds` is 0 and the old key stops working the moment the call returns, so pass it
+explicitly whenever anything else is still presenting that key:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" -H 'Content-Type: application/json' \
+  -d '{"gracePeriodSeconds":3600}' "$AGLEDGER_URL/v1/auth/keys/rotate"
+```
+
+Capped by `AUTH_KEY_ROTATION_MAX_GRACE_SECONDS`, 7 days by default. Run with `$AGLEDGER_KEY` it
+rotates the platform key you are using to work the alert, so capture `apiKey` from the response.
+
+The rule reads the 24-hour window rather than the 7-day one on purpose: an install running
+`API_KEY_MAX_LIFETIME_SECONDS` keeps keys inside a 7-day window as its steady state, so a 7-day rule
+would never clear on exactly the installs that adopted the control.
+
+Expect this rule to fire on an install that has been running for 90 days without one:
+`API_KEY_DEFAULT_LIFETIME_SECONDS` gives every admin and agent key a 90-day life unless the mint
+named its own `expiresAt`, so the first cohort comes due together. Platform keys are exempt by
+default (`AGLEDGER_PLATFORM_KEY_DEFAULT_LIFETIME_SECONDS`, `0`), and the engine logs a WARN at boot
+when the last active platform key is inside 14 days of expiry: that one has no recovery once it
+lapses, because minting a platform key requires a platform credential. Rotate it, or register a
+trusted issuer mapped to the platform role first.
+
+Silence: yes, if the keys are known to be retiring with their agents.
+
+## Dormant API keys (no alert)
+
+`agledger_api_keys_dormant{window="30d"}` and `{window="90d"}` count active keys nothing has
+presented inside that window, plus keys created before it that have never authenticated at all.
+There is no shipped alert on either: a credential going quiet is a standing inventory question, not
+an incident, and an install with seasonal agents would page on its own steady state.
+
+No panel ships for it either; add one where your key inventory lives, and work the number on a
+cadence. The listing behind it:
+
+```bash
+# used once, and not since
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" \
+  "$AGLEDGER_URL/v1/admin/api-keys?isActive=true&lastUsedBefore=<90-days-ago-iso8601>"
+
+# minted long enough ago to have been used, and never was
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" \
+  "$AGLEDGER_URL/v1/admin/api-keys?isActive=true&neverUsed=true&createdBefore=<90-days-ago-iso8601>"
+```
+
+`last_used_at` is written on a key's next authenticated request, once per key per 5 minutes per
+replica, so it is a mutable predicate: a key presented during the walk drops out of a later page,
+and the gauge moves with it. Read a page as a snapshot. Check
+`agledger_api_key_last_used_update_failures_total` before acting on a jump: while that write is
+failing, keys in daily use start reading as dormant.
+
+Do: confirm the holder is gone before revoking, since a key used quarterly is dormant every quarter
+and still live. Then revoke, one key at a time or as a sweep:
+
+```bash
+curl -sX POST -H "Authorization: Bearer $AGLEDGER_KEY" -H 'Content-Type: application/json' \
+  -d '{"lastUsedBefore":"<90-days-ago-iso8601>","reason":"dormant 90 days"}' \
+  "$AGLEDGER_URL/v1/admin/api-keys/bulk-revoke"
+```
+
+`neverUsed` is refused on the sweep unless `createdBefore` is beside it, because on its own it also
+matches the replacement key minted minutes ago. The lockout guard still applies: an org-admin sweep
+that would leave the org with no working admin door is refused with 403 before anything is revoked.
+
+## AGLedgerApiTargetAbsent
+
+Nothing has published an API-only series for five minutes. Neither packaged install keeps a stopped
+process in the target list: Compose discovers both services by DNS and a stopped one stops resolving,
+while on Kubernetes the ServiceMonitor becomes operator-generated `kubernetes_sd_configs` over
+endpoints and a stopped pod leaves the endpoint set. Either way the API disappears from the target
+list rather than reporting `up == 0`, so `AGLedgerScrapeFailing` stays silent and this is the only
+rule that sees it.
+
+Check the process, then the scrape:
+
+```bash
+curl -sS "$AGLEDGER_URL/health"
+curl -sS -H "Authorization: Bearer $METRICS_AUTH_TOKEN" "$AGLEDGER_URL/metrics" | head -5
+```
+
+and Prometheus' own target list at `/targets`.
+
+Do: if `/health` answers, this is a scrape problem rather than an outage. The usual causes are a
+changed service name in the scrape config, a `METRICS_AUTH_TOKEN` that no longer matches, and a
+NetworkPolicy that no longer admits Prometheus. If `/health` does not answer, read the API log for a
+boot failure: a missing `VAULT_SIGNING_KEY`, a missing `AGLEDGER_EXTERNAL_URL` and a database that
+refuses SSL all fail fast in production by design.
+
+Silence: through a planned API outage, and only with the worker still scraped.
+
+## AGLedgerWorkerTargetAbsent
+
+Nothing has published a worker-only series for five minutes. With no worker, gate evaluation, webhook
+delivery, record expiry, partition maintenance and every recovery sweep have stopped, and the API
+keeps returning 200 the whole time.
+
+Check the worker's own health port, which is separate from the API's and is not published to the
+host by either packaged install (`WORKER_HEALTH_PORT`, default 3001):
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml exec agledger-worker \
+  /nodejs/bin/node -e "fetch('http://localhost:3001/health/ready').then(r=>r.text()).then(console.log)"
+
+kubectl port-forward -n <ns> "$(kubectl get deploy -n <ns> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=worker -o name | head -1)" 3001:3001 &
+curl -sS http://localhost:3001/health/ready
+```
+
+Do: the worker refuses to serve `/metrics` with a 503 when `METRICS_AUTH_REQUIRED` is on and no
+`METRICS_AUTH_TOKEN` is set, which looks exactly like this alert while the process is perfectly
+healthy. Check that first. Otherwise read the worker log: it exits 1 on a boot failure rather than
+staying up, so the last lines say why. Queue depth confirms the impact:
+
+```promql
+max by (queue) (agledger_pgboss_queue_size{state="queued"})
+```
+
+Silence: through a planned worker outage. Expect `AGLedgerQueueBacklogGrowing` to follow.
+
+## AGLedgerScrapeFailing
+
+A target Prometheus still holds has failed its scrape for five minutes. This is the case the
+`absent()` rules cannot see: the series is there and its value is 0. Every rule that reads a metric
+from this target is now evaluating stale or absent data.
+
+Check Prometheus' `/targets` page for the error string, then reproduce it:
+
+```bash
+curl -sS -i -H "Authorization: Bearer $METRICS_AUTH_TOKEN" http://<target>/metrics | head -20
+```
+
+Do: a 401 means the scrape token does not match the process. A 503 from the worker means
+`METRICS_AUTH_REQUIRED` is on with no token configured, which is a deliberate refusal rather than a
+fault. A scrape that trips `sample_limit` is reported as a failed scrape with the target still
+present and no HTTP error at all, so check that limit against the payload size if the endpoint looks
+healthy by hand.
+
+Silence: during a planned restart of that target.
+
+## AGLedgerProcessRestarting
+
+A process has restarted more than twice in an hour. Three starts in an hour is past anything a
+rollout explains on a stable install.
+
+Check which process and how often:
+
+```promql
+changes(agledger_process_start_time_seconds[1h])
+```
+
+then the container exit reason:
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml ps
+kubectl get pods -l app.kubernetes.io/instance=<release>
+kubectl describe pod <pod>
+```
+
+Do: a restart loop discards whatever was in flight each time. An open transaction rolls back, a
+pg-boss job goes back for retry, and in-memory rate-limit state starts over. It also resets every
+counter in this file, which makes the `increase()` windows elsewhere read low, so do not trust the
+other alerts while this one is firing. An OOM kill shows as exit code 137; a boot failure shows as
+exit 1 with the reason in the process log.
+
+Silence: during a rollout. Not otherwise.
+
+## AGLedgerEventLoopLagging
+
+Event loop p99 lag has been above half a second for ten minutes. Node is single-threaded, so this is
+saturation ahead of symptom: work is queued behind the loop before any of it shows up as request
+latency, and `AGLedgerHighLatency` needs completed requests to move before it can say anything.
+
+Check the process and its CPU budget together:
+
+```promql
+agledger_nodejs_eventloop_lag_p99_seconds
+rate(agledger_process_cpu_user_seconds_total[5m])
+agledger_process_resident_memory_bytes
+```
+
+Do: CPU rate pinned at the container limit is starvation, and the fix is more CPU or more replicas. A
+lag that spikes rather than sits is usually one synchronous piece of work: a large JSON body, a gate
+rule doing heavy regex, or a schema `pattern` that backtracks.
+`agledger_gate_regex_timeout_total` and `agledger_schema_validation_timeout_total` count the two the
+engine terminates itself.
+
+Silence: during a known bulk import or backfill.

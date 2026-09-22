@@ -12,6 +12,10 @@ set -euo pipefail
 #   ./scripts/backup.sh --keep 14         # Keep last 14 backups (minimum 1)
 #   BACKUP_DIR=/mnt/backups ./scripts/backup.sh  # Custom backup root
 #
+# Options:
+#   --keep <n>   How many backups to retain, 1 or more. Also read from KEEP.
+#   -h, --help   Print this and exit.
+#
 # Archives land in <this-checkout>/backup unless BACKUP_DIR says otherwise, and
 # are named for the compose project, so two installs sharing one directory keep
 # their own retention.
@@ -34,13 +38,24 @@ BACKUP_PATH=""
 log() { printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1"; }
 die() { log "ERROR: $1"; exit 1; }
 
+# The header block above, with the comment markers taken off: one place to read
+# and one place to edit. It runs to the rule that closes the block rather than
+# to a line number, so a paragraph added to the header cannot push the options
+# out of what --help prints.
+usage() {
+  awk '/^# ={10,}/ { rules++ }
+       NR >= 4     { sub(/^# ?/, ""); print }
+       rules == 3  { exit }' "${BASH_SOURCE[0]}"
+}
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case $1 in
     --keep)
       [[ $# -ge 2 ]] || die "--keep needs a number, e.g. --keep 14"
       KEEP="$2"; shift 2 ;;
-    *) die "Unknown argument: $1" ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; die "Unknown argument: $1" ;;
   esac
 done
 

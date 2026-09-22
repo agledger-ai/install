@@ -81,9 +81,17 @@ DUMP_ARGS=(dist/scripts/dump-vault.js /dump)
 #   -v            bind-mount the host output dir to /dump
 #   --entrypoint  force /nodejs/bin/node and drop the image's --permission CMD
 #                 (the dump must write files; the hardened CMD denies fs writes)
+#   -e            clear NODE_OPTIONS, which `run` inherits from the service's
+#                 `env_file: .env`. This is the one invocation that cannot be
+#                 fixed by adding the flags back: it drops --permission on
+#                 purpose, and Node refuses an --allow-fs-write carried in
+#                 NODE_OPTIONS from a process without it, so the SIEM file-sink
+#                 grant set in .env rather than on the worker service would fail
+#                 the dump at pre-execution. NODE_EXTRA_CA_CERTS is untouched.
 "${COMPOSE[@]}" run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   -v "${ABS_OUT}:/dump" \
+  -e NODE_OPTIONS= \
   --entrypoint /nodejs/bin/node \
   agledger-api "${DUMP_ARGS[@]}"
 

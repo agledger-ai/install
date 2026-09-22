@@ -102,8 +102,7 @@ A rejected environment gate concludes the run `failure` (not `cancelled`); key t
 
 ## Lessons for implementers
 
-What we learned building and exercising this recipe: the things worth knowing before you
-adapt it.
+The things worth knowing before you adapt it.
 
 ### The honesty boundary: the agent's word vs the SoR's rendering
 

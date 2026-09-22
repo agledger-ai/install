@@ -104,12 +104,9 @@ echo ""
 
 check "Health check" "$BASE_URL/health" "status" "ok"
 check "Readiness check" "$BASE_URL/health/ready" "status" "ready"
-# `conformanceLevel`/`level`/`specVersion` were retired in api v0.22.32
-# (api#460 — V1-FRAME.md is the authoritative spec, standards-play deferred).
-# The durable conformance contract is `{capabilities, contractTypes,
-# schemasUrl, settlementSignals, version}` — confirm the envelope shape via a
-# field that survives both the retired-fields cleanup and any future
-# capability additions.
+# The conformance contract is `{capabilities, contractTypes, schemasUrl,
+# settlementSignals, version}`. Assert the envelope shape through a field that
+# survives any future capability additions, not through a specific capability.
 check "Conformance envelope" "$BASE_URL/v1/conformance" "capabilities | type" "object"
 
 # Schema endpoint health. A fresh install is not an empty catalogue: bootstrap
@@ -250,15 +247,14 @@ else
             AGENT_ID=""
         fi
 
-        # (No separate approve step — agents created via POST /v1/admin/agents
-        # are immediately usable as the named principal/performer on records.
-        # The legacy `PUT /v1/enterprises/{id}/agents/{id}` approval route was
-        # never part of the V1 API; record creation gates membership via the
-        # FK on `enterpriseId`.)
+        # No separate approve step: an agent created through
+        # POST /v1/admin/agents is immediately usable as the named principal or
+        # performer on a record, and record creation gates membership through
+        # the FK on `enterpriseId`.
 
         # Step 2c: Register a minimal contract for the smoke test. The engine
-        # ships with no built-in types active (post-v0.22.11), so the test
-        # registers its own contract to stay self-contained.
+        # has no built-in types, so the test registers its own contract to stay
+        # self-contained.
         SMOKE_TYPE="install-smoke-test-v1"
         api POST "/v1/schemas" "{
             \"type\": \"${SMOKE_TYPE}\",

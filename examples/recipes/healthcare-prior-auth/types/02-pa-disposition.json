@@ -2,7 +2,7 @@
   "type": "halcyon-pa-disposition-v1",
   "category": "decision",
   "displayName": "Payer System Disposition (Da Vinci PAS / X12 278)",
-  "description": "The payer Utilization-Management system's auto-adjudication disposition, as rendered by the external system of record (Da Vinci PAS $submit -> ClaimResponse, carrying the X12 005010/306 review action code). Notarize-only: AGLedger NOTARIZES the disposition the SoR rendered; it does not render it. This is the SoR-seam capture — the immutable record of what the payer system decided, when, and on what basis. A1 (certified) and A3 (not-required) are terminal here (clean auto-adjudication, no human gate). A2 (denied) and A4 (pended) are contested and escalate to a medical director via halcyon-pa-determination-v1 — because no compliant payer lets AI render an autonomous denial.",
+  "description": "The payer Utilization-Management system's auto-adjudication disposition, as rendered by the external system of record (Da Vinci PAS $submit -> ClaimResponse, carrying the X12 005010/306 review action code). Notarize-only: AGLedger NOTARIZES the disposition the SoR rendered; it does not render it. This is the SoR-seam capture — the immutable record of what the payer system decided, when, and on what basis. A1 (certified) and A3 (not-required) are terminal here (clean auto-adjudication, no human gate). A2 (denied) and A4 (pended) are contested and escalate to a medical director via halcyon-pa-determination-v1, because the payer routes contested dispositions to a clinician.",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,

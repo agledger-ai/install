@@ -24,28 +24,29 @@ speaks to: both bound who may reach the pod or the host, and the proxy is alread
 
 ### Where each series comes from
 
-Every metric the engine records is emitted twice: into prom-client, which serves `/metrics` with the
-bucket boundaries the code declares, and over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (which
-`install.sh --with-monitoring` sets, pointing at the bundled collector). Prometheus reads the first
-one. The process and runtime metrics carry the same `agledger_` prefix but go only to prom-client, so
-they have one producer either way.
+Every metric the engine records is emitted twice: into `@prometheus-io/client`, which serves
+`/metrics`, and over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (which
+`install.sh --with-monitoring` sets, pointing at the bundled collector). Both copies carry the
+bucket boundaries the code declares and the unit the metric name states, so they agree value for
+value. Prometheus reads the first one. The process and runtime metrics carry the same `agledger_`
+prefix but go only to `@prometheus-io/client`, so they have one producer either way.
 
-The OTLP copy is re-bucketed by the OpenTelemetry SDK onto its default boundaries, which run 0, 5,
-10, 25 up to 10000 and are meant for milliseconds. A duration in seconds lands in the `le=5` bucket,
-and a quantile over that copy then reports a fraction of 5 seconds whatever the real duration is:
-p95 reads 4.75, p50 reads 2.5.
-
-So the bundled collector drops the `agledger_*` namespace from its Prometheus exporter
-(`compose/otel-collector-config.yaml`), leaving exactly one producer per series. That is what lets
-every panel and rule query a metric by name with no `job=` filter, on Compose and on Kubernetes
-alike, where the job label is the release's Service name.
+Agreeing is not the same as being independent. Scrape the app and a collector that re-exports the
+OTLP copy and every unscoped expression sums one series with its own duplicate, so counters read
+double. The bundled collector therefore drops the `agledger_*` namespace from its Prometheus
+exporter (`compose/otel-collector-config.yaml`), leaving exactly one producer per series. That is
+what makes an unfiltered read of a metric correct: the alerting rules select these metrics by name
+with no `job=` matcher at all, and the dashboard panels carry `job=~"$job"`, a template variable that
+defaults to All and so selects every scrape job until an operator narrows it. Either way there is one
+series per process to sum, on Compose and on Kubernetes alike, where the job label is the release's
+Service name.
 
 Two things follow for your own stack. Scrape both `/metrics` endpoints and you have every
 `agledger_` series; the SDK's own HTTP and PostgreSQL instrumentation exists only on the collector's
 exporter, which is why the bundled Prometheus keeps scraping it.
 And if you point AGLedger's OTLP export at a collector of your own that re-exports into the same
-Prometheus, the two copies are not interchangeable: keep the direct `/metrics` scrape and drop or
-filter the re-export, because the copy that comes back through OTLP is the re-bucketed one.
+Prometheus, pick one path per series: keep the direct `/metrics` scrape and drop or filter the
+re-export, or do the reverse, but do not let both land in one Prometheus.
 
 ## Dashboards
 
@@ -76,15 +77,30 @@ anchoring and integrity checks, maintenance sweep duration).
 
 ### Watching the periodic sweeps
 
-Two worker series answer different questions about the sweeps (gate recovery, cascade cancel,
+Three worker series answer different questions about the sweeps (gate recovery, cascade cancel,
 auto-rollup consistency, dispute stale, record expiry, federation DLQ recovery, partition
-management, and the rest). Both live on the worker's `/metrics`, not the API's.
+management, and the rest). All three live on the worker's `/metrics`, not the API's.
 
 - `agledger_worker_jobs_processed_total{queue="maintenance"}` counts cycles. It says a sweep ran,
   and whether it succeeded. It cannot show one getting slower.
 - `agledger_maintenance_sweep_duration_seconds{task="..."}` is the wall time of one sweep,
   recorded whether the sweep succeeded or threw. The `task` label is the sweep name, so a p95 per
   task separates one slow sweep from a dozen fast ones.
+- `agledger_maintenance_sweep_behind_total{task="..."}` counts the cycles that stopped with work
+  left. Only a sweep that bounds its own work by a clock can answer that, which today is
+  `oidc-jti-cleanup`: it drains the consumed-jti register in batches for up to 30 seconds a cycle,
+  every 5 minutes, against one row per admin or platform bearer accepted on a trusted issuer with
+  `jtiSingleUse` set. The series sits at zero on the cycles it drains, so a flat line is a real
+  reading rather than an absent one, and `AGLedgerMaintenanceSweepFallingBehind` fires on half an
+  hour of cycles ending short. Nothing is lost when it does: the rows are tokens that can no
+  longer be presented, so the cost is table size until the admission rate drops.
+- `agledger_maintenance_unknown_task_total{task="..."}` counts ticks this worker refused because it
+  carries no handler for the task. The schedules live in the database, so a job minted by a newer
+  release's schedule reaches an older worker during a rollout and for as long as a rollback lasts;
+  the worker fails such a job rather than completing it, so a worker that does carry the handler can
+  take it. Non-zero on a settled install means the processes are older than the schedules in their
+  own database: finish the upgrade, or remove the schedule if the rollback is permanent. Each
+  refusal also lands on `agledger_worker_jobs_processed_total{queue="maintenance",status="failure"}`.
 
 What to alert on is not a fixed threshold, it is the SHAPE against the population, and only for the
 sweeps that take a bounded page: the recovery ones (`gate-recovery`, `cascade-cancel-recovery`,
@@ -117,13 +133,29 @@ way. A counter whose name ends `_skipped_total` is deliberately outside it: a sk
 code made, carries a `reason` label, and in at least one case is documented as staying at zero
 forever.
 
+Every panel reads through two dashboard variables at the top of each screen. **Data source** picks
+which Prometheus to query, which is what lets the same file work against the bundled one, a sidecar
+ConfigMap on Kubernetes and a hand import. **Job** filters by scrape job and defaults to All, which
+selects every scrape job, so on a Prometheus that scrapes one install it changes nothing. It earns
+its place on one that scrapes several: left at All, every panel sums them, and a rate that doubles
+because a second Server started looks exactly like one that doubled because traffic did.
+
+The bundled Prometheus keeps 30 days of series, or 10GB, whichever bound it reaches first, on the
+named `prometheus-data` volume. That volume outlives the container, so a re-run of `install.sh`, an
+`upgrade.sh` and a `docker compose down` all leave the history in place; only `down -v`, which is
+what `uninstall.sh` runs, destroys it. A production install still points its own Prometheus at both
+AGLedger `/metrics` endpoints and keeps the retention, storage and alert routing decisions with it.
+See [Prometheus scrape config](#prometheus-scrape-config) for the scrape blocks to copy.
+
 ### Importing into your own Grafana
 
 The bundled Grafana is a convenience, not a requirement.
 
 1. Copy the JSON files above out of this repo.
 2. Dashboards → New → Import → Upload JSON file.
-3. Select a Prometheus data source scraping both AGLedger `/metrics` endpoints.
+3. Open the imported dashboard and pick your Prometheus from the **Data source** selector at the
+   top of it. The import dialog does not ask: the data source is a dashboard variable, not an
+   import input, so it is chosen on the dashboard and saved with it.
 
 ### Network exposure
 
@@ -134,8 +166,23 @@ terminates TLS for the API.
 
 ## Alerting rules
 
-`monitoring/alerts/agledger.rules.yml` ships 29 rules in five groups: silent drops, chain integrity,
-partition maintenance, federation delivery, and availability/saturation.
+`monitoring/alerts/agledger.rules.yml` ships 43 rules in six groups: silent drops, chain integrity,
+partition maintenance, federation delivery, availability/saturation, and target liveness.
+
+Every rule carries a `runbook_url` annotation pointing at its own section of
+`monitoring/runbooks.md`, which says what fired, what to check, what to do, and when it is safe to
+silence.
+
+The target-liveness group is the one that catches a process that is not there at all. Every other
+group reads a value some process published, and an empty result is what a healthy quiet install
+looks like too, so none of them can tell the two apart. Four of the five rules in the group read
+engine series as well; the exception is `AGLedgerScrapeFailing`, which reads Prometheus' own `up`.
+Neither packaged install leaves a stopped process reporting `up == 0`. Compose discovers both
+services by DNS, and on Kubernetes the ServiceMonitor becomes operator-generated
+`kubernetes_sd_configs` over endpoints; on both, a stopped Server drops out of the target list
+instead. `AGLedgerApiTargetAbsent` and `AGLedgerWorkerTargetAbsent` each `absent()` a series only one
+of the two processes registers, which is what makes them distinguishable without a `job=` selector
+that Kubernetes would not match.
 
 A dashboard is the wrong delivery mechanism for the silent-drop class specifically, because that
 failure is defined by nobody looking. A dropped chain append or a lost audit-trail write returns
@@ -151,10 +198,12 @@ different label sets (the API and worker targets carry different `job` and `inst
 PromQL arithmetic matches on the full label set). If you add a term to one of these, wrap it the
 same way: the API build fails that coverage test otherwise.
 
-Some of the rules are also unit-tested, because an alert is the one artifact whose defect is
+The rules are unit-tested, because an alert is the one artifact whose defect is
 invisible from every direction except evaluation: one that can never fire parses cleanly and loads
-`health: ok`. The fixtures live in the API repo and run under `promtool test rules`. They cover eleven rules, eight of them with a negative case as well as a positive one; the
-other ten are checked statically for metric names and label values, not by evaluation.
+`health: ok`. The fixtures live in the API repo and run under `promtool test rules`. Every rule in
+the file is evaluated there, each with a case that must fire and a case that must not, because a
+rule that pages on the healthy reading and a rule that can never page look identical from
+everywhere except evaluation.
 
 The partition rules carry the heaviest fixtures, because their failure mode is the one a
 fixture is uniquely able to show: a wedged partition-management job leaves both runway gauges
@@ -171,7 +220,12 @@ rule_files:
 
 On Kubernetes, `--set monitoring.prometheusRule.enabled=true` renders this same file as a
 `PrometheusRule` for the Prometheus Operator, through the `helm/agledger/files/alerts` symlink. A
-rule added here ships on both paths.
+rule added here ships on both paths. On that path the shipped values are adjustable without forking
+the file: `monitoring.prometheusRule.overrides` takes a named alert and replaces its `severity`,
+`for` or `keepFiringFor`, replaces its `expr` outright, or drops the rule with `disabled`. There is
+no threshold key, because a threshold is part of the expression: retuning one means supplying the
+whole `expr`. `monitoring.prometheusRule.runbookUrl` rebases every `runbook_url` onto your own copy
+of the runbooks.
 
 **No Alertmanager is bundled and no routing is configured.** Receivers and escalation are site
 decisions, and shipping an opinion about who gets paged would be wrong. Until you add an `alerting:`

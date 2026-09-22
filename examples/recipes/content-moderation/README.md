@@ -71,7 +71,7 @@ reasons against the submitted payload makes a user-vs-regulator divergence detec
 
 ## Lessons for implementers
 
-What we learned building and exercising this recipe: the things worth knowing before you adapt it.
+The things worth knowing before you adapt it.
 
 ### The honesty boundary: what this does, and does not, do
 

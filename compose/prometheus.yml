@@ -15,8 +15,11 @@ global:
 # API would need.
 #
 # One behavior difference from static_configs: when a service is stopped its
-# targets disappear rather than reporting `up == 0`. Alert on `absent(up{job=...})`
-# alongside `up == 0` if you add rules; no shipped dashboard uses `up` today.
+# targets disappear rather than reporting `up == 0`, so `up == 0` alone never
+# sees it. The shipped `agledger-targets` group covers that without a job
+# selector: it pairs `up == 0` with `absent()` on a series only the API
+# publishes and one only the worker publishes, which is what keeps the two
+# processes distinguishable. No shipped dashboard uses `up` today.
 # Alerting rules ship alongside the dashboards. A silent-drop class is
 # defined by nobody looking, so a dashboard alone is the wrong delivery
 # mechanism for it. Routing stays a customer decision: no Alertmanager is
@@ -34,6 +37,12 @@ scrape_configs:
         refresh_interval: 30s
     metrics_path: /metrics
     scrape_interval: 10s
+    # A limit trips the whole scrape rather than letting one bad label set grow
+    # the TSDB. `up` goes to 0 for that target when one trips.
+    sample_limit: 50000
+    label_limit: 30
+    label_name_length_limit: 200
+    label_value_length_limit: 200
     # /metrics is gated by default under NODE_ENV=production. The token comes
     # from METRICS_AUTH_TOKEN in .env, projected here as a file by the compose
     # `configs` block, so the secret is not duplicated into this file.
@@ -53,6 +62,12 @@ scrape_configs:
         refresh_interval: 30s
     metrics_path: /metrics
     scrape_interval: 10s
+    # A limit trips the whole scrape rather than letting one bad label set grow
+    # the TSDB. `up` goes to 0 for that target when one trips.
+    sample_limit: 50000
+    label_limit: 30
+    label_name_length_limit: 200
+    label_value_length_limit: 200
     # Same token. The worker's health port serves /metrics behind the same
     # bearer gate; /health and /health/ready stay open for the probes.
     authorization:
@@ -62,13 +77,18 @@ scrape_configs:
   # The collector's Prometheus exporter. It carries the OpenTelemetry SDK's own
   # auto-instrumentation metrics for HTTP and PostgreSQL, and NOT the
   # `agledger_*` namespace: each AGLedger process emits the metrics it records
-  # twice, to prom-client and over OTLP, and the OTLP copy is re-bucketed onto
-  # the SDK's default millisecond boundaries. Scraped alongside the two jobs
-  # above it made every unscoped expression sum a correct copy with a wrong one,
-  # so a p95 panel read about 4.75 s on an install whose sweeps take 4 ms. The
-  # namespace is dropped in otel-collector-config.yaml, where the comment
-  # explains it; this job stays for what the collector alone produces, which no
-  # shipped dashboard or rule reads yet.
+  # twice, to @prometheus-io/client and over OTLP, and both copies carry the
+  # bucket boundaries the code declares. Scraped alongside the two jobs above,
+  # the OTLP copy makes every unscoped expression sum one series with its own
+  # duplicate. The namespace is dropped in otel-collector-config.yaml, where
+  # the comment explains it; this job stays for what the collector alone
+  # produces, which no shipped dashboard or rule reads yet.
   - job_name: otel-collector
+    # A limit trips the whole scrape rather than letting one bad label set grow
+    # the TSDB. `up` goes to 0 for that target when one trips.
+    sample_limit: 50000
+    label_limit: 30
+    label_name_length_limit: 200
+    label_value_length_limit: 200
     static_configs:
       - targets: ['otel-collector:8889']

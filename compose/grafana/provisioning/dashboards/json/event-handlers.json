@@ -13,7 +13,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "At-a-glance summary across every silent-drop counter on this dashboard, which is now every drop-class counter the engine registers except the ones that fail loudly elsewhere (webhook and federation DLQs, pool and rate-limit degradation). Non-zero means something is being dropped on the floor right now. Every term carries `or vector(0)` because most of these counters are labelled, a labelled counter has no series until its first increment, and sum() over no series is an empty vector: without the guard one never-incremented counter made the whole sum empty and this tile read \"No data\" while the others climbed. A coverage test in the API build fails if a new drop counter is added without a panel here or a documented reason it does not belong, and if any term in a multi-counter sum loses its guard.",
       "fieldConfig": {
@@ -67,9 +67,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "(sum(increase(agledger_api_key_last_used_update_failures_total[24h])) or vector(0)) + (sum(increase(agledger_auth_audit_persist_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cache_invalidation_drops_total[24h])) or vector(0)) + (sum(increase(agledger_cascade_cancel_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cascade_rollup_retry_exhausted_total[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_persist_event_failures_total[24h])) or vector(0)) + (sum(increase(agledger_federation_audit_vault_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_forensic_audit_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_enqueue_failed_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_event_persist_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_publish_failures_total[24h])) or vector(0)) + (sum(increase(agledger_federation_record_state_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_gate_abandon_entry_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_gate_dlq_advisory_pass_lost_total[24h])) or vector(0)) + (sum(increase(agledger_inline_phase2_failures_total[24h])) or vector(0)) + (sum(increase(agledger_llms_txt_customization_load_failures_total[24h])) or vector(0)) + (sum(increase(agledger_oidc_admin_org_binding_failures_total[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_persist_event_failures_total[24h])) or vector(0)) + (sum(increase(agledger_post_commit_callback_failures_total[24h])) or vector(0)) + (sum(increase(agledger_provisioning_reload_failures_total[24h])) or vector(0)) + (sum(increase(agledger_schema_warmcache_refresh_failures_total[24h])) or vector(0)) + (sum(increase(agledger_siem_file_lines_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_siem_http_batches_dropped_total[24h])) or vector(0)) + (sum(increase(agledger_siem_mapper_failures_total[24h])) or vector(0)) + (sum(increase(agledger_siem_poll_failures_total[24h])) or vector(0)) + (sum(increase(agledger_support_bundle_audit_failures_total[24h])) or vector(0)) + (sum(increase(agledger_webhook_enqueue_failures_total[24h])) or vector(0)) + (sum(increase(agledger_webhook_audit_persist_failures_total[24h])) or vector(0))",
+          "expr": "(sum(increase(agledger_api_key_last_used_update_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_auth_audit_persist_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_cache_invalidation_drops_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_cascade_cancel_enqueue_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_cascade_rollup_retry_exhausted_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_enqueue_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_cascading_gate_persist_event_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_federation_audit_vault_dropped_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_federation_forensic_audit_dropped_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_enqueue_failed_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_event_persist_dropped_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_federation_outbound_publish_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_federation_record_state_dropped_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_gate_abandon_entry_dropped_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_gate_dlq_advisory_pass_lost_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_inline_phase2_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_llms_txt_customization_load_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_oidc_admin_org_binding_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_phase2_enqueue_persist_event_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_post_commit_callback_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_provisioning_reload_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_schema_warmcache_refresh_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_siem_file_lines_dropped_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_siem_http_batches_dropped_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_siem_mapper_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_siem_poll_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_support_bundle_audit_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_webhook_enqueue_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_webhook_audit_persist_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_agent_auto_provision_cap_refused_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_federation_nonce_replays_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_maintenance_sweep_failures_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_oidc_admin_jti_replays_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_oidc_admin_subject_refusals_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_oidc_cert_exchange_refusals_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_oidc_delegation_refusals_total{job=~\"$job\"}[24h])) or vector(0)) + (sum(increase(agledger_trusted_issuer_jwks_fetch_record_failures_total{job=~\"$job\"}[24h])) or vector(0))",
           "legendFormat": "drops in last 24h",
           "refId": "A"
         }
@@ -93,7 +93,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Cascade-cancel enqueue failures \u2014 when a parent record terminalizes, children are supposed to fan out and cancel. A failure here orphans a child that may keep executing. Highest operational stakes on this dashboard.",
       "fieldConfig": {
@@ -144,9 +144,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (scope) (rate(agledger_cascade_cancel_enqueue_failures_total[5m]))",
+          "expr": "sum by (scope) (rate(agledger_cascade_cancel_enqueue_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "{{scope}}",
           "refId": "A"
         }
@@ -157,7 +157,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Webhook dispatch-time enqueue failures. Distinct from `agledger_webhooks_failed_total` which is the *delivery* failure counter \u2014 this is the one-step-earlier failure where the webhook never made it onto the queue at all. Customer never sees it; we never retry it.",
       "fieldConfig": {
@@ -208,9 +208,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (stage) (rate(agledger_webhook_enqueue_failures_total[5m]))",
+          "expr": "sum by (stage) (rate(agledger_webhook_enqueue_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "{{stage}}",
           "refId": "A"
         }
@@ -221,7 +221,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Cascading-verification enqueue failures. The recovery sweep is the safety net for stuck records, but this counter measures dispatch-time drops \u2014 the rate at which we lean on the sweep to catch up.",
       "fieldConfig": {
@@ -271,9 +271,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_cascading_gate_enqueue_failures_total[5m]))",
+          "expr": "sum(rate(agledger_cascading_gate_enqueue_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "drops/sec",
           "refId": "A"
         }
@@ -284,7 +284,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Phase-2 gate enqueue failures. Same sweep-safety-net pattern as cascading-gate \u2014 non-zero rate means we're papering over a queue or DB issue with the periodic sweep.",
       "fieldConfig": {
@@ -334,9 +334,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_phase2_enqueue_failures_total[5m]))",
+          "expr": "sum(rate(agledger_phase2_enqueue_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "drops/sec",
           "refId": "A"
         }
@@ -347,7 +347,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Federation outbound enqueue failures. State-transitions or signals that didn't make it onto the federation outbound queue. The peer never sees them; the chain on the peer's side stays out of sync.",
       "fieldConfig": {
@@ -397,9 +397,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_federation_outbound_enqueue_failed_total[5m]))",
+          "expr": "sum(rate(agledger_federation_outbound_enqueue_failed_total{job=~\"$job\"}[5m]))",
           "legendFormat": "drops/sec",
           "refId": "A"
         }
@@ -410,7 +410,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Bus-handler enqueue failures in the federation outbound publisher. The record transitioned locally and no outbound job exists, so the peer never learns of it.",
       "fieldConfig": {
@@ -461,9 +461,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_federation_outbound_publish_failures_total[5m]))",
+          "expr": "sum(rate(agledger_federation_outbound_publish_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_federation_outbound_publish_failures_total",
           "refId": "A"
         }
@@ -474,7 +474,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Inline Phase 2 gate evaluation threw inside submitCompletion. pg-boss and the recovery sweep are the safety nets, so this measures how often the fast path is falling back rather than data loss on its own.",
       "fieldConfig": {
@@ -525,9 +525,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_inline_phase2_failures_total[5m]))",
+          "expr": "sum(rate(agledger_inline_phase2_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_inline_phase2_failures_total",
           "refId": "A"
         }
@@ -538,7 +538,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "A cascade-rollup job gave up after every pg-boss retry. If the failing job was the last child's, the parent is stranded ACTIVE with every child terminal and nothing rolls it up; if other children were still outstanding, a later one rolls the parent up normally and only this attempt was lost. The auto-rollup consistency sweep (agledger_auto_rollup_stuck_parents_total, data-integrity dashboard) settles the parent either way: it rolls up any ACTIVE parent whose children are all terminal once the tree has been quiet for five minutes, and it runs every five minutes, so expect the settlement five to ten minutes later. This counter names the cause at the moment it happens, which the sweep cannot.",
       "fieldConfig": {
@@ -589,9 +589,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_cascade_rollup_retry_exhausted_total[5m]))",
+          "expr": "sum(rate(agledger_cascade_rollup_retry_exhausted_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_cascade_rollup_retry_exhausted_total",
           "refId": "A"
         }
@@ -602,7 +602,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "A principal-mode advisory gate pass crashed through every retry. Nothing terminalizes wrongly (the record correctly keeps awaiting its principal verdict), but the advisory annotation the customer expected on it is gone for good. A sustained rate means the engine is systematically failing on one contract type.",
       "fieldConfig": {
@@ -653,9 +653,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_gate_dlq_advisory_pass_lost_total[5m]))",
+          "expr": "sum(rate(agledger_gate_dlq_advisory_pass_lost_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_gate_dlq_advisory_pass_lost_total",
           "refId": "A"
         }
@@ -679,7 +679,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Auth-audit persistence failures. Login/logout/key-use audit rows that didn't make it into system_audit_log. SIEM polls that table \u2014 drops here are gaps in the customer's compliance feed.",
       "fieldConfig": {
@@ -729,9 +729,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (event) (rate(agledger_auth_audit_persist_failures_total[5m]))",
+          "expr": "sum by (event) (rate(agledger_auth_audit_persist_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "{{event}}",
           "refId": "A"
         }
@@ -742,7 +742,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Gate abandon entries that could not be appended. The pass opened with GATE_STARTED, ended with no verdict, and the entry that says so was dropped, so the chain reads the same as a gate still running. Pairs with agledger_gate_abandoned_total, which counts the abandons that did reach the chain.",
       "fieldConfig": {
@@ -793,9 +793,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_gate_abandon_entry_dropped_total[5m]))",
+          "expr": "sum(rate(agledger_gate_abandon_entry_dropped_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_gate_abandon_entry_dropped_total",
           "refId": "A"
         }
@@ -806,7 +806,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Persist-event failed INSIDE the cascading-gate enqueue-failure recovery handler. The outer counter ticked too: this is the audit trail going missing when both layers fail.",
       "fieldConfig": {
@@ -857,9 +857,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (reason) (rate(agledger_cascading_gate_persist_event_failures_total[5m]))",
+          "expr": "sum by (reason) (rate(agledger_cascading_gate_persist_event_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
@@ -870,7 +870,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Same shape as the cascading-gate pair: persist-event failed inside the Phase 2 enqueue-failure recovery handler, so the failure itself left no /v1/events row.",
       "fieldConfig": {
@@ -921,9 +921,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (reason) (rate(agledger_phase2_enqueue_persist_event_failures_total[5m]))",
+          "expr": "sum by (reason) (rate(agledger_phase2_enqueue_persist_event_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
@@ -934,7 +934,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "A withTransaction post-commit callback threw AFTER the commit succeeded. Usually a lost bus emit or webhook fan-out: the state change is durable and the notification of it is gone.",
       "fieldConfig": {
@@ -985,9 +985,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_post_commit_callback_failures_total[5m]))",
+          "expr": "sum(rate(agledger_post_commit_callback_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_post_commit_callback_failures_total",
           "refId": "A"
         }
@@ -998,7 +998,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Support-bundle vault audit-log writes dropped. The bundle was produced and the record that it was produced is missing.",
       "fieldConfig": {
@@ -1049,9 +1049,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_support_bundle_audit_failures_total[5m]))",
+          "expr": "sum(rate(agledger_support_bundle_audit_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_support_bundle_audit_failures_total",
           "refId": "A"
         }
@@ -1075,7 +1075,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Fire-and-forget audit_vault appends from federation outbound that failed and were swallowed: the chain entry never landed. Highest stakes on this dashboard alongside cascade-cancel, because the chain is the product.",
       "fieldConfig": {
@@ -1126,9 +1126,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_federation_audit_vault_dropped_total[5m]))",
+          "expr": "sum(rate(agledger_federation_audit_vault_dropped_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_federation_audit_vault_dropped_total",
           "refId": "A"
         }
@@ -1139,7 +1139,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Fire-and-forget record_federation_state writes that failed and were swallowed. The Server believes a peer is in a state it was never told about.",
       "fieldConfig": {
@@ -1190,9 +1190,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_federation_record_state_dropped_total[5m]))",
+          "expr": "sum(rate(agledger_federation_record_state_dropped_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_federation_record_state_dropped_total",
           "refId": "A"
         }
@@ -1203,7 +1203,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Forensic/schema audit writes on the federation REJECT path that were swallowed, so a rejected peer attempt or digest mismatch left no forensic trail. The rejection was correct and unprovable.",
       "fieldConfig": {
@@ -1254,9 +1254,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_federation_forensic_audit_dropped_total[5m]))",
+          "expr": "sum(rate(agledger_federation_forensic_audit_dropped_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_federation_forensic_audit_dropped_total",
           "refId": "A"
         }
@@ -1267,7 +1267,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Sender-side persistEvent calls in the outbound publisher that failed and were swallowed: /v1/events is missing federation.* rows this Server did emit.",
       "fieldConfig": {
@@ -1318,9 +1318,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_federation_outbound_event_persist_dropped_total[5m]))",
+          "expr": "sum(rate(agledger_federation_outbound_event_persist_dropped_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_federation_outbound_event_persist_dropped_total",
           "refId": "A"
         }
@@ -1344,7 +1344,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "SIEM OCSF mapper failures by event_type. When a mapper throws, the event never reaches the file or HTTP sender \u2014 it's dropped before the SIEM sees it. Non-zero by event_type tells you which mapping is broken.",
       "fieldConfig": {
@@ -1394,9 +1394,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (event_type) (rate(agledger_siem_mapper_failures_total[5m]))",
+          "expr": "sum by (event_type) (rate(agledger_siem_mapper_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "{{event_type}}",
           "refId": "A"
         }
@@ -1407,7 +1407,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "SIEM HTTP batches dropped after delivery failure. BUS EVENTS ONLY: polled system_audit_log rows no longer pass through this sender's buffer, and a batch a collector refuses on that path is retried from an unadvanced cursor rather than dropped. So 0 here does NOT mean the compliance feed is complete. For the polled path read SIEM poll deliveries refused alongside it.",
       "fieldConfig": {
@@ -1457,9 +1457,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_siem_http_batches_dropped_total[5m]))",
+          "expr": "sum(rate(agledger_siem_http_batches_dropped_total{job=~\"$job\"}[5m]))",
           "legendFormat": "drops/sec",
           "refId": "A"
         }
@@ -1470,9 +1470,9 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
-      "description": "SIEM file lines dropped: a failed write, a line written after close, or the buffer capped while the stream was backed up. File-mode SIEM is missing those lines. A stalled disk now drops and counts here instead of growing the heap without bound, so this can move on a slow disk that used to look silent.",
+      "description": "SIEM file lines dropped: a failed write, a line written after close, or the buffer capped while the stream was backed up. File-mode SIEM is missing those lines. A stalled disk drops and counts here rather than growing the heap without bound, so a slow disk shows up on this panel instead of staying silent.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1520,9 +1520,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_siem_file_lines_dropped_total[5m]))",
+          "expr": "sum(rate(agledger_siem_file_lines_dropped_total{job=~\"$job\"}[5m]))",
           "legendFormat": "drops/sec",
           "refId": "A"
         }
@@ -1533,7 +1533,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "A system_audit_log poll cycle threw (query or cursor-persist). The poller retries from the unadvanced cursor, so this is recoverable, but a sustained rate means the SIEM feed is stalled.",
       "fieldConfig": {
@@ -1584,9 +1584,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_siem_poll_failures_total[5m]))",
+          "expr": "sum(rate(agledger_siem_poll_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_siem_poll_failures_total",
           "refId": "A"
         }
@@ -1597,7 +1597,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "A configured sink refused a polled batch, so the cursor did not advance and the next cycle re-reads the same rows. NOT a drop: nothing is lost and the backlog drains when the sink returns. This is the metric that separates a delivery stall from a watermark stall when agledger_siem_poll_lag_seconds climbs, and it is the first thing AGLedgerSiemPollerFallingBehind tells you to check. Labelled by sink.",
       "fieldConfig": {
@@ -1648,9 +1648,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (sink) (rate(agledger_siem_poll_delivery_retries_total[5m]))",
+          "expr": "sum by (sink) (rate(agledger_siem_poll_delivery_retries_total{job=~\"$job\"}[5m]))",
           "legendFormat": "{{sink}}",
           "refId": "A"
         }
@@ -1674,7 +1674,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "A cross-replica cache-invalidation event was dropped. Replicas serve stale schemas until the next TTL expiry.",
       "fieldConfig": {
@@ -1725,9 +1725,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_cache_invalidation_drops_total[5m]))",
+          "expr": "sum(rate(agledger_cache_invalidation_drops_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_cache_invalidation_drops_total",
           "refId": "A"
         }
@@ -1738,7 +1738,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Async warmCache re-warm failed off a cross-replica schema invalidation. Degrades to the name-resolved entry rather than losing data, but a publisher-scoped hint is gone until the next refresh.",
       "fieldConfig": {
@@ -1789,9 +1789,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (reason) (rate(agledger_schema_warmcache_refresh_failures_total[5m]))",
+          "expr": "sum by (reason) (rate(agledger_schema_warmcache_refresh_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
@@ -1802,7 +1802,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Provisioning hot-reload failed. The running config no longer matches the YAML the operator edited, and nothing else says so.",
       "fieldConfig": {
@@ -1853,9 +1853,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_provisioning_reload_failures_total[5m]))",
+          "expr": "sum(rate(agledger_provisioning_reload_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_provisioning_reload_failures_total",
           "refId": "A"
         }
@@ -1866,7 +1866,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "An llms.txt override/prepend/append file failed to load, and the built-in template was served instead. Catches a typo in AGLEDGER_LLMS_TXT_*_PATH that is otherwise invisible: the endpoint keeps returning 200.",
       "fieldConfig": {
@@ -1917,9 +1917,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (reason) (rate(agledger_llms_txt_customization_load_failures_total[5m]))",
+          "expr": "sum by (reason) (rate(agledger_llms_txt_customization_load_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
@@ -1930,7 +1930,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Debounced api_keys.last_used_at UPDATE failures. Key rotation reviews read last_used_at to decide what is dormant, so a sustained rate makes an active key look unused.",
       "fieldConfig": {
@@ -1981,9 +1981,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_api_key_last_used_update_failures_total[5m]))",
+          "expr": "sum(rate(agledger_api_key_last_used_update_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "agledger_api_key_last_used_update_failures_total",
           "refId": "A"
         }
@@ -1994,7 +1994,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Webhook subscription lifecycle changes (create, update, URL repoint, delete, secret rotation, pause, resume) whose audit row could not be persisted. The write is fire-and-forget by design, because the mutation has already committed and a failed audit must not fail the caller, so this counter is the only thing that reports a lost egress-config record. A URL repoint that lands here is an egress channel redirected with no trace.",
       "fieldConfig": {
@@ -2045,9 +2045,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_webhook_audit_persist_failures_total[5m]))",
+          "expr": "sum(rate(agledger_webhook_audit_persist_failures_total{job=~\"$job\"}[5m]))",
           "refId": "A"
         }
       ],
@@ -2057,7 +2057,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Admin-role OIDC bearers (Mode 1 SSO) refused because no single Org could be bound to them. The refusal is silent by construction: the plugin's contract is to fall through to API-key auth on any failure, so the operator sees a 401 \"Missing API key\" and nothing says the trust anchor is the reason. `reason` names which: `multiple_orgs`/`no_org` mean a global trusted_issuers row (org_id NULL) matched on a Server that does not have exactly one Org, `ambiguous_issuer_rows` means two rows for the same (issuer, audience) sit under different Orgs, `lookup_failed` means the orgs read itself failed. Any non-zero rate is an SSO admin locked out by configuration, not by credentials.",
       "fieldConfig": {
@@ -2086,7 +2086,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 137
+        "y": 138
       },
       "id": 134,
       "options": {
@@ -2108,14 +2108,680 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (reason) (rate(agledger_oidc_admin_org_binding_failures_total[5m]))",
+          "expr": "sum by (reason) (rate(agledger_oidc_admin_org_binding_failures_total{job=~\"$job\"}[5m]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
       ],
       "title": "Admin OIDC org-binding refusals",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 137
+      },
+      "id": 150,
+      "panels": [],
+      "title": "Credential + trust-anchor refusals",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Admin OIDC bearers that VERIFIED against a trusted_issuers row and were then refused because the row's `subject_allowlist` does not name their `sub`. Unlike the org-binding refusals beside it this one is a named 401 rather than a fall-through, so the holder is told; what is silent is the operator's side. A subject the operator deliberately excluded presenting a real token from a trusted IdP is the event the allowlist exists to surface, and nothing else on this Server reports it. `role` says whether the refused bearer was reaching for an org-scoped admin session or a cross-org platform one. Every increment has an `auth.failed` row beside it carrying the issuer and the subject.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 138
+      },
+      "id": 151,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (role) (rate(agledger_oidc_admin_subject_refusals_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "{{role}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Admin OIDC subject refusals",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Admin OIDC bearers refused on a trusted_issuers row registered with `jtiSingleUse`. `reason=\"replayed\"` means the token's `jti` had already been presented to this Server: the token verified, so someone holds a real credential and used it twice, which is either a client that cannot mint one token per request or a captured bearer being replayed. Sustained replays from a client that used to be quiet are the second reading and are worth chasing. `reason=\"jti_unregistrable\"` means the register refused the write (an oversized `jti`), which is a client or IdP defect rather than an attack, and the bearer is refused either way because single use cannot be proven.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 146
+      },
+      "id": 152,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (reason) (rate(agledger_oidc_admin_jti_replays_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Admin OIDC jti replays",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "POST /v1/auth/oidc/cert refusals of a token that already passed OIDC validation, by reason. The route is unauthenticated by design (the IdP token IS the credential), so this counter and the `auth.failed` rows carrying `surface: cert_exchange` are the only evidence that a verified identity was turned away at the exchange. Reasons split into misconfiguration (a subject the allowlist does not name, an agent whose account is deactivated) and replay of a single-use token. The counter is labelled by reason only: the subject is attacker-chosen and unbounded, so the audit stream answers who and this answers how often.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 146
+      },
+      "id": 153,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (reason) (rate(agledger_oidc_cert_exchange_refusals_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "OIDC cert-exchange refusals",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Refusals on the delegated on-behalf-of path, by reason. `delegation_actor_binding_mismatch` is the one to read first: the presented actor does not match the identity the delegation was issued against, which is the forgery-shaped failure this path can produce, and the SIEM projection ranks its `auth.failed` row CRITICAL for that reason. The remaining reasons are the same allowlist, replay and deactivated-account refusals the cert exchange sees, arriving through the other door; `surface: delegated_on_behalf_of` on the audit row is what tells the two apart on one event type.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 154
+      },
+      "id": 154,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (reason) (rate(agledger_oidc_delegation_refusals_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Delegated on-behalf-of refusals",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Token exchanges that would have created an agent and did not, because the trusted_issuers row is at its `auto_provision_max_agents` cap. The cap is a deliberate control, so a low rate is the control working; what makes it worth a panel is that the refusal reaches the caller as a failed exchange with no indication that a NUMBER is the reason, and an operator raising the cap is the only fix. A rate that appears where there was none means an IdP started projecting subjects this row was not sized for.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 154
+      },
+      "id": 155,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (trusted_issuer_id) (rate(agledger_agent_auto_provision_cap_refused_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "{{trusted_issuer_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Auto-provision cap refusals",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Peer-authenticated federation requests refused because their nonce had already been seen. A signed request from a resolved peer arriving twice is either a retry that lost its response or a captured request being replayed at the internet-facing trust boundary. The peer is told, this Server's operator is not, and the paired `auth.failed` row carries the peer hub id and the path.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 162
+      },
+      "id": 156,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(agledger_federation_nonce_replays_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "nonce replays",
+          "refId": "A"
+        }
+      ],
+      "title": "Federation peer nonce replays",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Admin OIDC bearers ADMITTED on a trusted_issuers row registered with `jtiSingleUse`, because the token carried no `jti` and the row maps no claim to resolve one from. This is the flag on and enforcing nothing: the row promises one request per token and hands out a bearer reusable until its `exp`, which from the outside looks exactly like a row that is working, since the replay panel beside it reads a healthy zero either way. Okta and Keycloak mint `jti` by default. Entra ID mints `uti` instead, on both access and ID tokens, with no setting that adds a `jti`: add `claimMapping: {\"jti\": \"uti\"}` to the row. Auth0's default access-token profile mints neither: switch that API to the RFC 9068 profile, or turn the flag off so the row says what it does. Non-zero is never the healthy reading. `role` says whether the row admitting unconditionally serves an org-scoped admin session or the cross-org one. The engine also logs one WARN per row per process naming the same fix.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 162
+      },
+      "id": 157,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (role) (rate(agledger_oidc_admin_jti_unenforceable_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "{{role}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Admin OIDC single use unenforceable",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 170
+      },
+      "id": 160,
+      "panels": [],
+      "title": "Maintenance sweeps",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Periodic maintenance sweeps that threw, by task. `agledger_worker_jobs_processed_total{queue=\"maintenance\",status=\"failure\"}` counts the same events with every sweep collapsed into one series, so it says one of about twenty things is broken and nothing more. A sweep that fails every cycle is invisible in aggregate on a busy worker: the queue counter keeps climbing on the nineteen that succeed.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 171
+      },
+      "id": 161,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (task) (rate(agledger_maintenance_sweep_failures_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "{{task}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Maintenance sweep failures",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rows each periodic sweep acted on. Incremented on every cycle including the cycles that acted on nothing, so a flat line at zero means the sweep ran and found no work while an ABSENT series means the sweep is not running at all. That distinction is the point: the worker logs a cleanup at INFO only when the count is non-zero, so a sweep that silently stopped finding rows and a healthy sweep on a quiet install produce identical output. A task whose handler reports no row count has no series here by construction.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 171
+      },
+      "id": 162,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (task) (rate(agledger_maintenance_sweep_rows_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "{{task}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Maintenance sweep rows acted on",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Debounced writes of a trust anchor's last JWKS fetch outcome that did not reach trusted_issuers. The write runs off the token validation path and is not awaited, so this counter is the only report of it. GET /v1/admin/trusted-issuers reads the outcome to flag an anchor that cannot fetch its keys, so a sustained rate lets a dead anchor read as healthy.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 179
+      },
+      "id": 163,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(agledger_trusted_issuer_jwks_fetch_record_failures_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "agledger_trusted_issuer_jwks_fetch_record_failures_total",
+          "refId": "A"
+        }
+      ],
+      "title": "trusted_issuers JWKS fetch outcome write failures (drops/sec)",
       "type": "timeseries"
     }
   ],
@@ -2127,7 +2793,58 @@
     "silent-drops"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Data source",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(agledger_process_start_time_seconds, job)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Job",
+        "multi": true,
+        "name": "job",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(agledger_process_start_time_seconds, job)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-6h",

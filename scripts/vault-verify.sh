@@ -21,11 +21,14 @@ set -euo pipefail
 # the count: the check enumerates the record rows, not just the surviving vault
 # entries.
 #
-# This is the fast in-database integrity check (no signature verification) — the
-# right post-restore "is my chain internally consistent?" proof. The
-# signature-checking, database-independent proof an external auditor runs is
-# `./scripts/vault-dump.sh` plus the offline verifier; see the "Offline
-# cryptographic verification" section of GET /llms-full.txt.
+# This runs the Server's own walk over the live database: hash links and
+# positions, the signed chain claim in each envelope, per-entry signatures
+# against the key registry, each key's published window, the payload against
+# the signed predicate and the certificate bindings. It is the same walk
+# POST /v1/admin/vault/scan runs, and the right post-restore proof that the
+# chain is intact as this Server holds it. The database-independent proof an
+# external auditor runs is `./scripts/vault-dump.sh` plus the offline verifier;
+# see the "Offline cryptographic verification" section of GET /llms-full.txt.
 #
 # Requires the AGLedger stack (or at least its database) to be reachable on the
 # compose network — run this against a live install.
@@ -68,6 +71,12 @@ build_compose_cmd
 # --permission CMD. No volume mount or --user override is needed: the checker
 # only reads the database and prints its report to stdout. exec so the
 # checker's 0/1 exit status propagates to the caller.
+# NODE_OPTIONS cleared: `run` inherits the service's `env_file: .env`, it reaches
+# every node process in the container, and --entrypoint drops the image's
+# --permission, so a NODE_OPTIONS carrying the SIEM file-sink's --allow-fs-write
+# (or an APM --import) would fail this checker at pre-execution. A CA bundle
+# rides on NODE_EXTRA_CA_CERTS, which is a different variable.
 exec "${COMPOSE[@]}" run --rm --no-deps \
+  -e NODE_OPTIONS= \
   --entrypoint /nodejs/bin/node \
   agledger-api dist/scripts/verify-vault.js "$@"

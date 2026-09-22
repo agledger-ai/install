@@ -64,6 +64,15 @@ are blocked from substitution.
 Each `apiKeys[]` entry under an org or an agent provisions one `api_keys` row,
 keyed on its `label`. There are two shapes.
 
+A provisioned key carries the same lifetime every other mint door gives:
+`API_KEY_DEFAULT_LIFETIME_SECONDS`, 90 days unless the install changes it.
+Every reconcile (a boot, a SIGHUP, or `POST /v1/admin/provisioning/reload`)
+pushes that window forward on the keys it manages, with the material unchanged,
+so reconcile at least as often as the lifetime or set the knob to `0`. A key
+that does lapse is revived by the next reconcile rather than re-minted. Keys
+that predate the install having a default keep no expiry; the reconciler never
+adds one to them.
+
 **Supply the material (recommended for GitOps).** Set `apiKey` to an env-var
 reference and the reconciler stores only the HMAC hash of the value:
 
@@ -194,16 +203,24 @@ provisioning/
   agents/                # Standalone agent definitions (reference their org by name)
   webhooks/              # Webhook subscriptions (reference orgs/agents by name)
   schemas/               # Custom contract type schemas (inline or file references)
-  trusted-issuers.yaml   # IdP trust anchors, at the provisioning ROOT (not a directory)
+  trusted-issuers.yaml   # IdP trust anchors, at the provisioning root
 ```
 
-`trusted-issuers.yaml` sits at the root rather than in a subdirectory, and it is
-the only config-as-code door to `autoProvisionAgents`. A minimal entry:
+`trusted-issuers.yaml` is read by its own loader, from either the provisioning
+root (shown above, and what Docker Compose and bare-metal installs use) or
+`trusted-issuers/trusted-issuers.yaml`, which is where the Helm chart projects
+it: a ConfigMap mounted into a single file through `subPath` never receives an
+update, so an edit could not reach a running pod, while a directory mount is
+refreshed in place. The file name is the same either way. It is also the only
+config-as-code door to `autoProvisionAgents`. A minimal entry:
 
 ```yaml
 trusted_issuers:
   - issuerUrl: https://login.microsoftonline.com/TENANT/v2.0
     expectedAudience: agledger
+    # Which doors this anchor serves: agent (the cert exchange), admin (the
+    # /v1/admin/* bearer), principal (the AGLedger-On-Behalf-Of header), or
+    # any, which is the default and serves all three.
     appliesTo: agent
     orgId: 018f2b6c-1234-7abc-8def-0123456789ab
     # jwksUri is auto-discovered from the issuer's OIDC well-known when omitted.
@@ -215,7 +232,63 @@ trusted_issuers:
     autoProvisionAgents: true
     autoProvisionScopeProfile: agent-full
     autoProvisionMaxAgents: 50
+    # The exact `sub` values this row admits. Omit it, or write null, to admit
+    # every subject the IdP will issue a token for. With autoProvisionAgents on
+    # this list is what stops an IdP-side assignment mistake from creating an
+    # agent here: a verified token whose subject is not listed is refused with
+    # 401 and reason `subject_not_allowlisted` instead.
+    subjectAllowlist:
+      - 11111111-2222-3333-4444-555555555555
 ```
+
+The two remaining keys bound how a token may be presented:
+
+- `subjectAllowlist` (list of strings, or null, default null): the exact `sub`
+  values this row admits, compared as whole strings. Which subject is compared
+  depends on the door the row serves: the admin bearer's own `sub`, the
+  exchanging workload's `sub` at `POST /v1/auth/oidc/cert`, and the delegation
+  token's `sub` (the principal acted for, never `act.sub`) on the
+  `AGLedger-On-Behalf-Of` header. An `appliesTo: any` row serves all three, so
+  one list gates all three: split the row per `appliesTo` before adding a list
+  only one door should carry. Narrowing the list stops the next cert exchange
+  and does not revoke certs already minted, which run to their own `expiresAt`;
+  `POST /v1/admin/trusted-issuers/{id}/revoke-certs` ends the live ones.
+- `jtiSingleUse` (boolean, default false): accept each admin bearer's token id
+  once, across every replica, and refuse a second presentation with 401 and
+  reason `jti_replayed`. Set it when the client mints a token per request, such
+  as a per-call `client_credentials` grant against Okta or Keycloak; leave it
+  off for a polling dashboard holding one token for a session, for a
+  quota-limited grant, and for a projected Kubernetes service-account token,
+  which the kubelet rewrites only at 80 percent of its TTL (about 48 minutes on
+  the 1h default), so a pod re-presents one token for that whole window.
+
+  The id is the `jti` claim, or the claim named under the `claimMapping`
+  logical name `jti`; the standard `jti` wins when the token carries both.
+  Okta and Keycloak mint `jti` by default. Entra ID mints none on an access or
+  an ID token and has no setting that adds one; it mints `uti`, documented as
+  the equivalent and unique per token, so an Entra row writes
+  `claimMapping: { jti: uti }`. Auth0's default access-token profile mints
+  neither: switch that API to the RFC 9068 profile, which mints a `jti`, or
+  leave the flag off and accept a reusable bearer. A Google service-account ID
+  token carries no per-token id under any name and cannot be made single use.
+
+  The flag governs the admin bearer alone, but the id it reads is shared.
+  `POST /v1/auth/oidc/cert` is single use per token id whatever the flag says
+  and resolves the id the same way, so a `jti` entry in `claimMapping` makes
+  that door single use per the mapped claim too. A token resolving no id is
+  exchangeable repeatedly there, and an empty resolved id is refused with a
+  400 rather than stored.
+
+  A token with no id at all is admitted on every request even with the flag
+  set, which is the flag enforcing nothing: each such admission increments
+  `agledger_oidc_admin_jti_unenforceable_total` and the engine logs one WARN
+  per row per process naming the fix. An id that is empty or over 512
+  characters is refused with reason `jti_unregistrable`. The on-behalf-of
+  header is never deduplicated on any id.
+
+`trusted-issuers.yaml` in this directory is a fuller worked file with a live
+admin anchor, a live principal anchor, and an auto-provisioning agent anchor
+left commented out because it needs an `orgId` only your install can supply.
 
 Every key is validated at load, and a key this loader does not read is refused
 rather than ignored, because the defaults applied in place of an ignored key are
@@ -226,26 +299,28 @@ entry instead to stop accepting new tokens while issued certs run to expiry.
 
 ## Schema entries
 
-Each entry under `schemas:` uses the same top-level placement as `POST /v1/schemas` for the keys it supports: `type`, `recordSchema`, `completionSchema`, and optionally `displayName`, `description`, `category`, `fieldMappings`, and `defaultGateMode`. Gate rules go in `fieldMappings` at the top level, exactly as in a register body (see `schemas/example.yaml`). Register fields outside that list (`compatibilityMode`, `defaultShare`, `coSignRequired`, and the other row-only federation toggles) are not provisioning-configurable; declaring them, or any other unknown key, fails the entry at load time rather than silently dropping it, so misplaced gate config can never provision a type that enforces nothing. The entry is what fails, not the file: the valid entries beside it still reconcile. What a failed entry does cost is pruning, which is suppressed for the whole run (see [Pruning](#pruning)). Every failed entry is reported under `loadErrors` on `GET /v1/admin/provisioning/status`, and a key or shape the entry validators reject is also logged as a WARN naming the file and the entry index. Rule wiring is validated at load with the same checks as the register API: malformed mapping elements, duplicate ruleIds, unknown verbs, and criteria/evidence paths that do not resolve against the schemas each fail the entry with a per-type error.
+Each entry under `schemas:` uses the same top-level placement as `POST /v1/schemas` for the keys it supports: `type` and `recordSchema`, and optionally `completionSchema`, `displayName`, `description`, `category`, `fieldMappings`, `defaultGateMode`, and `compatibilityMode`. Gate rules go in `fieldMappings` at the top level, exactly as in a register body (see `schemas/example.yaml`). Register fields outside that list (`defaultShare`, `coSignRequired`, and the other row-only federation toggles) are not provisioning-configurable; declaring them, or any other unknown key, fails the entry at load time rather than silently dropping it, so misplaced gate config can never provision a type that enforces nothing. The entry is what fails, not the file: the valid entries beside it still reconcile. What a failed entry does cost is pruning, which is suppressed for the whole run (see [Pruning](#pruning)). Every failed entry is reported under `loadErrors` on `GET /v1/admin/provisioning/status`, and a key or shape the entry validators reject is also logged as a WARN naming the file and the entry index. Rule wiring is validated at load with the same checks as the register API: malformed mapping elements, a negative `maxTolerance`, more `fieldMappings` than the register API accepts on any type, duplicate ruleIds, unknown verbs, and criteria/evidence paths that do not resolve against the schemas each fail the entry with a per-type error. An entry with more `fieldMappings` than `POST /v1/schemas` allows on a type with no org, but not more than it accepts on any type, still loads and applies; it is reported under `loadWarnings` on the reload response and on `GET /v1/admin/provisioning/status`, naming the entry and the cap the API would apply. A warning does not suppress prune.
 
 The schema bodies themselves are validated at load too, by the same meta-schema walk and Ajv trial compile `POST /v1/schemas` runs. A `recordSchema` or `completionSchema` must be a JSON object with `type: object` and a non-empty root `required` array; `$id`, `$data`, `$code`, `$async`, `prefixItems` and `contentSchema` are rejected; `format` must be one of the allowed values; regexes are checked for catastrophic backtracking; the body is bounded at depth 5, 200 nodes and 50 KB; and it must compile under Ajv, so a typo like `type: strng` fails here rather than on the first record. `GET /v1/schemas/meta-schema` serves the authoritative constraints, including the allowed formats and applicator keywords.
 
-Write `completionSchema: {}` for a notarize-only type. A bare `completionSchema:` is YAML null and is refused, and `{"type": "object", "additionalProperties": false}` is not treated as empty: it has no root `required`, so it is refused like any other body without one.
+Omit `completionSchema`, or write `completionSchema: {}`, for a notarize-only type; `POST /v1/schemas` takes both and stores `{}`. A bare `completionSchema:` is YAML null and is refused, and `{"type": "object", "additionalProperties": false}` is not treated as empty: it has no root `required`, so it is refused like any other body without one.
 
 The one register-API check not run here is compatibility against existing versions, which needs a database round-trip this loader does not make. Everything else the register API validates without touching the database runs at load, including the reserved-record-field guard.
+
+An edited entry replaces the live type in place, keeping its version and skipping the compatibility check, because the file is the authority. A change to anything the manifest digest covers (the schema bodies, `displayName`, `description`, `category`, `fieldMappings`, `compatibilityMode`) is still recorded: it writes a signed `SCHEMA_REGISTERED` entry carrying the new digest to the platform schema chain, and a `schema.registered` row to `system_audit_log` that also names the digest it replaced, both marked `source: provisioning`. `defaultGateMode` is outside the digest, so a change to it writes no chain entry; it writes a `schema.default_gate_mode_changed` row to `system_audit_log` instead, naming the previous and new values. Any change to the stored compatibility mode also writes a `schema.compatibility_changed` row with the previous and new values, including the file putting back its own mode over one set through `PUT /v1/schemas/{type}/versions/{version}/compatibility`. A reload that changes nothing writes nothing and reports the type as neither created nor updated.
+
+`compatibilityMode` takes the same four values as `POST /v1/schemas` and is part of the manifest digest. Declared, it behaves exactly as it does on the API, so one body registered through either door with the same value carries one digest. Omitted, it is `none` here where the API defaults to `backward`, so that types provisioned before the key existed keep their stored mode and digest. To match a type registered through the API with the key omitted, write `compatibilityMode: backward`.
 
 A schema entry that fails any of this is skipped with a per-type error, and the rest of the directory still applies. The previously provisioned version of that type stays live and stays managed.
 
 The same per-entry rule holds for `orgs/`, `agents/` and `webhooks/`: an entry that fails its own validation is skipped and its siblings load. A file is skipped whole only when the document itself is unreadable: a YAML parse error (including a bare `${VAR}` with no default, above), or a missing `orgs:` / `agents:` / `webhooks:` / `schemas:` array. In every partial case prune is suppressed, because an absence in a config that did not fully load cannot be read as a deliberate removal. The one check that spans entries rather than living inside one, two agents claiming the same `oidcIss` + `oidcSub`, is reported but does not skip either entry: it is refused at apply time by the unique index, per agent.
 
-<!-- v1.6.0 peer shim: remove after the next release, with the section below. -->
-
 ### Upgrading from 1.6.0
 
-Two pieces of 1.6.0 vocabulary are accepted and ignored for one release, so a directory carried over from that version reconciles without an edit. Both log a WARN at load naming the file and what was dropped, and both are removed in the release after this one. Fix the files now.
+Two pieces of 1.6.0 vocabulary are accepted and ignored, so a directory carried over from that version reconciles without an edit. Both log a WARN at load naming the file and what was dropped. Remove them from your files. The shim stays until a release names its removal: the install base is not observable from here, so there is no version at which a peer on 1.6.0 is known to be gone.
 
-- `commissionSourceField` on a `schemas:` entry is dropped. Commission was removed after 1.6.0: none is computed, stored or served, so the key changes nothing about the type that gets registered.
-- `dispute.escalated` and `record.proposal_counter_proposed` are dropped from a subscription's `eventTypes`. Neither is emitted any more, so the subscription delivers the same events with or without them. A subscription that names **only** removed types is the one case that fails the entry: "every event" and "no subscription" are both honest readings of what is left, and the loader will not guess. Give it the event types you want, or `['*']`, or delete it.
+- `commissionSourceField` on a `schemas:` entry is dropped. No commission is computed, stored or served, so the key changes nothing about the type that gets registered.
+- `dispute.escalated` and `record.proposal_counter_proposed` are dropped from a subscription's `eventTypes`. Neither is emitted, so the subscription delivers the same events with or without them. A subscription that names **only** removed types is the one case that fails the entry: "every event" and "no subscription" are both honest readings of what is left, and the loader will not guess. Give it the event types you want, or `['*']`, or delete it.
 
 ## Pruning
 

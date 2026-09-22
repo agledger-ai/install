@@ -23,22 +23,143 @@ BACKUP_SCRIPT="${SCRIPT_DIR}/backup.sh"
 # version should still be running" is wrong in the one direction that matters:
 # the worker is down, so nothing is processing jobs, dispatching webhooks or
 # sweeping deadlines, and the message they were given says to do nothing.
+#
+# The latch answers "did this run stop the worker", which is NOT the same
+# question as "is the worker down now", and the trap needs the second one. The
+# restart below brings the worker back and the run can still fail after it: the
+# container-state gate fails the upgrade when ANY service is down, so a broken
+# otel-collector config exits 1 with the worker running and healthy, and a
+# Ctrl-C anywhere past the restart does the same. Reported off the latch alone,
+# every one of those tells an operator mid-incident that the write path is dead
+# on a stack that is serving, which is the one thing this message must never
+# say. The latch stays as the gate on whether the question is worth asking at
+# all; what is printed comes from worker_state_now.
 WORKER_STOPPED=false
 
+# What the worker is doing at the moment the trap fires: `up`, `down` or
+# `unknown`.
+#
+# Observed, not tracked. Clearing the latch at each point the worker comes back
+# would fail open the day someone adds an early exit below the restart, and
+# would be re-derived wrongly the first time a restart half-succeeds; asking
+# Docker cannot go stale.
+#
+# `up` means here exactly what it means to the restart gate this script already
+# runs, because it is the same predicate: a container that exists, is running,
+# is not unhealthy, and is not crash-looping between samples (the gate's
+# restart-counter check, against the baseline this run took). A second
+# definition of "up" living in the trap would drift from the one the upgrade
+# enforces, and the trap is read at the moment the two disagreeing is most
+# expensive.
+#
+# Docker being unreachable is its own answer rather than a verdict.
+# failed_compose_services reads a `docker ps` it cannot run as "no container was
+# created", which is indistinguishable from a worker that never came back, so
+# reachability is probed first and an unanswerable daemon reports `unknown`.
+# `unknown` is then reported as down-until-proven-otherwise: a false alarm the
+# text admits to is recoverable, a missed one is not.
+#
+# A container inside its healthcheck start_period is `unknown`, not `up`.
+# failed_compose_services deliberately lets `(health: starting)` pass, because
+# the restart gate only consults it after `up -d --wait` has already waited the
+# start_period out. The trap has no such guarantee: it is reached seconds after
+# the container was created, which is exactly when a worker that is going to
+# fail its own readiness still reads `running`. Calling that `up` would tell an
+# operator nothing needs restarting and withhold the command to do it.
+worker_state_probe() {
+  if ! command -v docker >/dev/null 2>&1 || ! docker ps --quiet >/dev/null 2>&1; then
+    printf 'unknown\n'
+    return 0
+  fi
+  local project status
+  project="$(compose_project_name)"
+  status="$(docker ps -a \
+    --filter "label=com.docker.compose.project=${project}" \
+    --filter "label=com.docker.compose.service=agledger-worker" \
+    --filter "label=com.docker.compose.oneoff=False" \
+    --format '{{.Status}}' 2>/dev/null || true)"
+  if [[ "$status" == *"(health: starting)"* ]]; then
+    printf 'unknown\n'
+    return 0
+  fi
+  if all_compose_services_up agledger-worker; then
+    printf 'up\n'
+  else
+    printf 'down\n'
+  fi
+}
+
+# The probe runs on a leash. It is called from the EXIT trap, and bash will not
+# run the INT trap while the EXIT trap is running, so a `docker ps` against a
+# wedged daemon would hang the trap with no recovery text on screen and no way
+# to Ctrl-C out of it: the one outcome worse than the false alarm this whole
+# change exists to remove. A probe that overruns is killed and answers
+# `unknown`, which prints the same down-until-proven-otherwise text.
+WORKER_PROBE_TIMEOUT_DECISECONDS=50
+worker_state_now() {
+  local out_file pid waited=0
+  out_file="$(mktemp 2>/dev/null)" || { printf 'unknown\n'; return 0; }
+  worker_state_probe >"$out_file" 2>/dev/null &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null && (( waited < WORKER_PROBE_TIMEOUT_DECISECONDS )); do
+    sleep 0.1
+    waited=$(( waited + 1 ))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null || true
+    rm -f "$out_file"
+    printf 'unknown\n'
+    return 0
+  fi
+  wait "$pid" 2>/dev/null || true
+  local answer
+  answer="$(cat "$out_file" 2>/dev/null || true)"
+  rm -f "$out_file"
+  printf '%s\n' "${answer:-unknown}"
+}
+
+worker_restart_hint() {
+  error "Finish or abandon the upgrade, then bring it back with either:"
+  error "  ./scripts/upgrade.sh ${TARGET_VERSION}          # re-run; applied migrations are skipped"
+  error "  (cd ${COMPOSE_DIR} && docker compose up -d)   # restart on the version .env names"
+}
+
 cleanup() {
-  if [[ $? -ne 0 ]]; then
+  local exit_code=$?
+  local worker_now=untouched
+  if [[ $exit_code -ne 0 ]]; then
     echo ""
     if [[ "$WORKER_STOPPED" == true ]]; then
-      error "Upgrade failed AFTER the worker was stopped for the migration."
-      error "The worker is DOWN: no jobs, no webhook deliveries, no deadline sweeps"
-      error "until it is back. Whether the API is still serving depends on how far this"
-      error "run got; the ps command below answers that."
-      error "Finish or abandon the upgrade, then bring it back with either:"
-      error "  ./scripts/upgrade.sh ${TARGET_VERSION}          # re-run; applied migrations are skipped"
-      error "  (cd ${COMPOSE_DIR} && docker compose up -d)   # restart on the version .env names"
-    else
-      error "Upgrade failed. Nothing was stopped, so your previous version is still running."
+      worker_now="$(worker_state_now)"
     fi
+    case "$worker_now" in
+      untouched)
+        error "Upgrade failed. Nothing was stopped, so your previous version is still running."
+        ;;
+      up)
+        error "Upgrade failed after the worker was stopped for the migration, and the worker is"
+        error "back UP: it is running and healthy, so jobs, webhook deliveries and deadline"
+        error "sweeps are being processed. Nothing has to be restarted to get the worker back;"
+        error "the ps command below is what answers for the rest of the stack."
+        error "The install is not untouched, though: this run got past the worker stop, so it is"
+        error "part-upgraded. Fix what is reported above and finish it:"
+        error "  ./scripts/upgrade.sh ${TARGET_VERSION}          # re-run; applied migrations are skipped"
+        ;;
+      unknown)
+        error "Upgrade failed AFTER the worker was stopped for the migration, and Docker could"
+        error "not be asked whether it came back. Treat the worker as DOWN until the ps command"
+        error "below says otherwise: while it is down there are no jobs, no webhook deliveries"
+        error "and no deadline sweeps."
+        worker_restart_hint
+        ;;
+      *)
+        error "Upgrade failed AFTER the worker was stopped for the migration."
+        error "The worker is DOWN: no jobs, no webhook deliveries, no deadline sweeps"
+        error "until it is back. Whether the API is still serving depends on how far this"
+        error "run got; the ps command below answers that."
+        worker_restart_hint
+        ;;
+    esac
     error "Check: docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps"
     error "Logs:  docker compose -f ${COMPOSE_DIR}/docker-compose.yml logs"
   fi
@@ -82,6 +203,8 @@ while [[ $# -gt 0 ]]; do
       echo "  AGLEDGER_REQUIRE_VERIFY=true   Refuse to upgrade when the image cannot be verified."
       echo "                       Without it an upgrade proceeds unverified (with a warning) on a"
       echo "                       host that has no cosign."
+      echo "  AGLEDGER_VERIFY_BUNDLE_DIR     Verify offline, from an unpacked"
+      echo "                       agledger-<version>-offline-verification.tar.gz. See air-gap/README.md."
       echo "  -h, --help           Show this help message"
       exit 0
       ;;
@@ -241,6 +364,16 @@ if [[ "$CURRENT_VERSION" == "$TARGET_VERSION" ]]; then
       warn "The .env repairs above are on disk, but the containers still hold the environment they"
       warn "started with. Recreate the stack to pick them up:"
       warn "  (cd ${COMPOSE_DIR} && docker compose up -d)"
+    elif [[ "$MONITORING_ACTIVE" == true ]] && prometheus_metrics_token_stale "$ENV_FILE"; then
+      # Not a no-op, and the previous run of this script is how it got here: it
+      # reconciled the fingerprint into .env, said to run `up -d`, and exited.
+      # The write latched, so this run reconciles nothing and ENV_RECONCILED is
+      # false. Without this branch the answer would be "Nothing to do" over a
+      # Prometheus whose every scrape 401s.
+      warn "Already running version ${TARGET_VERSION}, so nothing is pulled, backed up or restarted."
+      warn "The bundled Prometheus is still holding an older /metrics token than .env names, so it"
+      warn "is collecting nothing. Recreate the stack to hand it the current one:"
+      warn "  (cd ${COMPOSE_DIR} && docker compose up -d)"
     else
       warn "Already running version ${TARGET_VERSION}. Nothing to do."
     fi
@@ -374,16 +507,15 @@ fi
 # The image is the TARGET version, not the running one: `--only` reaches back
 # only as far as the release that added it, so asking the old image would run
 # every check instead of these two and fail the upgrade on something unrelated.
-# AGLEDGER_VERSION and AGLEDGER_IMAGE_PIN are passed explicitly because .env
-# still names the old version, and may still carry a previous upgrade's digest,
-# until the steps below update it. The pull and signature verification above are
-# what make running those bytes here safe.
+# The pull and signature verification above are what make running those bytes
+# here safe. How that call is made is on `upgrade_image_preflight` below.
 #
-# --no-deps: agledger-api depends on agledger-migrate completing, and the
-# migration is a `run --rm` that leaves no container behind, so without it
-# compose re-runs the whole migration to satisfy the dependency.
+# $3 is the preflight check list, defaulting to the two that decide whether the
+# role can serve. `role-passwords` is added only AFTER migrations, never before:
+# the migration run is what closes a placeholder role password, so asking ahead
+# of it would refuse an upgrade for a condition the upgrade itself repairs.
 runtime_role_gate() {
-  local when="$1" recovery="$2"
+  local when="$1" recovery="$2" checks="${3:-runtime-role,pgboss}"
   # External database only. The bundled path runs one role that owns and serves
   # everything, which carries every privilege by ownership, so there is nothing
   # here to catch. It is also the path where this could refuse a good upgrade:
@@ -393,21 +525,62 @@ runtime_role_gate() {
     return 0
   fi
   step "Checking runtime role privileges (${when})"
-  if AGLEDGER_VERSION="${TARGET_VERSION}" AGLEDGER_IMAGE_PIN="${TARGET_IMAGE_PIN}" \
-      "${COMPOSE[@]}" run --rm --no-deps \
-      --entrypoint /nodejs/bin/node agledger-api \
-      dist/scripts/preflight.js --only=runtime-role,pgboss; then
+  # Through preflight_gate_run for the reason install.sh uses it: the target
+  # image can be OLDER than this tree (`upgrade.sh 1.7.0` from a 1.8.0
+  # checkout is how an operator rolls back), and preflight refuses the whole
+  # `--only` list over an id that release did not have. Left bare, that exit 2
+  # reached the diagnosis text below and sent the operator hunting a role
+  # problem no check had looked at.
+  local rc=0
+  preflight_gate_run upgrade_image_preflight "$checks" "$TARGET_VERSION" || rc=$?
+  if [[ -n "$PREFLIGHT_GATE_UNCHECKED" && -z "$PREFLIGHT_GATE_RAN" ]]; then
+    warn "No check in this gate exists in that image, so the gate is skipped. The full preflight run"
+    warn "at the end of this script still reports on the upgraded stack."
+  fi
+  if [[ $rc -eq 0 ]]; then
     return 0
   fi
   echo ""
+  local line
+  if [[ $rc -eq 2 ]]; then
+    error "The preflight gate refused its arguments, so no check ran and nothing above is a report on"
+    error "your database. The line preflight printed says which refusal it was: an id this script asked"
+    error "for that the ${TARGET_VERSION} image does not have and the list could not be reduced to ids"
+    error "it does, or a check list this script malformed."
+    while IFS= read -r line; do
+      error "$line"
+    done <<< "$recovery"
+    fatal "Run the upgrade from the tree of the version you are upgrading to."
+  fi
   error "The role in DATABASE_URL is not ready to serve. The report above is the diagnosis: a"
   error "privilege failure names the role and the exact grant to run; a connection failure names"
   error "what the connection attempt returned, which no grant will fix."
-  local line
   while IFS= read -r line; do
     error "$line"
   done <<< "$recovery"
   fatal "Fix what the check reported and re-run."
+}
+
+# The runner preflight_gate_run drives, so the retry re-runs the same call with
+# a reduced list. AGLEDGER_VERSION and AGLEDGER_IMAGE_PIN are passed explicitly
+# because .env still names the old version, and may still carry a previous
+# upgrade's digest, until the steps below update it.
+#
+# --no-deps: agledger-api depends on agledger-migrate completing, and the
+# migration is a `run --rm` that leaves no container behind, so without it
+# compose re-runs the whole migration to satisfy the dependency.
+#
+# NODE_OPTIONS cleared: it reaches every node process in the container and this
+# invocation overrides the image argv, so it carries neither `--permission` nor
+# `--allow-fs-read`. An operator who set the SIEM file-sink grant (or an APM
+# `--import`) in `.env` rather than on the worker service would fail this call at
+# pre-execution with ERR_MISSING_OPTION and nothing named. NODE_EXTRA_CA_CERTS,
+# which is how a CA bundle reaches this image, is a different variable.
+upgrade_image_preflight() {
+  AGLEDGER_VERSION="${TARGET_VERSION}" AGLEDGER_IMAGE_PIN="${TARGET_IMAGE_PIN}" \
+    "${COMPOSE[@]}" run --rm --no-deps -e NODE_OPTIONS= \
+    --entrypoint /nodejs/bin/node agledger-api \
+    dist/scripts/preflight.js --only="$1"
 }
 
 build_compose_cmd
@@ -476,14 +649,14 @@ fi
 step "Stopping worker (prevent job processing during migration)"
 
 build_compose_cmd
-# `|| true` swallowed a FAILED stop as readily as an absent one, so a worker that
-# refused to stop went on consuming jobs while the migration rewrote the schema
-# under it. Three answers, not two: there is no worker, there is one, or we could
-# not find out. The third is the one a `2>/dev/null || true` turns into the
-# first, because `compose ps -aq <name>` exits non-zero and writes to stderr for
-# an unknown service, a compose file it cannot parse, a daemon it cannot reach
-# and a socket it may not read. Every one of those would print "nothing to stop"
-# and migrate against a worker that is very much running.
+# No `|| true` here: it swallows a FAILED stop as readily as an absent one, and
+# a worker that refuses to stop goes on consuming jobs while the migration
+# rewrites the schema under it. Three answers, not two: there is no worker,
+# there is one, or we could not find out. A `2>/dev/null || true` turns the
+# third into the first, because `compose ps -aq <name>` exits non-zero and
+# writes to stderr for an unknown service, a compose file it cannot parse, a
+# daemon it cannot reach and a socket it may not read. Every one of those would
+# print "nothing to stop" and migrate against a worker that is running.
 WORKER_PS_STATUS=0
 WORKER_CONTAINER="$("${COMPOSE[@]}" ps -aq agledger-worker 2>&1)" || WORKER_PS_STATUS=$?
 if [[ $WORKER_PS_STATUS -ne 0 ]]; then
@@ -528,7 +701,8 @@ are applied, and they are not rolled back by stopping here. The worker is stoppe
 stopped until the upgrade finishes, so nothing is processing jobs, dispatching webhooks or
 sweeping deadlines right now. The API is still serving the previous version against the new
 schema. Grant what the report asks for and re-run this script to finish; the migrations it
-already applied will be skipped."
+already applied will be skipped." \
+  runtime-role,role-passwords,pgboss
 
 # --- Update Version in .env ---
 
@@ -566,12 +740,33 @@ step "Restarting all services"
 # configuration that is on disk.
 restart_mounted_config_services
 
+# The services this run has to see come up. `up -d` starts whatever the profile
+# selects, and the check after it walks names, so the monitoring four are on the
+# list only when this host is running them.
+UPGRADE_SERVICES=(agledger-api agledger-worker)
+if [[ "$MONITORING_ACTIVE" == true ]]; then
+  # shellcheck disable=SC2206  # a space-separated list of service names, no globbing wanted
+  UPGRADE_SERVICES+=(${MONITORING_SERVICES})
+fi
+
 # --wait fails the upgrade if the new image crashloops at boot (e.g. a
 # missing runtime asset). Without it, `up -d` returns as soon as
 # the container is created, the preflight loop below logs a soft WARN, and
 # the script exits 0 — handing the customer a broken upgrade with no
 # visible signal anything went wrong.
-if ! "${COMPOSE[@]}" up -d --wait; then
+#
+# It is not the whole answer either: `--wait` is satisfied by a container that
+# is merely running whenever the service declares no healthcheck, which the
+# collector cannot (its image holds one binary and no shell), and a
+# crash-looping container is running between restarts. The container states and
+# the restart counter are asked for as well, the same pair install.sh asks, or
+# an upgrade that leaves the collector dead on a config this release changed
+# reports success.
+# After restart_mounted_config_services for the reason install.sh gives at its
+# own call: a user-initiated start zeroes the counter, so a baseline taken
+# ahead of that restart would hide the loop it is meant to catch.
+capture_compose_restart_baseline "${UPGRADE_SERVICES[@]}"
+if ! "${COMPOSE[@]}" up -d --wait || ! all_compose_services_up "${UPGRADE_SERVICES[@]}"; then
   # A config fail-fast is the likeliest cause and the one the generic message
   # hid: the Server names the variable and exits at import, compose reports
   # "unhealthy", and the operator was sent to read container logs to find out
@@ -583,6 +778,11 @@ if ! "${COMPOSE[@]}" up -d --wait; then
     done
     error "Set them in ${ENV_FILE} and re-run this script. Your previous version is still installed."
   fi
+  # Which of the two halves failed decides what is worth printing: a container
+  # that is restarting, exited, unhealthy or looping is named with its own log
+  # tail, and when every one reports up it is the wait that timed out and the
+  # reporter has nothing to name.
+  report_failed_compose_services "${UPGRADE_SERVICES[@]}" || true
   fatal "Services failed to become healthy after upgrade. Check: docker compose logs agledger-api"
 fi
 info "All services restarted"
@@ -599,7 +799,9 @@ step "Running preflight checks"
 ELAPSED=0
 MAX_WAIT=30
 while [[ $ELAPSED -lt $MAX_WAIT ]]; do
-  if "${COMPOSE[@]}" exec agledger-api /nodejs/bin/node -e \
+  # NODE_OPTIONS cleared for the reason given at the privilege check above;
+  # `exec` inherits the running container's environment, which carries .env.
+  if "${COMPOSE[@]}" exec -e NODE_OPTIONS= agledger-api /nodejs/bin/node -e \
     "fetch('http://localhost:3000/health/ready').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" \
     2>/dev/null; then
     break
@@ -612,9 +814,18 @@ if [[ $ELAPSED -ge $MAX_WAIT ]]; then
   warn "API did not become ready within ${MAX_WAIT}s. Continuing with checks..."
 fi
 
-"${COMPOSE[@]}" exec agledger-api /nodejs/bin/node dist/scripts/preflight.js 2>&1 || {
-  warn "Preflight checks returned warnings (non-fatal)."
-}
+# preflight exits 0 when everything passed OR when the worst it found was a
+# warning, and 1 only when a check FAILED. A non-zero here is therefore a
+# failing check, and is reported as one.
+#
+# Not fatal: the upgrade is complete and the new version is serving, so stopping
+# here would report a failure over a stack that is up. Said plainly instead.
+if ! "${COMPOSE[@]}" exec -e NODE_OPTIONS= agledger-api /nodejs/bin/node dist/scripts/preflight.js 2>&1; then
+  echo ""
+  error "Preflight reported FAILING checks, listed with a ✗ above. These are not warnings:"
+  error "each one names something the Server needs and does not have. The upgrade itself"
+  error "completed; fix what the report names and re-run this script to re-check."
+fi
 
 # --- Version Verification ---
 
@@ -624,7 +835,7 @@ step "Verifying upgrade"
 # makes one answer cover both questions this step has: which version came up,
 # and whether it can reach its database. A version read off the static /health
 # would report a successful upgrade on a Server that 500s its first request.
-HEALTH_RESPONSE=$("${COMPOSE[@]}" exec agledger-api /nodejs/bin/node -e \
+HEALTH_RESPONSE=$("${COMPOSE[@]}" exec -e NODE_OPTIONS= agledger-api /nodejs/bin/node -e \
   "fetch('http://localhost:3000/health/ready').then(r=>r.json()).then(d=>console.log(JSON.stringify(d))).catch(e=>console.error(e))" \
   2>/dev/null || echo "{}")
 

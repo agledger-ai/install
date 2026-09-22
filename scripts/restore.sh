@@ -7,9 +7,19 @@ set -euo pipefail
 # Restores PostgreSQL data from a backup tarball.
 # Works with both bundled PostgreSQL and external databases (Aurora, RDS, etc.).
 #
-# Usage: ./scripts/restore.sh backup/backup-agledger-2026-03-14-120000.tar.gz
-#        ./scripts/restore.sh --non-interactive backup/backup-<project>-<ts>.tar.gz
-#        ./scripts/restore.sh --keep-version backup/backup-<project>-<ts>.tar.gz
+# Usage: ./scripts/restore.sh [options] <backup-tarball>
+#        ./scripts/restore.sh backup/backup-agledger-2026-03-14-120000.tar.gz
+#
+# Options:
+#   --non-interactive          Take the restore without the confirmation prompt.
+#   --force                    Drop a database that holds tables which are not
+#                              this install's. Refused without it.
+#   --keep-version             Stay on the installed release instead of
+#                              returning to the one the backup was taken from.
+#   --target bundled|external  Which database this run drops, when a
+#                              DATABASE_URL naming localhost could be either.
+#   --no-start                 Leave the compose stack down at the end.
+#   -h, --help                 Print this and exit.
 #
 # A backup carries the version it was taken from. When that is not the version
 # installed now, the restore returns the install to it, because the dump and the
@@ -27,25 +37,70 @@ NON_INTERACTIVE=false
 FORCE=false
 KEEP_VERSION=false
 
+# When this run started, and the name it records itself under. Both are fixed
+# here rather than at the point they are used, so a run that takes twenty
+# minutes still records the moment the operator asked for the restore, and a run
+# re-tried after an interruption records a different one.
+RESTORE_STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+# The restore's own identifier, unique in the restored database. The pid is in
+# it because the timestamp has one-second resolution, and `marker_id` is UNIQUE:
+# two runs that started in the same second would otherwise be one marker and one
+# chain entry between them. Fixed here so the message that tells an operator how
+# to re-run the post-restore step by hand names the same id the run would use.
+RESTORE_MARKER_SUFFIX="${RESTORE_STARTED_AT}-$$"
+# What the post-restore step reports, read by the closing notes: ok, rewound,
+# failed, or skipped.
+POST_RESTORE_OUTCOME=skipped
+
 log() { printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1"; }
 die() { log "ERROR: $1"; exit 1; }
 
+# The header block above, with the comment markers taken off: one place to read
+# and one place to edit. It runs to the rule that closes the block rather than
+# to a line number, so a paragraph added to the header cannot push the options
+# out of what --help prints.
+usage() {
+  awk '/^# ={10,}/ { rules++ }
+       NR >= 4     { sub(/^# ?/, ""); print }
+       rules == 3  { exit }' "${BASH_SOURCE[0]}"
+}
+
 # Parse arguments
 TARBALL=""
+# Which database this run drops: bundled or external. Empty means classify the
+# URL, which detect_db_mode refuses for a DATABASE_URL handed in from the
+# environment that names localhost, since a port-forwarded cluster database and
+# the bundled container look the same from here.
+DB_TARGET=""
+# Leave the compose stack down at the end. The cluster recipe passes this: the
+# workloads it restores for are the cluster's Deployments, not containers here.
+NO_START=false
 while [[ $# -gt 0 ]]; do
   case $1 in
     --non-interactive) NON_INTERACTIVE=true; shift ;;
     --force) FORCE=true; shift ;;
     --keep-version) KEEP_VERSION=true; shift ;;
-    -*) die "Unknown option: $1" ;;
+    --no-start) NO_START=true; shift ;;
+    --target)
+      [[ -n "${2:-}" ]] || die "--target needs a value: bundled or external"
+      DB_TARGET="$2"; shift 2 ;;
+    --target=*) DB_TARGET="${1#--target=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) usage >&2; die "Unknown option: $1" ;;
     *) TARBALL="$1"; shift ;;
   esac
 done
+case "${DB_TARGET}" in ''|bundled|external) ;; *) die "--target must be bundled or external, not '${DB_TARGET}'" ;; esac
 
-[[ -n "${TARBALL}" ]] || die "Usage: $0 [--non-interactive] [--force] [--keep-version] <backup-tarball>"
+[[ -n "${TARBALL}" ]] || { usage >&2; die "No backup tarball given."; }
 [[ -f "${TARBALL}" ]] || die "Backup file not found: ${TARBALL}"
 
 load_env
+# This run drops the database it classifies, so a DATABASE_URL handed in from the
+# environment that names localhost is refused without --target: see
+# resolve_db_target in lib-compose.sh.
+# shellcheck disable=SC2034  # read by detect_db_mode in lib-compose.sh
+DB_TARGET_REQUIRED=true
 detect_db_mode
 
 # The same .env repairs upgrade.sh performs, for the same reason and from the
@@ -391,7 +446,7 @@ fi
 # --- Can the restoring role rebuild the schema? ---
 #
 # The dump carries `agledger_block_audit_drop`, the sql_drop event trigger that
-# is layer 1 of the tamper model, and CREATE EVENT TRIGGER is superuser-only.
+# is layer 2 of the tamper model (the DDL guard), and CREATE EVENT TRIGGER is superuser-only.
 # install.sh asks this before it installs anything and refuses with "Nothing has
 # been installed." A restore rebuilds the same schema with the same role and has
 # strictly more to lose: by the time pg_restore reaches the statement, the
@@ -446,6 +501,49 @@ fi
 log "Stopping application services..."
 "${COMPOSE[@]}" stop agledger-api agledger-worker 2>/dev/null || true
 "${COMPOSE[@]}" rm -f agledger-migrate 2>/dev/null || true
+
+# --- Revocations the restore would undo ---
+#
+# A revocation is a row in the same database, so the restore undoes every one
+# made after the backup: a key disabled since then authenticates again, a
+# revoked certificate or peer is honoured again, a consumed single-use token can
+# be replayed. The database about to be dropped is the only record of them, so
+# they are read out of it now, and re-applied by the post-restore step once the
+# restored schema is current. Bounded by the backup's own creation instant when
+# the archive records one; an archive without it (the chart's CronJob writes
+# none) exports every revocation, which the replay applies harmlessly to rows
+# the backup already held as revoked.
+REVOCATIONS_FILE="${RESTORE_TMP}/revocations.ndjson"
+REVOCATION_OUTCOME=unavailable
+REVOCATION_SUMMARY=""
+REVOCATIONS_EXPORTED=0
+BACKUP_CREATED_AT="$(get_env_value created_at "${RESTORE_DIR}/backup-metadata" 2>/dev/null || true)"
+log "Reading revocations made after the backup out of the database about to be replaced..."
+SINCE_ARGS=()
+[[ -n "${BACKUP_CREATED_AT}" ]] && SINCE_ARGS=(--since "${BACKUP_CREATED_AT}")
+# NODE_OPTIONS cleared on every one-off `node` this script runs: it reaches every
+# node process in the container, `run` inherits the service's `env_file: .env`,
+# and these invocations override the image argv so they carry neither
+# `--permission` nor `--allow-fs-read`. An operator who set the SIEM file-sink
+# grant (or an APM `--import`) in `.env` rather than on the worker service would
+# fail them at pre-execution with ERR_MISSING_OPTION, before any code runs.
+# NODE_EXTRA_CA_CERTS, which is how a CA bundle reaches this image, is untouched.
+if "${COMPOSE[@]}" run --rm --no-deps -T -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api \
+     dist/scripts/post-restore.js --export-revocations "${SINCE_ARGS[@]}" 2>&1 \
+   | tee "${RESTORE_TMP}/revocations-export.log" \
+   | sed -n 's/^REVOCATION //p' > "${REVOCATIONS_FILE}"; then
+  REVOCATIONS_EXPORTED="$(grep -c . "${REVOCATIONS_FILE}" || true)"
+  REVOCATION_OUTCOME=exported
+  if [[ -z "${BACKUP_CREATED_AT}" ]]; then
+    log "  The archive records no creation instant, so every revocation the database holds was read (${REVOCATIONS_EXPORTED})."
+  else
+    log "  ${REVOCATIONS_EXPORTED} revocation(s) made after ${BACKUP_CREATED_AT}."
+  fi
+else
+  log "WARN: could not read revocations out of the current database (see above). If this host has no"
+  log "      previous database, that is expected; the closing notes say what to compare instead."
+  : > "${REVOCATIONS_FILE}"
+fi
 
 # --- Restore PostgreSQL ---
 
@@ -782,7 +880,93 @@ post_restore_notes() {
   log ""
   log "If that answers 401, mint a fresh platform key (the chain and every record"
   log "are unaffected; this only issues a new credential):"
-  log "  ${COMPOSE[*]} exec agledger-api /nodejs/bin/node dist/scripts/init.js --non-interactive"
+  log "  ${COMPOSE[*]} exec -e NODE_OPTIONS= agledger-api /nodejs/bin/node dist/scripts/init.js --non-interactive"
+  log ""
+  # A revocation is a row in the same database, so the restore undid every one
+  # made after the backup. The run read them out of the database it replaced
+  # and re-applied them; what it could not read, the operator compares by hand.
+  case "${REVOCATION_OUTCOME:-unavailable}" in
+    replayed)
+      log "Revocations made after the backup were carried across: ${REVOCATION_SUMMARY:-see the post-restore output}."
+      log "  A credential created after the backup is not in the restored database, so a revocation"
+      log "  of one had nothing to apply to."
+      ;;
+    exported|failed)
+      log "REVOCATIONS MADE AFTER THE BACKUP WERE READ (${REVOCATIONS_EXPORTED:-0}) BUT NOT RE-APPLIED: the post-restore"
+      log "  step did not complete. Until they are, a key disabled since the backup authenticates again."
+      log "  The export is at ${REVOCATIONS_FILE:-<gone>} for as long as this run's temp directory lasts; re-run"
+      log "  this script, or list what can authenticate and disable what you had revoked:"
+      log "    ${COMPOSE[*]} run --rm --no-deps -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api dist/scripts/post-restore.js --list-active-credentials"
+      ;;
+    *)
+      log "NO PREVIOUS DATABASE WAS THERE TO READ REVOCATIONS FROM, so any credential revoked after the"
+      log "  backup authenticates again until you disable it. List what can authenticate:"
+      log "    ${COMPOSE[*]} run --rm --no-deps -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api dist/scripts/post-restore.js --list-active-credentials"
+      log "  and compare it against your own record of revocations (the SIEM stream carries"
+      log "  ADMIN_KEY_REVOKED, ACCOUNT_DEACTIVATED and federation.peer_revoked), then disable through"
+      log "  PATCH /v1/admin/api-keys/{keyId} with {\"isActive\": false}."
+      ;;
+  esac
+  log ""
+  # The restored chain ends where the backup did, and the next write reuses
+  # positions the lost history already signed and delivered.
+  log "Before taking writes, check the chain and reconcile what left this Server after the backup:"
+  log "  ./scripts/vault-verify.sh"
+  log "  Webhook receivers, the SIEM and federation peers hold events for rows this database no"
+  log "  longer has. See 'Backups and point-in-time recovery' in README.md."
+  log ""
+
+  case "${POST_RESTORE_OUTCOME}" in
+    rewound)
+      log "THE EXTERNAL ANCHORS SAY THIS DATABASE IS BEHIND WHERE IT HAS ALREADY BEEN."
+      log "  The bucket holds chain positions this database does not, which is what a restore to an"
+      log "  earlier backup leaves behind. CHAIN WRITES ARE REFUSED on this Server until an operator"
+      log "  acknowledges, so records, completions, verdicts and schema registrations all answer 409"
+      log "  with reason CHAIN_REWIND_DETECTED."
+      log ""
+      log "  Read the evidence, then acknowledge:"
+      log "    curl -sS -H 'Authorization: Bearer <platform key>' http://localhost:${AGLEDGER_HOST_PORT:-3001}/v1/admin/vault/rewind"
+      log "    curl -sS -XPOST -H 'Authorization: Bearer <platform key>' -H 'Content-Type: application/json' \\"
+      log "      -d '{\"note\":\"what you reconciled, and with whom\"}' \\"
+      log "      http://localhost:${AGLEDGER_HOST_PORT:-3001}/v1/admin/vault/rewind/acknowledge"
+      log ""
+      log "  The acknowledgement writes a RESTORE_EPOCH entry onto the platform-ops chain carrying"
+      log "  the anchor evidence and your note, so the two histories stay tellable apart."
+      log ""
+      ;;
+    ok)
+      log "The external anchors hold no chain position past this database, so nothing this Server"
+      log "  anchored off-box is missing from the restored chain. That covers only what was anchored:"
+      log "  entries written after the last checkpoint sweep have no external evidence either way."
+      log ""
+      ;;
+    failed)
+      log "The post-restore checks did not complete (see the WARN above). Run the bucket-to-database"
+      log "  comparison by hand once the stack is up; until it has run, nothing has checked whether"
+      log "  the anchors hold positions this database no longer does:"
+      log "    curl -sS -XPOST -H 'Authorization: Bearer <platform key>' http://localhost:${AGLEDGER_HOST_PORT:-3001}/v1/admin/vault/anchors/reconcile"
+      log ""
+      ;;
+    skipped)
+      log "NO EXTERNAL-ANCHOR COMPARISON WAS COMPLETED, so nothing has checked whether this restore"
+      log "  lost anything. Either anchoring is not configured on this install, or the walk stopped on"
+      log "  its key cap or its time budget before it reached the end of the bucket. The reason is in"
+      log "  the post-restore output above."
+      log ""
+      log "  With anchoring configured, finish the comparison once the stack is up:"
+      log "    curl -sS -XPOST -H 'Authorization: Bearer <platform key>' -H 'Content-Type: application/json' \\"
+      log "      -d '{\"maxKeys\":2000000,\"deadlineMs\":600000}' \\"
+      log "      http://localhost:${AGLEDGER_HOST_PORT:-3001}/v1/admin/vault/anchors/reconcile"
+      log ""
+      log "  Without it, reconcile against your own external evidence: the SIEM stream of"
+      log "  system_audit_log, delivered webhooks, or a federation peer's slice of the chain."
+      log ""
+      ;;
+    *)
+      log "No external-anchor comparison was made on this run."
+      log ""
+      ;;
+  esac
 }
 
 # The one line that says whether this run ended on the version the dump came
@@ -814,7 +998,7 @@ version_outcome_note() {
 # it touches, and an owner carries every privilege by ownership.
 if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   log "Checking runtime role privileges..."
-  if ! "${COMPOSE[@]}" run --rm --no-deps \
+  if ! "${COMPOSE[@]}" run --rm --no-deps -e NODE_OPTIONS= \
       --entrypoint /nodejs/bin/node agledger-api \
       dist/scripts/preflight.js --only=runtime-role,pgboss; then
     echo ""
@@ -837,6 +1021,10 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
       echo ""
       version_outcome_note
     fi
+    log ""
+    log "Re-running THIS script is the better path either way: the post-restore step below this gate"
+    log "did not run, so this restore has left no marker on the chain and nothing has compared the"
+    log "external anchors against the restored database."
     log ""
     post_restore_notes
     die "Restore finished; the Server was not started."
@@ -873,10 +1061,133 @@ if [[ "${VERSION_PLAN}" == pin ]]; then
   log "compose/.env now names ${BACKUP_VERSION}."
 fi
 
+# --- Post-restore steps ---
+#
+# Everything that has to happen on the restored database BEFORE the Server takes
+# its first request. Add a new step to `post_restore_steps` below; each one runs
+# against a database that is back, on a schema that is current, with the API and
+# Worker still stopped.
+#
+# The schema is current because this section migrates first. The stack's own
+# ordering (`agledger-api depends_on agledger-migrate`) would get there too, but
+# only once the API is already booting, which is too late for a step whose whole
+# job is to be in place before the first write.
+post_restore_steps() {
+  log "Applying migrations before the Server starts, so the steps below run on the current schema..."
+  if ! "${COMPOSE[@]}" run --rm agledger-migrate; then
+    POST_RESTORE_OUTCOME=failed
+    log "WARN: the migration run failed. The restore itself is complete and your data is on disk."
+    log "      The steps that mark this restore on the chain and compare the external anchors"
+    log "      against it are skipped, because both need the current schema. The stack still"
+    log "      starts below and runs its own migration step; re-run this script's tail by hand"
+    log "      once that succeeds:"
+    log "        ${COMPOSE[*]} run --rm --no-deps -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api \\"
+    log "          dist/scripts/post-restore.js --marker-id ${THIS_PROJECT}-${RESTORE_MARKER_SUFFIX}"
+    return 0
+  fi
+
+  # Step 1: mark the restore, and compare the external anchors against the
+  # restored database.
+  #
+  # The marker is written whether or not anchoring is configured: the Server
+  # always knows a restore happened, and the next boot turns the marker into one
+  # signed RESTORE_EPOCH entry on the platform-ops chain plus its SIEM row, so
+  # outside parties can tell the history before this restore from the one after
+  # it. The marker alone does NOT stop writes.
+  #
+  # The anchor comparison is what can prove something was lost. It is run here
+  # rather than left to the Server's own boot sweep so that a Server whose
+  # anchors hold positions this database does not is already refusing chain
+  # writes when it answers its first request.
+  local rc=0
+  local out="${RESTORE_TMP}/post-restore.log"
+  # The exported revocations ride in on stdin, so nothing has to be copied into
+  # the container; a run with nothing exported passes no flag and replays none.
+  local replay_args=()
+  if [[ "${REVOCATION_OUTCOME}" == exported ]]; then
+    replay_args=(--replay-revocations -)
+  fi
+  set +e
+  "${COMPOSE[@]}" run --rm --no-deps -T -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api \
+    dist/scripts/post-restore.js \
+    --marker-id "${THIS_PROJECT}-${RESTORE_MARKER_SUFFIX}" \
+    --restored-at "${RESTORE_STARTED_AT}" \
+    --archive "$(basename "${TARBALL}")" \
+    "${replay_args[@]}" < "${REVOCATIONS_FILE}" 2>&1 | tee "${out}"
+  rc=${PIPESTATUS[0]}
+  set -e
+  if [[ "${REVOCATION_OUTCOME}" == exported ]]; then
+    if grep -q '^Revocations replayed onto the restored database:' "${out}"; then
+      REVOCATION_OUTCOME=replayed
+      REVOCATION_SUMMARY="$(sed -n 's/^Revocations replayed onto the restored database: //p' "${out}" | tail -1)"
+    else
+      REVOCATION_OUTCOME=failed
+    fi
+  fi
+
+  # The instance id the RESTORED database carries, written back into .env.
+  #
+  # `reconcile_env_file` above mints a fresh AGLEDGER_INSTANCE_ID into a .env
+  # that has none, which is exactly the .env a rebuilt DR host arrives with.
+  # Every external anchor this install ever wrote is under the id in the
+  # database, so the database wins and .env follows it. Without this the Server
+  # either refuses to boot on the disagreement, or (on a dump older than the
+  # table) anchors under a prefix nothing looks at and every check reports a
+  # clean bucket.
+  local restored_instance_id
+  restored_instance_id="$(sed -n 's/^POST_RESTORE_INSTANCE_ID=//p' "${out}" | tr -d '\r' | tail -1)"
+  if [[ -n "${restored_instance_id}" ]]; then
+    if [[ "${restored_instance_id}" != "$(get_env_value AGLEDGER_INSTANCE_ID "${COMPOSE_DIR}/.env")" ]]; then
+      upsert_env_var AGLEDGER_INSTANCE_ID "${restored_instance_id}" "${COMPOSE_DIR}/.env"
+      export AGLEDGER_INSTANCE_ID="${restored_instance_id}"
+      log "compose/.env now names the instance id this database carries (${restored_instance_id}); it is"
+      log "  the prefix every external anchor this install has written is under."
+    fi
+  else
+    log "WARN: the post-restore step did not report the restored database's instance id. If this host's"
+    log "      compose/.env names a different AGLEDGER_INSTANCE_ID than the database does, the Server"
+    log "      refuses to boot and names both values."
+  fi
+
+  case "${rc}" in
+    0) POST_RESTORE_OUTCOME=ok ;;
+    3) POST_RESTORE_OUTCOME=rewound ;;
+    4) POST_RESTORE_OUTCOME=skipped ;;
+    *)
+      POST_RESTORE_OUTCOME=failed
+      log "WARN: the post-restore step exited ${rc}. See its output above. Your data is restored;"
+      log "      what may be missing is the chain's own marker for this restore and the comparison"
+      log "      against the external anchors. The Server re-tries both on its next boot."
+      log "      A rollback to a release that predates this step is one way to land here, and on that"
+      log "      release there is nothing to re-run: the checks arrive with the version you roll"
+      log "      forward to."
+      ;;
+  esac
+
+  # Step 2 goes here. Anything added below becomes the function's return status,
+  # so end it the way step 1 does, with an assignment or a `log`.
+}
+
+post_restore_steps
+
 # --- Restart all services ---
 
-log "Restarting all services..."
-"${COMPOSE[@]}" up -d --wait
+if [[ "${NO_START}" == true ]]; then
+  log "--no-start: leaving the compose stack down. The database is restored and migrated; start"
+  log "  whatever serves it (on a cluster, scale the api and worker Deployments back up)."
+  # The .env reconcile above says the containers pick the repairs up "when this
+  # run starts them", and this run starts nothing. Only the metrics-token one
+  # leaves a container that is already up holding a stale value, so it is the
+  # one worth naming here; the rest land whenever the operator does start it.
+  if [[ "$MONITORING_ACTIVE" == true ]] && prometheus_metrics_token_stale "${COMPOSE_DIR}/.env"; then
+    log "  The bundled Prometheus is still up and holding an older /metrics token than .env names,"
+    log "  so it is collecting nothing. Recreate it when you bring the stack back:"
+    log "    (cd ${COMPOSE_DIR} && docker compose up -d)"
+  fi
+else
+  log "Restarting all services..."
+  "${COMPOSE[@]}" up -d --wait
+fi
 
 echo ""
 log "========================================="

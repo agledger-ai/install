@@ -112,6 +112,10 @@ while [[ $# -gt 0 ]]; do
       echo "  AGLEDGER_REQUIRE_VERIFY=true   Refuse to install when the image cannot be verified."
       echo "                       Without it the install proceeds unverified (with a warning) on a"
       echo "                       host that has no cosign. Set it for production and in CI."
+      echo "  AGLEDGER_VERIFY_BUNDLE_DIR     Verify offline, from an unpacked"
+      echo "                       agledger-<version>-offline-verification.tar.gz. No registry and no"
+      echo "                       Rekor reachability needed; works on a mirrored image, and satisfies"
+      echo "                       AGLEDGER_REQUIRE_VERIFY. See air-gap/README.md."
       echo "  ECR_REGISTRY         Registry host to authenticate against. Only needed when it differs"
       echo "                       from the host in --image, which is used otherwise."
       echo "  AWS_REGION           Region for the ECR login, when the host does not carry one."
@@ -599,7 +603,7 @@ case $VERIFY_STATUS in
     OFFLINE_PIN=$(get_env_value AGLEDGER_IMAGE_PIN "${COMPOSE_DIR}/.env")
     OFFLINE_PINNED_VERSION=$(get_env_value AGLEDGER_VERSION "${COMPOSE_DIR}/.env")
     if [[ -n "$OFFLINE_PIN" ]] \
-      && [[ "${OFFLINE_PIN%%@*}" == "$AGLEDGER_IMAGE" ]] \
+      && { [[ "${OFFLINE_PIN%%@*}" == "$AGLEDGER_IMAGE" ]] || [[ "$OFFLINE_PIN" == sha256:* ]]; } \
       && [[ "$OFFLINE_PINNED_VERSION" == "$AGLEDGER_VERSION" ]] \
       && local_image_matches_pin "$OFFLINE_PIN"; then
       warn "Could not pull ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}, but ${COMPOSE_DIR}/.env already pins"
@@ -607,9 +611,15 @@ case $VERIFY_STATUS in
       warn "and those exact bytes are in this host's local image store. Continuing on them so this"
       warn "run can still reconcile configuration. NOTHING WAS VERIFIED on this run: the pin keeps"
       warn "whatever verdict the run that wrote it recorded."
-      RESOLVED_DIGEST="${OFFLINE_PIN##*@}"
+      if [[ "$OFFLINE_PIN" == sha256:* ]]; then
+        # An image-id pin, written by a run that verified a loaded image from
+        # a carried bundle. Carried forward as it is; there is no digest.
+        RESOLVED_IMAGE_ID="$OFFLINE_PIN"
+      else
+        RESOLVED_DIGEST="${OFFLINE_PIN##*@}"
+      fi
       SIGNATURE_VERIFIED=false
-      UNVERIFIED_REASON="registry unreachable; reused the digest already pinned in .env"
+      UNVERIFIED_REASON="registry unreachable; reused the pin already recorded in .env"
     else
       if [[ "${IMAGE_PRESENT_LOCALLY:-false}" == "true" ]]; then
         # The bytes are here; what is missing is any way to check them on this
@@ -626,6 +636,12 @@ esac
 AGLEDGER_IMAGE_PIN=""
 if [[ -n "${RESOLVED_DIGEST:-}" ]]; then
   AGLEDGER_IMAGE_PIN="${AGLEDGER_IMAGE}@${RESOLVED_DIGEST}"
+elif [[ -n "${RESOLVED_IMAGE_ID:-}" ]]; then
+  # A loaded image carries no RepoDigest, so the bytes the offline check
+  # chained to the signed index are pinned by their image id. Compose resolves
+  # a bare id from the local store and never asks a registry for it. Only a
+  # verified offline run sets this, or a re-run carrying such a run's pin.
+  AGLEDGER_IMAGE_PIN="${RESOLVED_IMAGE_ID}"
 fi
 
 # --- Environment Configuration ---
@@ -639,14 +655,21 @@ FRESH_ENV=false
 # secret generation below, so it is set before either branch can read it.
 HAS_SIGNING_KEY=false
 
-# Every edit this run makes to .env that changes what a container receives.
+# Every edit this run makes to .env, reported to the operator below as what
+# this run changed about the install.
+#
 # Declared HERE, above the secret backfills, and not at the reconciliation
-# section further down, because the backfills are edits of exactly that kind and
-# they run first: a re-run that mints a missing METRICS_AUTH_TOKEN on a host
-# whose .env predates the gating wrote the token, appended nothing, and reached
-# the start step with the list still empty, so `up -d --no-recreate` left the
-# API, worker and bundled Prometheus on the environment they booted with. The
-# banner said the install was complete and /metrics kept answering 401.
+# section further down, because the backfills are edits of exactly that kind
+# and they run first: declared lower, a re-run that mints a missing
+# METRICS_AUTH_TOKEN writes the token and then reports nothing, and the only
+# record that this install's /metrics bearer was generated rather than carried
+# over is a line the operator never sees.
+#
+# It is a REPORT, not a gate. Nothing keys the recreate decision off it: the
+# set of things that change what a container receives is larger than the set of
+# .env lines this run wrote (an operator's edit to the override file is in the
+# first and not the second), and compose's own config hash is what decides.
+# See the start step.
 RECONCILE_CHANGES=()
 
 # Refusing to write credentials that cannot authenticate against a Postgres
@@ -686,9 +709,9 @@ refuse_credentials_against_existing_volume() {
 
 # A second stack needs a second directory, because .env is the whole state of
 # the install and there is one per checkout. Installing under a new project
-# name in an installed tree used to succeed and print "Installation Complete",
-# leaving the first stack running but orphaned from its own tooling, and the
-# second signing its chain under the first stack's key and issuer.
+# name in an installed tree is refused: it would leave the first stack running
+# but orphaned from its own tooling, and the second signing its chain under the
+# first stack's key and issuer.
 if project_switch_orphans_install "${COMPOSE_PROJECT_NAME:-}"; then
   INSTALLED_PROJECT="$(installed_project_name)"
   error "This directory is already installed as compose project '${INSTALLED_PROJECT}',"
@@ -750,6 +773,9 @@ if [[ -f "$ENV_FILE" ]]; then
   # anything already set is still never regenerated.
   HAS_SIGNING_KEY=false
   [[ -n "$(get_env_value VAULT_SIGNING_KEY "$ENV_FILE")" ]] && HAS_SIGNING_KEY=true
+  # A KMS ARN is the signing key: generating VAULT_SIGNING_KEY beside it would
+  # write a .env the Server refuses to boot on.
+  [[ -n "$(get_env_value VAULT_SIGNING_KEY_KMS_ARN "$ENV_FILE")" ]] && HAS_SIGNING_KEY=true
 
   if [[ "$HAS_SIGNING_KEY" == true ]]; then
     warn ".env already exists at ${ENV_FILE}. Keeping it: secrets are not regenerated."
@@ -827,6 +853,63 @@ else
   if stale_pgdata_blocks_install "${EXTERNAL_DB_FLAG}"; then
     refuse_credentials_against_existing_volume
   fi
+
+  # ALLOW_DB_WITHOUT_SSL is a bundled-Postgres line and nothing else.
+  #
+  # The bundled database speaks plaintext inside the compose network, on a
+  # socket that never leaves the host, so the Server's production TLS
+  # requirement has to be relaxed for it or nothing starts. An external
+  # database is reached over a network the operator does not own, and the same
+  # line there turns off a check that is doing its job, silently, in a file the
+  # installer wrote rather than one they did. The chart draws the line in the
+  # same place: templates/configmap.yaml emits this key only under
+  # `agledger.bundledPostgres`.
+  #
+  # Echoes one of:
+  #   write   this install runs the bundled database; relax the check for it.
+  #   skip    an external database that carries an sslmode=, or an operator who
+  #           has said ALLOW_DB_WITHOUT_SSL=true themselves. Whether that mode
+  #           is a VERIFIED one is `missing_prod_config`'s question, asked
+  #           against the finished .env further down and still before the pull,
+  #           so the rule lives in one place rather than two.
+  #   refuse  an external database with no sslmode= and no such statement. The
+  #           Server fail-fasts on exactly this at config load, so writing the
+  #           line would trade a refusal the operator can act on for an
+  #           unencrypted link to their database.
+  #
+  # $1 = "true" when the install runs the bundled Postgres
+  # $2 = the effective DATABASE_URL ("" when there is none)
+  # $3 = ALLOW_DB_WITHOUT_SSL as the operator set it, if they did
+  db_ssl_env_action() {
+    local bundled="$1" db_url="${2:-}" allow="${3:-}"
+    [[ "$bundled" == "true" ]] && { echo write; return; }
+    [[ -z "$db_url" ]] && { echo skip; return; }
+    [[ "$db_url" == *"sslmode="* ]] && { echo skip; return; }
+    [[ "$allow" == "true" ]] && { echo skip; return; }
+    echo refuse
+  }
+
+  # `--external-db` is the operator saying so outright; otherwise the URL in
+  # the environment decides, the same reader every other script uses.
+  FRESH_BUNDLED_PG=true
+  if [[ "${EXTERNAL_DB_FLAG}" == "true" ]]; then
+    FRESH_BUNDLED_PG=false
+  else
+    detect_db_mode
+    FRESH_BUNDLED_PG="${USES_BUNDLED_PG}"
+  fi
+  DB_SSL_ACTION="$(db_ssl_env_action "${FRESH_BUNDLED_PG}" "${DATABASE_URL:-}" "${ALLOW_DB_WITHOUT_SSL:-}")"
+  if [[ "$DB_SSL_ACTION" == "refuse" ]]; then
+    error "DATABASE_URL names an external database and carries no sslmode=."
+    error "The Server enforces database TLS in production and exits at config load without it,"
+    error "so this install would write a .env that cannot boot."
+    error "Encrypt the link (what you want on a database reached over a network):"
+    error "  add sslmode=require to DATABASE_URL"
+    error "Or accept an unencrypted one, deliberately, by putting this in ${ENV_FILE} yourself:"
+    error "  ALLOW_DB_WITHOUT_SSL=true"
+    fatal "Refusing to turn off the database TLS requirement for a database this installer does not run."
+  fi
+
   if [[ -f "${COMPOSE_DIR}/.env.example" ]]; then
     info "Copying .env.example to .env"
     cp "${COMPOSE_DIR}/.env.example" "$ENV_FILE"
@@ -840,15 +923,26 @@ HOST=0.0.0.0
 PORT=3000
 NODE_ENV=production
 LOG_LEVEL=info
-ALLOW_DB_WITHOUT_SSL=true
 ENVEOF
   fi
 
-  # Enable non-SSL for bundled Postgres (no TLS configured by default). Fresh
-  # .env only: on a file the operator wrote, DATABASE_URL is theirs and so is
-  # the decision to run it without TLS. The preflight below reports it as a
+  # Fresh .env only: on a file the operator wrote, DATABASE_URL is theirs and so
+  # is the decision to run it without TLS. The config gate below reports it as a
   # missing prerequisite instead of quietly relaxing it for them.
-  sedi "s|.*ALLOW_DB_WITHOUT_SSL=.*|ALLOW_DB_WITHOUT_SSL=true|" "$ENV_FILE"
+  #
+  # .env.example ships the line commented out, so on the external path it stays
+  # that way and the Server's own requirement holds.
+  if [[ "$DB_SSL_ACTION" == "write" ]]; then
+    # -E, because `\?` is a GNU extension to basic regular expressions: BSD grep
+    # (macOS, a supported install platform) reads it as a literal `?`, never
+    # matches, and appends a second ALLOW_DB_WITHOUT_SSL line instead of
+    # rewriting the one .env.example ships commented out.
+    if grep -qE '^[[:space:]]*#?[[:space:]]*ALLOW_DB_WITHOUT_SSL=' "$ENV_FILE"; then
+      sedi "s|.*ALLOW_DB_WITHOUT_SSL=.*|ALLOW_DB_WITHOUT_SSL=true|" "$ENV_FILE"
+    else
+      printf 'ALLOW_DB_WITHOUT_SSL=true\n' >> "$ENV_FILE"
+    fi
+  fi
 
   chmod 600 "$ENV_FILE"
   info "Created ${ENV_FILE}"
@@ -922,6 +1016,21 @@ if [[ -z "$(get_env_value METRICS_AUTH_TOKEN "$ENV_FILE")" ]]; then
   upsert_env_var METRICS_AUTH_TOKEN "${METRICS_AUTH_TOKEN}" "$ENV_FILE"
   RECONCILE_CHANGES+=("generated METRICS_AUTH_TOKEN (bearer token for /metrics; it had none)")
   info "Generated METRICS_AUTH_TOKEN (bearer token for /metrics)"
+fi
+
+# Outside the branch above: an install that already held a token the bundled
+# Prometheus never picked up mints nothing, and only a reconcile against the
+# value as it stands now recreates that container. sync_metrics_token_fingerprint
+# (lib-compose.sh) carries the mechanism and why it is a label.
+#
+# Reported like every other .env repair, because the summary is gated on this
+# array being non-empty and this write is precisely a change that recreates a
+# container: a run whose only edit was this one would otherwise print no
+# reconcile block at all.
+ENV_RECONCILED=false
+sync_metrics_token_fingerprint "$ENV_FILE"
+if [[ "$ENV_RECONCILED" == true ]]; then
+  RECONCILE_CHANGES+=("wrote METRICS_TOKEN_FINGERPRINT (hands the bundled Prometheus the current /metrics token)")
 fi
 
 if [[ "$HAS_SIGNING_KEY" != true ]]; then
@@ -1244,8 +1353,13 @@ elif [[ -z "${AGLEDGER_IMAGE_PIN:-}" ]] && [[ -n "$EXISTING_PIN" ]]; then
   #
   # Reported, not silent. The pin is the only thing holding the stack to
   # signature-verified bytes, so dropping it back to a floating tag is a
-  # security-relevant change to what the containers run, and RECONCILE_CHANGES
-  # is what tells the run below to recreate them rather than keep --no-recreate.
+  # security-relevant change to what the containers run, and an operator
+  # reading the summary has to be told it happened. The containers themselves
+  # follow at the start step: the ref string is part of the service definition,
+  # so swapping a digest ref for a tag moves the config hash and compose
+  # recreates on that. NOT on the image comparison, which sees no change here
+  # because the tag and the digest it was pinned to resolve to the same image
+  # id.
   delete_env_var AGLEDGER_IMAGE_PIN "$ENV_FILE"
   RECONCILE_CHANGES+=("dropped the image digest pin (no digest resolved this run); containers now follow the ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION} tag")
   warn "No image digest could be resolved, so ${ENV_FILE} no longer pins one."
@@ -1630,20 +1744,80 @@ info "Migrations complete"
 # Only the two checks that decide whether the API can boot: the full run is
 # still at the end of the install, against a started stack, where the rest of
 # the checks have something to look at.
-step "Checking runtime role privileges"
+step "Checking runtime role privileges and connection topology"
 
+# The ids this tree knows about. The image being installed can be older than
+# the tree installing it (`--version 1.7.0` is documented and supported), and
+# an older image refuses the whole list over the ids it does not have rather
+# than running the ones it does. `preflight_unknown_only_ids` reads them back
+# out of that refusal so the gate can ask again for what that image can
+# actually check, and say which conditions went unchecked.
+PREFLIGHT_GATE_CHECKS="runtime-role,role-passwords,topology,pgboss"
+
+# The runner preflight_gate_run drives, so the retry re-runs the same call with
+# a reduced list. Its output is captured rather than streamed, because the
+# retry has to read the refusal, and because a usage line printed under a "the
+# report above is the diagnosis" message sends an operator hunting a privilege
+# failure that was never reported. Everything preflight printed is echoed
+# below, unchanged, in the one case where it printed a report.
+#
 # --no-deps because agledger-api depends on agledger-migrate completing
 # successfully, and the migration that just ran was a `run --rm`, which leaves
 # no exited container for compose to see. Without the flag it re-runs the whole
 # migration to satisfy the dependency. On the bundled-Postgres path the database
 # is already up from "Starting data stores"; on the external path there is no
 # dependency to start at all.
-if ! "${COMPOSE[@]}" run --rm --no-deps --entrypoint /nodejs/bin/node agledger-api \
-    dist/scripts/preflight.js --only=runtime-role,pgboss; then
+#
+# A one-off `node` in this image is not the app, and NODE_OPTIONS reaches every
+# node process in a container. Node refuses `--allow-fs-write` from a process
+# not started with `--permission` (the SIEM file-sink grant in .env.example) and
+# refuses an `--import` from one holding no `--allow-fs-read` (the ESM way an
+# APM agent attaches), and these invocations override the image argv and so
+# carry neither flag. An operator who puts either in `.env` rather than on the
+# worker service would fail them at pre-execution, before any code runs, with an
+# ERR_MISSING_OPTION TypeError and no check named. Clearing the variable for the
+# length of the call runs the tool exactly as an install with nothing set does;
+# a CA bundle rides on NODE_EXTRA_CA_CERTS, which is untouched.
+run_image_preflight() {
+  "${COMPOSE[@]}" run --rm --no-deps -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api \
+    dist/scripts/preflight.js --only="$1"
+}
+
+PREFLIGHT_RC=0
+preflight_gate_run run_image_preflight "$PREFLIGHT_GATE_CHECKS" "$AGLEDGER_VERSION" || PREFLIGHT_RC=$?
+
+# The reduction has already warned which ids that image lacks; this is the
+# install-specific half of that answer.
+if [[ -n "$PREFLIGHT_GATE_UNCHECKED" && -z "$PREFLIGHT_GATE_RAN" ]]; then
+  warn "No check in this gate exists in that image, so the gate is skipped. The full preflight run"
+  warn "at the end of the install still reports on the started stack."
+fi
+
+if [[ $PREFLIGHT_RC -eq 2 ]]; then
+  echo ""
+  error "The preflight gate refused its arguments, so no check ran and nothing above is a report on"
+  error "your database. The line preflight printed says which refusal it was: an id this installer"
+  error "asked for that the ${AGLEDGER_VERSION} image does not have and the list could not be reduced"
+  error "to ids it does, or a check list this installer malformed."
+  error "Install the version this tree ships (drop --version), or run the installer from the tree of"
+  error "the version you asked for; either one takes this path out of play."
+  fatal "Nothing about your database has been diagnosed. Migrations are already applied, so re-running this installer after fixing the version mismatch is safe."
+fi
+
+if [[ $PREFLIGHT_RC -ne 0 ]]; then
   echo ""
   error "The role in DATABASE_URL is not ready to serve. The report above is the diagnosis: a"
   error "privilege failure names the role and the exact grant to run; a connection failure names"
   error "what the connection attempt returned, which no grant will fix."
+  error "If the report names a check other than the ones below, that image runs more than this gate"
+  error "asked for (--only landed in 1.5.0 and an image older than that ignores it): read the check"
+  error "it named, which is the diagnosis whatever this text expected."
+  error "A role-password failure names a role still carrying the password the baseline migration"
+  error "creates it with, which is a second way into this chain; the migration just run closes"
+  error "that by itself, so reaching it here means it could not."
+  error "A connection-topology failure means DATABASE_URL reaches PostgreSQL through a pooler in"
+  error "transaction mode. Set DATABASE_URL_DIRECT to a connection string that does not, and"
+  error "leave DATABASE_URL where it is."
   error "Migrations are already applied, so re-running this installer after fixing it is safe."
   fatal "Fix what the check reported and re-run."
 fi
@@ -1710,8 +1884,14 @@ mint_platform_key() {
   fi
   chmod 600 "$init_env"
 
+  # `--env-file` is the normalized copy of .env, so NODE_OPTIONS set there
+  # reaches this container, and init.js runs as a bare `node dist/scripts/init.js`
+  # with no permission flags. `-e` overrides `--env-file`, so this clears it for
+  # this call; init.js writes .env, which `--permission` would refuse with an
+  # ERR_ACCESS_DENIED its EROFS/EACCES fallback does not catch.
   init_output=$(docker run --rm \
     --env-file "$init_env" \
+    -e NODE_OPTIONS= \
     --network "${compose_network}" \
     "${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}}" \
     dist/scripts/init.js --non-interactive 2>&1) || true
@@ -1796,7 +1976,7 @@ else
   mint_platform_key || {
     warn "Mint one against the running stack with:"
     warn "  cd ${COMPOSE_DIR} && docker compose run --rm \\"
-    warn "    --entrypoint /nodejs/bin/node agledger-api dist/scripts/init.js --non-interactive"
+    warn "    -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api dist/scripts/init.js --non-interactive"
   }
 fi
 
@@ -1804,23 +1984,54 @@ fi
 
 step "Starting all services"
 
-# `--no-recreate` leaves an existing container alone even when its configuration
-# changed, which is right for a no-op re-run and WRONG the moment this run
-# reconciled something. Without the distinction, `install.sh --fips` against a
-# live stack records AGLEDGER_FIPS=true, adds the overlay, prints "Installation
-# Complete", and leaves the containers running with no OPENSSL_CONF: not FIPS,
-# and nothing reports it, because an ES256 key signs either way. Same shape for
-# a moved host port, a new image pin, or a version bump.
+# Deliberately no `--no-recreate` on any `up` in this step, and nothing here
+# decides for compose. Compose's own recreate decision is the only one that
+# sees every input. It hashes the merged service definition (every `-f`
+# overlay, including the operator's docker-compose.override.yml, and .env both
+# where it interpolates and where it arrives as `env_file`) and compares it
+# with the `com.docker.compose.config-hash` label the running container was
+# created with; separately it compares the image that container runs with the
+# image the ref resolves to now. Either one moving recreates that container,
+# and a container with neither moving is left alone and reports `Running`.
+# `up -d postgres` in the data-store step above relies on the same behaviour.
 #
-# RECONCILE_CHANGES is exactly the set of edits this run made to .env, all of
-# which feed container config. When it is non-empty, drop the flag and let
-# compose do what it already does well: recreate only the containers whose
-# config actually changed.
-UP_FLAGS=(--no-recreate)
-if [[ ${#RECONCILE_CHANGES[@]} -gt 0 ]]; then
-  UP_FLAGS=()
-  info "Applying ${#RECONCILE_CHANGES[@]} configuration change(s) to running containers"
-fi
+# Suppressing it makes this step deaf to every change the run did not itself
+# write into .env, and the banner still prints "Installation Complete":
+#   - An edit to compose/docker-compose.override.yml reaches `docker compose
+#     config` and never reaches a container. That file is the documented
+#     workflow for the SIEM file sink, extra mounts, resource limits and
+#     NODE_OPTIONS, and only its FIRST application lands, because adding it to
+#     COMPOSE_FILE is itself an .env edit while editing it is not.
+#   - `install.sh --fips` against a live stack records AGLEDGER_FIPS=true, adds
+#     the overlay, and leaves the containers with no OPENSSL_CONF: not FIPS,
+#     and nothing reports it, because an ES256 key signs either way.
+#   - Same shape for a moved host port, a new image pin, or a version bump.
+#
+# The flag is not what keeps an idempotent re-run quiet, so dropping it costs
+# nothing: with nothing changed no hash moves, compose recreates nothing and
+# restarts nothing, and a healthy stack is left alone. The containers a re-run
+# does replace are exactly the ones no longer running the configuration on
+# disk.
+#
+# Two inputs are outside the hash, and they need different remedies.
+#
+# A bind-mounted config file (Prometheus, the collector) is one:
+# restart_mounted_config_services below is that half, because the container
+# reads the file from the host on restart.
+#
+# A top-level `configs:` entry with inline `content:` is the other, and a
+# restart does NOT fix it: compose copies the content into the container at
+# create time, so the file is frozen until the container is recreated, and an
+# interpolated value inside that content does not move the service's hash.
+# `metrics_token` in docker-compose.yml is the live instance, which is why a
+# METRICS_AUTH_TOKEN minted by the backfill above left the bundled Prometheus
+# holding the placeholder and 401ing every scrape. The remedy is to put the
+# token back INSIDE the hash so this step's own recreate decision covers it:
+# the backfill reconciles METRICS_TOKEN_FINGERPRINT (a digest of the token)
+# into .env, and the prometheus service carries it as a label, which IS part
+# of the definition compose hashes. So a moved token moves the hash and this
+# `up` recreates that one container, with no --force-recreate anywhere.
+# sync_metrics_token_fingerprint in lib-compose.sh carries the full reasoning.
 
 # On failure, print the container's own log rather than telling the operator to
 # go get it. Compose reports "container is unhealthy" and nothing else, while
@@ -1833,7 +2044,13 @@ fi
 # are asked for as well: `--wait` is satisfied by a container that is merely
 # running whenever the service declares no healthcheck, and a crash-looping
 # container is running between restarts.
-if ! "${COMPOSE[@]}" up -d "${UP_FLAGS[@]+"${UP_FLAGS[@]}"}" agledger-api --wait \
+#
+# The baseline is taken first because the state is one sample: a container that
+# is looping reads `running` whenever the sample lands between deaths, and the
+# restart count taken against this line is what separates that from a container
+# that has been up the whole time.
+capture_compose_restart_baseline agledger-api
+if ! "${COMPOSE[@]}" up -d agledger-api --wait \
    || ! all_compose_services_up agledger-api; then
   error "Failed to start API."
   echo ""
@@ -1866,7 +2083,12 @@ if [[ "$MONITORING_ACTIVE" == true ]]; then
   # what puts the check below over the configuration that is on disk, so a
   # config that does not load fails this install rather than the next one.
   restart_mounted_config_services
-  if ! "${COMPOSE[@]}" --profile monitoring up -d "${UP_FLAGS[@]+"${UP_FLAGS[@]}"}" --wait \
+  # After the restart above, not before it. A user-initiated start zeroes a
+  # container's restart counter, so a baseline taken ahead of
+  # restart_mounted_config_services would sit above everything a loop starting
+  # after it could produce, and the loop would go unreported.
+  capture_compose_restart_baseline "${SECOND_UP_SERVICES[@]}"
+  if ! "${COMPOSE[@]}" --profile monitoring up -d --wait \
      || ! all_compose_services_up "${SECOND_UP_SERVICES[@]}"; then
     error "Failed to start the worker and/or the monitoring stack:"
     echo ""
@@ -1879,7 +2101,8 @@ if [[ "$MONITORING_ACTIVE" == true ]]; then
     fatal "Worker and/or monitoring services did not become healthy."
   fi
 else
-  if ! "${COMPOSE[@]}" up -d "${UP_FLAGS[@]+"${UP_FLAGS[@]}"}" --wait \
+  capture_compose_restart_baseline agledger-worker
+  if ! "${COMPOSE[@]}" up -d --wait \
      || ! all_compose_services_up agledger-worker; then
     error "Failed to start the worker."
     echo ""
@@ -1898,9 +2121,25 @@ info "All services started"
 step "Running preflight checks"
 
 sleep 5
-"${COMPOSE[@]}" exec agledger-api /nodejs/bin/node dist/scripts/preflight.js 2>&1 || {
-  warn "Preflight checks returned warnings (non-fatal). Review output above."
-}
+# preflight exits 0 when everything passed OR when the worst it found was a
+# warning, and 1 only when a check FAILED. A non-zero here is therefore a
+# failing check, and is reported as one.
+#
+# Not fatal, deliberately. The stack is up and the platform key is printed
+# below, and an operator who never sees that key has a worse problem than the
+# one being reported. The exit code at the end of this script carries it
+# instead, which is what a scripted install reads.
+PREFLIGHT_FAILED=false
+# NODE_OPTIONS cleared for the same reason as the earlier run: `exec` inherits
+# the running container's environment, which carries .env.
+"${COMPOSE[@]}" exec -e NODE_OPTIONS= agledger-api /nodejs/bin/node dist/scripts/preflight.js 2>&1 || PREFLIGHT_FAILED=true
+if [[ "$PREFLIGHT_FAILED" == true ]]; then
+  echo ""
+  error "Preflight reported FAILING checks, listed with a ✗ above. These are not warnings:"
+  error "each one names something the Server needs and does not have."
+  error "The stack is running, so fix what the report names and re-run this installer, which is"
+  error "idempotent and will not regenerate any secret it already wrote."
+fi
 
 # --- Summary ---
 
@@ -1942,7 +2181,7 @@ if [[ "$REUSED_PLATFORM_KEY" == true ]] && [[ -n "${PLATFORM_KEY:-}" ]]; then
       warn "Could not mint a replacement. The PLATFORM_API_KEY still in ${ENV_FILE} does not"
       warn "authenticate; replace it with the key this prints:"
       warn "  cd ${COMPOSE_DIR} && docker compose run --rm \\"
-      warn "    --entrypoint /nodejs/bin/node agledger-api dist/scripts/init.js --non-interactive"
+      warn "    -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api dist/scripts/init.js --non-interactive"
     fi
   elif [[ -z "$KEY_PROBE_STATUS" || "$KEY_PROBE_STATUS" == "000" ]]; then
     warn "Could not reach ${API_URL} to confirm the platform API key works. Check it with:"
@@ -2012,11 +2251,17 @@ fi
 
 echo ""
 # The header states the outcome, not the fact that the script reached its last
-# line. With no credential the stack is running and unusable, and a green
-# "Complete" is the wrong first thing to read.
+# line. With no credential the stack is running and unusable; with a failing
+# preflight it is running against a configuration it reports as broken. Either
+# way this script exits non-zero, so a green "Complete" is the wrong first thing
+# to read and the wrong thing to match the exit code against.
 if [[ -z "${PLATFORM_KEY:-}" ]]; then
   echo -e "${RED}=============================================================================${NC}"
   echo -e "${RED}  AGLedger: installed, but NOT usable (no platform API key)${NC}"
+  echo -e "${RED}=============================================================================${NC}"
+elif [[ "${PREFLIGHT_FAILED:-false}" == true ]]; then
+  echo -e "${RED}=============================================================================${NC}"
+  echo -e "${RED}  AGLedger: installed, but preflight reported FAILING checks${NC}"
   echo -e "${RED}=============================================================================${NC}"
 else
   echo -e "${GREEN}=============================================================================${NC}"
@@ -2051,9 +2296,8 @@ if [[ -n "${PLATFORM_KEY:-}" ]]; then
   echo ""
   echo -e "  This key has full admin access. Store it securely."
 else
-  # The absence of this block used to be the only difference between this
-  # banner and a good install's, which made an install with no way in read as
-  # a complete one.
+  # An install with no credential must not read as a complete one, so the
+  # banner says so in place of the key block.
   echo -e "  ${BOLD}${RED}⚠ No platform API key. This install has no credential.${NC}"
   echo ""
   echo -e "    Every /v1 and /admin call needs one, so nothing can be recorded until"
@@ -2061,7 +2305,7 @@ else
   echo -e "    last step, and it runs against what is already running:"
   echo ""
   echo -e "      ${YELLOW}cd ${COMPOSE_DIR} && docker compose run --rm \\\\${NC}"
-  echo -e "      ${YELLOW}  --entrypoint /nodejs/bin/node agledger-api dist/scripts/init.js --non-interactive${NC}"
+  echo -e "      ${YELLOW}  -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api dist/scripts/init.js --non-interactive${NC}"
   echo ""
   echo -e "    It prints the key once. Copy it into PLATFORM_API_KEY in ${ENV_FILE}."
   echo -e "    The [WARN] block earlier in this run carries the init output that explains why."
@@ -2116,7 +2360,7 @@ if [[ -n "$ACTIVE_SIGNING_ALG" && "$ACTIVE_SIGNING_ALG" != "Ed25519" ]]; then
   echo -e "    Ed25519 (webhook signingAlg: ed25519) refuse with an error naming what to use."
   if fips_overlay_enabled; then
     echo -e "    The OpenSSL FIPS provider is active in every container (AGLEDGER_FIPS=true)."
-    echo -e "    Confirm with: docker compose exec agledger-api /nodejs/bin/node -e \\"
+    echo -e "    Confirm with: docker compose exec -e NODE_OPTIONS= agledger-api /nodejs/bin/node -e \\"
     echo -e "      \"console.log(require('crypto').getFips())\"   (1 means active)"
   else
     echo -e "    This Server signs with ES256 but is NOT running the OpenSSL FIPS provider."
@@ -2157,17 +2401,20 @@ if [[ "$ISSUER_IS_LOCALHOST" == true ]]; then
 fi
 
 echo ""
-if [[ -z "${PLATFORM_KEY:-}" ]]; then
+# Matches the opening banner: the same two conditions that make this script exit
+# non-zero close it in red.
+if [[ -z "${PLATFORM_KEY:-}" || "${PREFLIGHT_FAILED:-false}" == true ]]; then
   echo -e "${RED}=============================================================================${NC}"
 else
   echo -e "${GREEN}=============================================================================${NC}"
 fi
 
 # An install that produced no credential is not one an operator or an agent can
-# use, and the exit code is the signal automation reads before it reads any
-# banner. Re-running install.sh is the supported recovery and is idempotent, so
-# a caller that retries on non-zero does the right thing.
-if [[ -z "${PLATFORM_KEY:-}" ]]; then
+# use, and an install whose preflight reported a failing check is not one that
+# is configured. The exit code is the signal automation reads before it reads
+# any banner. Re-running install.sh is the supported recovery and is idempotent,
+# so a caller that retries on non-zero does the right thing.
+if [[ -z "${PLATFORM_KEY:-}" || "${PREFLIGHT_FAILED:-false}" == true ]]; then
   EXIT_ALREADY_EXPLAINED=true
   exit 1
 fi
