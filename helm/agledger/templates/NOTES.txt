@@ -2,11 +2,11 @@ AGLedger has been installed successfully.
 
 {{- /*
   Every curl below is written against $apiBase, so the commands agree with how
-  this release is actually reached. They used to hardcode localhost:3001, which
-  is only a real address in the last branch, where the port-forward creates it:
-  an ingress install printed its real URL once and then ten commands against a
-  port nothing was listening on. 3001 is not the service port either (the
-  service is 80 -> 3000); it is the local end of that port-forward.
+  this release is actually reached. A hardcoded localhost:3001 would be a real
+  address only in the last branch, where the port-forward creates it: an ingress
+  install would print its real URL once and then ten commands against a port
+  nothing is listening on. 3001 is not the service port either (the service is
+  80 -> 3000); it is the local end of that port-forward.
 */ -}}
 {{- $apiBase := printf "http://localhost:3001" -}}
 {{- if (.Values.ingress).enabled }}
@@ -14,6 +14,14 @@ AGLedger has been installed successfully.
   API URL:  https://{{ .host }}
 {{- end }}
 {{- with (first .Values.ingress.hosts) }}{{ $apiBase = printf "https://%s" .host }}{{ end }}
+{{- if (.Values.ingress).allowPlainHttp }}
+
+  This Ingress carries no TLS of its own (ingress.allowPlainHttp is set), so
+  something in front of it has to terminate TLS: a service mesh, or a load
+  balancer holding the certificate. The URL above says https because that is
+  where the Server is reached; the hop from that terminator to this Ingress is
+  plain HTTP, and every API key crosses it.
+{{- end }}
 {{- else if (.Values.route).enabled }}
 {{- if .Values.route.host }}
   API URL:  {{ if ((.Values.route).tls).enabled }}https{{ else }}http{{ end }}://{{ .Values.route.host }}
@@ -41,8 +49,9 @@ Chain issuer: {{ include "agledger.externalUrl" . }}
 
 {{- if (include "agledger.bundledPostgres" .) }}
 Database:   Bundled PostgreSQL
-  Licensed for production under Developer Edition. It has no PITR and no
-  backup of its own; see `backup.cronJob` in values.yaml. An external database
+  The database the free Developer Edition grant covers for production; install a
+  key to license this deployment (https://agledger.ai/register). It has no PITR
+  and no backup of its own; see `backup.cronJob` in values.yaml. An external database
   (RDS/Aurora, Cloud SQL, Azure) brings its provider's point-in-time recovery
   and is the Enterprise path.
 {{- if not .Values.postgres.bundled.storageClassName }}
@@ -77,7 +86,7 @@ Database:   External (configured via DATABASE_URL secret)
 Next steps:
   1. Create a platform API key:
      kubectl exec deploy/{{ include "agledger.fullname" . }}-api -- \
-       /nodejs/bin/node dist/scripts/init.js --non-interactive
+       env NODE_OPTIONS= /nodejs/bin/node dist/scripts/init.js --non-interactive
 
   2. Verify health:
      curl {{ $apiBase }}/health
@@ -159,7 +168,7 @@ Metrics:
   With the Prometheus Operator installed, the chart writes that scrape config
   for you:
     --set monitoring.serviceMonitor.enabled=true
-    --set monitoring.prometheusRule.enabled=true      # the 29 shipped alerts
+    --set monitoring.prometheusRule.enabled=true      # the shipped alert rules
     --set monitoring.grafanaDashboards.enabled=true   # the 3 shipped dashboards
 {{- end }}
 {{- else }}
@@ -173,10 +182,10 @@ Metrics:
 
 Image pin (production hardening):
   Your deployment pulls `{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}` with
-  `pullPolicy: {{ .Values.image.pullPolicy }}`. Kubelet's tag-name cache means a node that
-  previously pulled ANY image under this tag will NOT re-pull on the next
-  deploy: pods can silently boot against stale layers when a tag is
-  re-pushed. For production, pin by content hash:
+  `pullPolicy: {{ .Values.image.pullPolicy }}`. Kubelet's tag-name cache means a node that has
+  already pulled ANY image under this tag will NOT re-pull on the next deploy:
+  pods can silently boot against stale layers when a tag is re-pushed. For
+  production, pin by content hash:
 
     helm upgrade ... \
       --set image.digest="sha256:<digest-from-registry>" \
@@ -190,11 +199,12 @@ Image pin (production hardening):
 
 OpenShift mode is ON:
   The pod-level securityContext is omitted from every pod the chart creates
-  (api, worker, the migrate Job, and on the external-database path the
-  runtime-role gate Job), so the SCC assigns the uid. Non-root now comes
-  from the image's own USER 65532 and, on OpenShift, from restricted-v2 itself.
-  Container hardening is unchanged (read-only root filesystem, no privilege
-  escalation, all capabilities dropped).
+  (api, worker, the migrate Job, the bundled PostgreSQL, the backup CronJob
+  and its pre-upgrade Job, and on the external-database path the runtime-role
+  gate Job), so the SCC assigns the uid and the seccomp profile. Non-root now
+  comes from the image's own USER and, on OpenShift, from restricted-v2
+  itself. Container hardening is unchanged (read-only root filesystem, no
+  privilege escalation, all capabilities dropped).
 {{- if .Values.networkPolicy.enabled }}
 
   The API NetworkPolicy also admits the OpenShift router (the openshift-ingress

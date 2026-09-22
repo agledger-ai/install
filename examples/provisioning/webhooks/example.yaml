@@ -55,7 +55,7 @@ webhooks:
   # Agent-owned webhook for the monitoring agent. `ownerOrgName` disambiguates
   # the agent's displayName within its org.
   #
-  # No eventTypes filter means every event type, but the SCOPE is the agent:
+  # eventTypes ['*'] is every event type, but the SCOPE is the agent:
   # record events reach this subscription only for records that agent is a party
   # to, as principal or as performer. An agent subscribing to its own work is a
   # different thing from an agent receiving everything the org writes, and only
@@ -70,3 +70,4 @@ webhooks:
     ownerOrgName: Acme Corp
     url: https://monitor.example.com/webhooks/agledger
     format: standard
+    eventTypes: ['*']

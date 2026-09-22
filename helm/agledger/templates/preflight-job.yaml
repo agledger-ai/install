@@ -69,11 +69,29 @@ spec:
         - name: preflight
           image: {{ include "agledger.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # Only the two checks that decide whether the runtime role can serve.
-          # The rest of preflight's report is about a running Server (migration
+          # The two checks that decide whether the runtime role can serve, plus
+          # the one that refuses to let a Server start over a database where the
+          # baseline migration's placeholder role password is still live. The
+          # rest of preflight's report is about a running Server (migration
           # state, connection headroom, the federation keys) and belongs to a
           # started stack, not to a gate that has to answer before one exists.
-          command: ["/nodejs/bin/node", "dist/scripts/preflight.js", "--only=runtime-role,pgboss"]
+          #
+          # role-passwords is safe to fail a release on because the migration
+          # Job, at hook weight -5, has already run and closes that password on
+          # every run, including one with no migrations to apply. So an upgrade
+          # of an install that predates that behaviour repairs itself here
+          # rather than aborting; what reaches this gate is a database where the
+          # repair could not be made, which is a credential to the whole chain
+          # standing open and is worth a refusal.
+          #
+          # Carries the permission prefix for the same reason the migration Job
+          # does: this pod reads the top-level `extraEnv`/`extraEnvFrom` (the
+          # lists the api and worker share, not `migrate.extraEnv`), so a
+          # NODE_OPTIONS set there reaches it, and Node refuses
+          # `--allow-fs-write` from a process not started with `--permission`.
+          # Without the prefix the gate would fail at pre-execution and read as
+          # a refused upgrade with no check named. preflight.js only reads.
+          command: ["/nodejs/bin/node", {{ include "agledger.permissionArgs" . }}"dist/scripts/preflight.js", "--only=runtime-role,role-passwords,topology,pgboss"]
           # Deliberately the API's env, not the migration's: this pod has to
           # connect as the role the API will connect as, so it reads
           # DATABASE_URL from the same Secret and never the DATABASE_URL_MIGRATE

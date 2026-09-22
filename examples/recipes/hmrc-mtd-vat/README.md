@@ -92,7 +92,7 @@ receipt.
 
 ## Lessons for implementers
 
-What we learned building and exercising this recipe: the things worth knowing before you adapt it.
+The things worth knowing before you adapt it.
 
 ### The honesty boundary: what this does, and does not, do
 
@@ -119,7 +119,7 @@ same arithmetic (`VAT_TOTAL_VALUE` / `VAT_NET_VALUE`) and everything else, and i
 the recipe holds (in `vat-filing-receipt-v1`), never recomputes. Do not present the gate as
 "AGLedger validated the return to HMRC"; it validated the submission's structural well-formedness.
 
-One mechanical lesson inside the rule: do 2dp money arithmetic with a rounded-difference tolerance
+One mechanical detail inside the rule: do 2dp money arithmetic with a rounded-difference tolerance
 (`abs(a - b) < 0.005`), not `==`, so the float representation of pounds-and-pence does not produce
 spurious failures on well-formed returns (repayment, nil, and fractional-pence cases included).
 

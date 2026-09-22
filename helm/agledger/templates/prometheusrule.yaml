@@ -4,7 +4,111 @@
        Prometheus: templates/../files/alerts is a symlink to deploy/monitoring/
        alerts, so there is one copy of these rules in the repo and the two
        packaging paths cannot drift. The alert-expression coverage test in the
-       API build reads that same path. */}}
+       API build reads that same path.
+
+       The file is parsed rather than emitted verbatim, so an operator can
+       retune a threshold, a severity or a pending duration without forking it.
+       Forking is the failure mode worth avoiding: a forked copy stops tracking
+       the alerts a release adds, and nothing reports that it has fallen behind.
+
+       Every render goes through the parse, including the one with no overrides
+       set. Two paths would mean the shipped default never exercises the walk,
+       and a parse bug would only surface on the installs that configured
+       something. Round-tripping re-serializes the YAML, so key order and
+       string style change; the content does not. */}}
+{{- $pr := ((.Values.monitoring).prometheusRule) }}
+{{- $defaultRunbook := "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md" }}
+{{- $runbookUrl := ($pr.runbookUrl | default $defaultRunbook) }}
+{{- $raw := .Files.Get "files/alerts/agledger.rules.yml" }}
+{{- /* One substitution repoints every alert's runbook_url. The per-alert part
+       is the `#<lowercase alert name>` anchor, which is deliberately left
+       alone: the operator supplies a page carrying the same anchors. */}}
+{{- if contains "#" $runbookUrl }}
+{{- fail (printf "monitoring.prometheusRule.runbookUrl %q carries a fragment. The chart appends #<lowercase alert name> to it for every alert, so a fragment here makes every runbook link land on the page top. Give the page URL alone." $runbookUrl) }}
+{{- end }}
+{{- if ne $runbookUrl $defaultRunbook }}
+{{- $raw = replace $defaultRunbook $runbookUrl $raw }}
+{{- end }}
+{{- $doc := fromYaml $raw }}
+{{- if hasKey $doc "Error" }}
+{{- fail (printf "files/alerts/agledger.rules.yml did not parse as YAML, so the chart cannot apply monitoring.prometheusRule overrides to it: %s" (index $doc "Error")) }}
+{{- end }}
+{{- /* A file that parses to no groups is the same failure as one that does
+       not parse: a PrometheusRule with nothing in it applies cleanly and alerts
+       on nothing. */}}
+{{- if eq (len ($doc.groups | default list)) 0 }}
+{{- fail "files/alerts/agledger.rules.yml parsed but carries no rule groups, so the PrometheusRule would apply cleanly and alert on nothing. The chart's files/alerts symlink must resolve to the shipped rules file." }}
+{{- end }}
+{{- $overrides := ($pr.overrides | default dict) }}
+{{- /* Collect the shipped alert names first, so an override naming one that
+       does not exist is refused BEFORE anything renders. An override that
+       matched nothing would otherwise produce a valid PrometheusRule carrying
+       the shipped threshold, which is the one outcome the operator cannot
+       tell apart from success. */}}
+{{- $known := dict }}
+{{- range $g := ($doc.groups | default list) }}
+{{- range $r := ($g.rules | default list) }}
+{{- if hasKey $r "alert" }}
+{{- $_ := set $known $r.alert true }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $name, $ov := $overrides }}
+{{- if not (hasKey $known $name) }}
+{{- fail (printf "monitoring.prometheusRule.overrides names %q, which is not an alert in the shipped rules file. Alert names are case-sensitive and must match the chart's files/alerts/agledger.rules.yml exactly. Shipped alerts: %s" $name (keys $known | sortAlpha | join ", ")) }}
+{{- end }}
+{{- /* Alertmanager routes on an exact label match, so `Critical` or `page`
+       is an alert that fires and reaches no receiver. Only the three values
+       the shipped routing hook documents are accepted. */}}
+{{- if and $ov (hasKey $ov "severity") }}
+{{- if not (has (index $ov "severity") (list "critical" "warning" "info")) }}
+{{- fail (printf "monitoring.prometheusRule.overrides.%s.severity is %q; it must be critical, warning or info, exactly, because Alertmanager routes on the exact label value" $name (index $ov "severity" | toString)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- /* A customer group that reuses a shipped group name fails rulefmt, and
+       the operator then drops the WHOLE PrometheusRule from the generated
+       config: one colliding name takes every shipped alert off the air. */}}
+{{- range $ag := (default list $pr.additionalGroups) }}
+{{- range $g := ($doc.groups | default list) }}
+{{- if eq (dig "name" "" $ag) $g.name }}
+{{- fail (printf "monitoring.prometheusRule.additionalGroups reuses the shipped group name %q. Prometheus refuses a rules file with a duplicate group name, and the operator then loads none of it. Pick another name." $g.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $groups := list }}
+{{- range $g := ($doc.groups | default list) }}
+{{- $rules := list }}
+{{- range $r := ($g.rules | default list) }}
+{{- $ov := (default dict (index $overrides (dig "alert" "" $r))) }}
+{{- if not (dig "disabled" false $ov) }}
+{{- if hasKey $ov "severity" }}
+{{- $labels := (default dict (index $r "labels")) }}
+{{- $_ := set $labels "severity" (index $ov "severity") }}
+{{- $_ := set $r "labels" $labels }}
+{{- end }}
+{{- if hasKey $ov "for" }}
+{{- $_ := set $r "for" (index $ov "for") }}
+{{- end }}
+{{- /* The values key is camelCase like every other one; the CRD field is
+       snake_case, matching the Prometheus rule-file format it mirrors. */}}
+{{- if hasKey $ov "keepFiringFor" }}
+{{- $_ := set $r "keep_firing_for" (index $ov "keepFiringFor") }}
+{{- end }}
+{{- if hasKey $ov "expr" }}
+{{- $_ := set $r "expr" (index $ov "expr") }}
+{{- end }}
+{{- $rules = append $rules $r }}
+{{- end }}
+{{- end }}
+{{- /* A group whose every rule was disabled is dropped rather than emitted
+       empty: the CRD accepts an empty group and Prometheus evaluates nothing
+       in it, so it reads as coverage that is not there. */}}
+{{- if gt (len $rules) 0 }}
+{{- $_ := set $g "rules" $rules }}
+{{- $groups = append $groups $g }}
+{{- end }}
+{{- end }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -15,5 +119,5 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
-  {{- .Files.Get "files/alerts/agledger.rules.yml" | nindent 2 }}
+  {{- toYaml (dict "groups" (concat $groups (default list $pr.additionalGroups))) | nindent 2 }}
 {{- end }}

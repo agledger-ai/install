@@ -1,0 +1,144 @@
+# IdP trust anchors. One fixed filename: the loader reads `trusted-issuers.yaml`
+# and nothing else, from the provisioning root (here) or from a
+# `trusted-issuers/` subdirectory beside the other four, which is where the Helm
+# chart projects it so a ConfigMap edit can reach a running pod.
+#
+# Each entry is a row in `trusted_issuers`, validated by the same grammar as
+# POST /v1/admin/trusted-issuers, so what the admin API refuses this refuses
+# too. Rows created here carry managed_by = 'provisioning' and are reconciled
+# on every pass: dropping an entry deletes its row, and an entry that has
+# already minted ephemeral certs is reported and skipped instead, because the
+# cert ledger needs the issuer row to stay in place. Editing an entry's
+# expectedAudience or appliesTo, or adding an orgId to a global entry, updates
+# its row in place, so the row keeps its id and its certs. Moving an entry to
+# another org, or removing its orgId, retires the old row and adds a new one.
+#
+# `appliesTo` names which door the anchor serves, and the entries below are one
+# per door:
+#   agent     the cert exchange, POST /v1/auth/oidc/cert
+#   admin     the /v1/admin/* bearer
+#   principal the AGLedger-On-Behalf-Of delegation header
+#   any       all three; this is the default when the key is omitted
+#
+# The issuer URLs here are placeholders that authenticate nobody. Replace them,
+# and the `sub` values under `subjectAllowlist`, with your own before this file
+# does anything. `jwksUri` is spelled out on every entry so a copy of this
+# directory loads with no network call; omit it and the loader runs OIDC
+# discovery against the issuer on every pass, so a moved jwks_uri is picked up
+# on reload. An IdP this Server cannot reach refuses a new entry for that pass,
+# reported in the pass errors. An entry that already has a row keeps its stored
+# jwks_uri, every other field it declares is applied (so `enabled: false`
+# still takes effect), and the pass reports a warning. The rest of the file
+# still applies.
+
+trusted_issuers:
+  # --- Admin SSO (Mode 1): the operator's own IdP bearer on /v1/admin/*.
+  # No orgId, so this is a global anchor: it serves the cross-org `platform`
+  # role, and a Server running a single Org binds `admin` bearers through it
+  # too. Register a second entry with an explicit orgId when you want admin
+  # bearers bound to one named Org.
+  - issuerUrl: https://idp.example.com/
+    expectedAudience: agledger
+    appliesTo: admin
+    orgId: null
+    jwksUri: https://idp.example.com/.well-known/jwks.json
+    label: Corporate SSO (operators)
+    claimMapping:
+      # Which IdP claim carries the AGLedger role. The mapped value has to
+      # resolve to `platform` or `admin`; anything else falls through to
+      # API-key auth and the request answers a bare 401 "Missing API key".
+      role: agledger_role
+      # Which claim projects the scopes. Once this mapping exists, a token
+      # with no scope claim gets the EMPTY set, not the default profile.
+      scopes: agledger_scopes
+    # Set expectedAzp when the IdP puts more than one value in `aud`. Keycloak
+    # adds `account` by default and Auth0 adds the userinfo audience for a
+    # custom API; Entra ID access tokens are single-audience. A multi-audience bearer against
+    # a row with no expectedAzp is refused as `misconfigured_issuer` on every
+    # door, with the row and the missing field named in the 401 body.
+    #
+    # expectedAzp: agledger-admin-client
+    #
+    # Accept each bearer's token id once, across every replica. Set it when the
+    # client mints a token per request, such as a per-call client_credentials
+    # grant against Okta or Keycloak. Leave it false for a polling dashboard
+    # holding one token for a session, for a grant metered per month, and for a
+    # projected Kubernetes service-account token: the kubelet rewrites that
+    # file only at 80% of its TTL (about 48 minutes on the 1h default), so a
+    # pod re-presents one token for that whole window and it is a reusable
+    # bearer, not a per-request one.
+    #
+    # The id is the `jti` claim, or the claim named under the claimMapping
+    # logical name `jti`; the standard `jti` wins when the token carries both.
+    # Okta and Keycloak mint `jti` by default. Entra ID mints none and cannot
+    # be configured to; it mints `uti`, so an Entra row adds `jti: uti` to
+    # claimMapping above. Auth0's default access-token profile mints neither:
+    # switch that API to the RFC 9068 profile, or leave this false. A Google
+    # service-account ID token has no per-token id at all and cannot be made
+    # single use.
+    #
+    # This flag governs the admin bearer alone, but the id it reads is shared.
+    # POST /v1/auth/oidc/cert is single use per token id whatever this says,
+    # and resolves the id the same way, so a `jti` entry in claimMapping makes
+    # that door single use per the mapped claim too. A token with no id is
+    # exchangeable repeatedly there; an empty resolved id is refused with 400.
+    #
+    # A second presentation is 401 `reason: jti_replayed`; an empty or
+    # over-512-character id is 401 `reason: jti_unregistrable`. A token with no
+    # id is admitted every time even with this set, which is the flag doing
+    # nothing: each such admission increments
+    # agledger_oidc_admin_jti_unenforceable_total and the engine logs one WARN
+    # per row per process naming the fix.
+    jtiSingleUse: false
+    # The exact `sub` values this row admits, compared character for character.
+    # Omit the key, or write null, to admit every subject the IdP will issue a
+    # token for. On this door the subject compared is the admin bearer's own
+    # `sub`. A verified token whose subject is not listed is refused with 401
+    # and `reason: subject_not_allowlisted`, and that refusal is final: no
+    # sibling row without a list admits the subject this one refused.
+    #
+    # subjectAllowlist:
+    #   - svc-agledger-admin@corp.example.com
+
+  # --- Delegated on-behalf-of (RFC 8693): the token sent in the
+  # AGLedger-On-Behalf-Of header beside the caller's own credential.
+  # The subject compared against subjectAllowlist here is the delegation
+  # token's own `sub`, the principal the work is done FOR, never the actor in
+  # `act.sub`. Delegation tokens are never deduplicated, so jtiSingleUse has no
+  # effect on this door.
+  - issuerUrl: https://idp.example.com/
+    expectedAudience: agledger
+    appliesTo: principal
+    orgId: null
+    jwksUri: https://idp.example.com/.well-known/jwks.json
+    label: Corporate SSO (delegating principals)
+
+  # --- Agent workload identity (Mode 2): the cert exchange.
+  # Commented out because autoProvisionAgents requires a real orgId and the org
+  # ids in this directory are generated at reconcile time, so there is no UUID
+  # here that would resolve. Paste the id of the org this fleet belongs to
+  # (GET /v1/admin/orgs, or GET /v1/auth/me for your own) and uncomment.
+  #
+  # - issuerUrl: https://login.microsoftonline.com/TENANT/v2.0
+  #   expectedAudience: agledger
+  #   appliesTo: agent
+  #   orgId: 018f2b6c-1234-7abc-8def-0123456789ab
+  #   jwksUri: https://login.microsoftonline.com/TENANT/discovery/v2.0/keys
+  #   label: Azure workload identity
+  #   claimMapping:
+  #     scopes: agledger_scopes
+  #   maxCredentialTtlSeconds: 600
+  #   # Create an agent on first exchange for a subject we have not seen.
+  #   # Requires orgId: a global row names an IdP but no tenant, so there is no
+  #   # answer to which org a new agent would belong to.
+  #   autoProvisionAgents: true
+  #   autoProvisionScopeProfile: agent-full
+  #   autoProvisionMaxAgents: 50
+  #   # With autoProvisionAgents on, this list is what stops an IdP-side
+  #   # assignment mistake from creating an agent here. The subject compared is
+  #   # the exchanging workload's `sub`. Narrowing it stops the NEXT exchange
+  #   # and does not revoke certs already minted, which run to their own
+  #   # expiresAt; POST /v1/admin/trusted-issuers/{id}/revoke-certs ends the
+  #   # live ones.
+  #   subjectAllowlist:
+  #     - 11111111-2222-3333-4444-555555555555

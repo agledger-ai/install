@@ -29,9 +29,30 @@
 #   Set AGLEDGER_REQUIRE_VERIFY for production and in CI: it is what makes
 #   verification mandatory rather than best-effort.
 #
+# Air-gapped and mirrored installs:
+#   --chart and --image point this script at your own copies, so the guided path
+#   works inside an enclave. --chart also takes a local .tgz, which is what
+#   `helm pull` produces on the connected side.
+#     --chart ./agledger-chart-X.Y.Z.tgz --image registry.internal/agledger --version X.Y.Z
+#   The chart runs three more images with their own values; pass them through:
+#     --set postgres.bundled.image=... --set backup.image=... --set tests.image=...
+#   Signatures are on Docker Hub and nowhere else, so a mirrored chart or image
+#   cannot be checked here. Verify the release on the connected side, or offline
+#   from the carried bundle with scripts/verify-release.sh, before mirroring it.
+#
 set -euo pipefail
 
-CHART="oci://registry-1.docker.io/agledger/agledger-chart"
+# Where the chart and the image come from. Both are overridable so a mirror can
+# serve them; both default to Docker Hub, which is the only place the release
+# signatures live, so the defaults are also what "verifiable" means below.
+#
+# AGLEDGER_HELM_IMAGE, not AGLEDGER_IMAGE: that name is the Compose stack's
+# image in .env and in install.sh, and a shell that had exported it for a
+# Compose install would silently put this script on a mirror it never named.
+DEFAULT_CHART="oci://registry-1.docker.io/agledger/agledger-chart"
+DEFAULT_IMAGE_REPO="agledger/agledger"
+CHART="${AGLEDGER_HELM_CHART:-$DEFAULT_CHART}"
+IMAGE_REPO="${AGLEDGER_HELM_IMAGE:-$DEFAULT_IMAGE_REPO}"
 RELEASE="agledger"
 NAMESPACE="default"
 DB_URL=""
@@ -94,6 +115,12 @@ usage() {
                           when the version cannot be resolved from Docker Hub.
                           Omitted on an existing release, the run stays on the
                           version that release's own revisions name.
+    --chart <ref>         Chart to install (default: the Docker Hub OCI chart).
+                          Takes an oci:// reference on your own registry, or a
+                          local agledger-chart-X.Y.Z.tgz from `helm pull`.
+    --image <repo>        Image repository (default: agledger/agledger). Point
+                          it at your mirror; pass --version too, so the mirror's
+                          tag is the one the chart runs.
     --marketplace <id>    AWS Marketplace product id
     --ca-cert <path>      Database TLS root CA inside the container
                           (default: /etc/ssl/certs/rds-global-bundle.pem).
@@ -117,6 +144,13 @@ usage() {
     AGLEDGER_REQUIRE_VERIFY=true    refuse to install when signatures cannot
                                     be checked. Set this in production and CI.
     AGLEDGER_SIGNING_ALGORITHM      ed25519 (default) or es256 for FIPS hosts.
+    AGLEDGER_HELM_CHART             same as --chart.
+    AGLEDGER_HELM_IMAGE             same as --image.
+
+  Air-gapped: point --chart and --image at your enclave's copies. The release
+  signatures are on Docker Hub, so neither can be checked from in there; verify
+  on the connected side, or offline against the release's carried bundle with
+  scripts/verify-release.sh, before mirroring.
 
   Verify before running (each release publishes both files):
     R=https://github.com/agledger-ai/install/releases/latest/download
@@ -129,10 +163,10 @@ USAGE
 
 # The advertised entry point is `curl ... | bash`, where the script's own source
 # IS stdin. A bare `read` there consumes the next LINE OF THE SCRIPT as the
-# operator's answer, and bash then parses the wreckage: the first prompt below
-# used to swallow its own `case` statement and die on `syntax error near
-# unexpected token ')'`, which reads like a truncated download rather than a
-# script that cannot prompt.
+# operator's answer, and bash then parses the wreckage: a prompt below would
+# swallow its own `case` statement and die on `syntax error near unexpected
+# token ')'`, which reads like a truncated download rather than a script that
+# cannot prompt.
 #
 # So prompts go to the controlling terminal, and where there is no terminal
 # (CI, cron, a piped run with no tty) we take the default the prompt already
@@ -189,6 +223,8 @@ while [[ $# -gt 0 ]]; do
     --marketplace)  EXTRA_ARGS+=(--set "marketplace.productId=$2"); shift 2 ;;
     --ca-cert)      CA_CERT="$2"; shift 2 ;;
     --no-ca-cert)   CA_CERT="none"; shift ;;
+    --chart)        CHART="$2"; shift 2 ;;
+    --image)        IMAGE_REPO="$2"; shift 2 ;;
     --skip-verify)  export AGLEDGER_SKIP_VERIFY=true; shift ;;
     *)              EXTRA_ARGS+=("$1"); shift ;;
   esac
@@ -274,8 +310,8 @@ fi
 # to an operator's `-f` that `--set` had, so values-file behaviour does not
 # change. It does NOT keep the same standing relative to their `--set`, which is
 # what `operator_named` above exists to handle. It also sidesteps `--set` value
-# parsing, which splits on commas: a database password containing one used to be
-# truncated silently.
+# parsing, which splits on commas and would silently truncate a database
+# password containing one.
 #
 # Created here rather than at the first write because the release-values
 # snapshot below lands in it, and that snapshot can carry a database password.
@@ -500,7 +536,13 @@ fi
 # install: an existing release either adopted a version off its own revisions
 # above, or this script already refused rather than reach here with VERSION
 # still empty.
-if [[ -z "$VERSION" ]] && [[ "${AGLEDGER_SKIP_VERIFY:-false}" != "true" ]]; then
+#
+# Not attempted against a mirrored chart: the tag list comes from Docker Hub,
+# and an enclave that cannot reach it would wait out the timeout to learn a
+# version its own registry may not even carry. There the operator names it.
+if [[ -z "$VERSION" ]] && [[ "$CHART" != "$DEFAULT_CHART" ]]; then
+  info "Chart is not the Docker Hub one, so no version was resolved from it. Pass --version X.Y.Z to pin the image tag."
+elif [[ -z "$VERSION" ]] && [[ "${AGLEDGER_SKIP_VERIFY:-false}" != "true" ]]; then
   if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     # `|| true`: under `set -euo pipefail` a no-match `grep` would otherwise abort
     # the whole script instead of falling through to the graceful message below.
@@ -521,15 +563,49 @@ fi
 # Verify the chart and the image before installing / running them.
 # Resolve the image to a digest and verify THAT (not the mutable tag), so the
 # keygen pod below runs exactly the bytes we verified — no verify-then-repoint gap.
-IMG_REF="agledger/agledger${VERSION:+:$VERSION}"
+IMG_REF="${IMAGE_REPO}${VERSION:+:$VERSION}"
+
+# A release signature is an OCI referrer on Docker Hub. `helm pull` writes a
+# .tgz that carries none, and every way of copying an image to a mirror drops
+# them except `oras cp -r`, so a mirrored artifact cannot be checked here.
+#
+# The two are judged separately. Overriding one does not make the other
+# unverifiable, and treating them as one flag meant `--image <mirror>` silently
+# stopped checking the Docker Hub chart it was still installing.
+CHART_MIRRORED=false
+IMAGE_MIRRORED=false
+[[ "$CHART" != "$DEFAULT_CHART" ]] && CHART_MIRRORED=true
+[[ "$IMAGE_REPO" != "$DEFAULT_IMAGE_REPO" ]] && IMAGE_MIRRORED=true
+
+if [[ "$CHART_MIRRORED" == true || "$IMAGE_MIRRORED" == true ]] \
+   && [[ "${AGLEDGER_REQUIRE_VERIFY:-false}" == "true" ]]; then
+  MIRRORED_WHAT="chart ${CHART}"
+  [[ "$CHART_MIRRORED" == true && "$IMAGE_MIRRORED" == true ]] && MIRRORED_WHAT="chart ${CHART} and image ${IMAGE_REPO}"
+  [[ "$CHART_MIRRORED" == false ]] && MIRRORED_WHAT="image ${IMAGE_REPO}"
+  echo "  [!] AGLEDGER_REQUIRE_VERIFY=true, and this run installs a mirrored ${MIRRORED_WHAT}," >&2
+  echo "  [!] which carries no release signature to check." >&2
+  echo "  [!] Verify the release first, offline from its carried bundle:" >&2
+  echo "  [!]   ./scripts/verify-release.sh --version <X.Y.Z> --image ${IMAGE_REPO} --bundle-dir <dir>" >&2
+  fatal "Then re-run without AGLEDGER_REQUIRE_VERIFY; this run will say that it verified nothing."
+fi
+
 if [[ -n "$VERSION" ]]; then
-  verify_ref "registry-1.docker.io/agledger/agledger-chart:$VERSION" "Helm chart"
-  IMG_DIGEST=$(resolve_dockerhub_digest agledger/agledger "$VERSION")
-  if [[ "${IMG_DIGEST:-}" == sha256:* ]]; then
-    verify_ref "registry-1.docker.io/agledger/agledger@$IMG_DIGEST" "container image"
-    IMG_REF="agledger/agledger@$IMG_DIGEST"
+  if [[ "$CHART_MIRRORED" == true ]]; then
+    info "Chart ${CHART} is not the signed Docker Hub chart. NOTHING VERIFIES IT on this run."
   else
-    verify_ref "registry-1.docker.io/agledger/agledger:$VERSION" "container image"
+    verify_ref "registry-1.docker.io/agledger/agledger-chart:$VERSION" "Helm chart"
+  fi
+  if [[ "$IMAGE_MIRRORED" == true ]]; then
+    info "Image ${IMAGE_REPO} is a mirror, and the release signature does not travel with one."
+    info "NOTHING VERIFIES IT on this run. Check it with scripts/verify-release.sh."
+  else
+    IMG_DIGEST=$(resolve_dockerhub_digest agledger/agledger "$VERSION")
+    if [[ "${IMG_DIGEST:-}" == sha256:* ]]; then
+      verify_ref "registry-1.docker.io/agledger/agledger@$IMG_DIGEST" "container image"
+      IMG_REF="agledger/agledger@$IMG_DIGEST"
+    else
+      verify_ref "registry-1.docker.io/agledger/agledger:$VERSION" "container image"
+    fi
   fi
 elif [[ "${AGLEDGER_SKIP_VERIFY:-false}" != "true" ]] && [[ "${AGLEDGER_REQUIRE_VERIFY:-false}" == "true" ]]; then
   fatal "AGLEDGER_REQUIRE_VERIFY=true but no concrete version to verify. Pass --version X.Y.Z."
@@ -909,9 +985,9 @@ if [[ -n "$EXTERNAL_URL" ]]; then
   printf '%s' "$EXTERNAL_URL" > "${SECRET_DIR}/external-url"
 fi
 
-# Build the helm command as an ARRAY and run it directly. It used to be a string
-# run through `eval`, where the pass-through arguments this script advertises
-# were re-parsed as shell a second time.
+# Build the helm command as an ARRAY and run it directly, never as a string
+# through `eval`: eval re-parses the pass-through arguments this script
+# advertises as shell a second time.
 #
 # `upgrade --install`, not `install`: `helm install` refuses a name that is
 # already in use, so correcting one value meant `helm uninstall` first, which on
@@ -959,7 +1035,20 @@ if [[ "$IS_OPENSHIFT" == true ]]; then
   fi
 fi
 
-[[ -n "$VERSION" ]] && HELM_CMD+=(--version "$VERSION")
+# `--version` selects a version from a repository, and a local .tgz IS the
+# version, so helm refuses the two together. A mirrored chart may be either.
+if [[ -n "$VERSION" ]] && [[ ! -e "$CHART" ]]; then
+  HELM_CMD+=(--version "$VERSION")
+fi
+
+# A mirrored image has to be named in the values too: the chart's own default is
+# agledger/agledger on Docker Hub, and an enclave cannot reach it. The tag comes
+# from --version, so without one the chart stays on its appVersion, which is the
+# right answer for a mirror that copied the release under its own version.
+if [[ "$IMAGE_REPO" != "$DEFAULT_IMAGE_REPO" ]]; then
+  HELM_CMD+=(--set "image.repository=${IMAGE_REPO}")
+  [[ -n "$VERSION" ]] && HELM_CMD+=(--set "image.tag=${VERSION}")
+fi
 
 # DB_URL first, in the same order the database decision above announces it:
 # `--bundled --db <url>` in one run prints "Using external database" up there,
@@ -1254,7 +1343,7 @@ fi
 echo ""
 echo "  Next steps:"
 echo "    1. Create platform API key:"
-echo "       kubectl exec $API_DEPLOY -n $NAMESPACE -- /nodejs/bin/node dist/scripts/init.js --non-interactive"
+echo "       kubectl exec $API_DEPLOY -n $NAMESPACE -- env NODE_OPTIONS= /nodejs/bin/node dist/scripts/init.js --non-interactive"
 echo ""
 echo "    2. Port-forward to access API:"
 echo "       kubectl port-forward ${API_SVC:-svc/<name from: kubectl get svc -n $NAMESPACE>} -n $NAMESPACE 3001:80"

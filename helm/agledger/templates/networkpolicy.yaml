@@ -1,4 +1,37 @@
 {{- include "agledger.validateValues" . -}}
+{{- /* Egress for the OTLP collector named by config.otelExporterOtlpEndpoint.
+       The endpoint is a DNS name and a NetworkPolicy cannot select by name, so
+       the entry admits any pod in the cluster on the endpoint's port (the URL's
+       own, else 443 for https and 4318 for http). Without it the exporters
+       time out at the network layer and nothing says why. A collector outside
+       the cluster, on a private address or on a public one at any port but
+       443, needs an ipBlock entry of your own.
+
+       The port is read with urlParse rather than a regex so an IPv6 literal,
+       a userinfo segment or a trailing path cannot shift it, and a value the
+       parser cannot read fails the render: `ports[].port` takes a name as well
+       as a number, so a string that is not a port would render clean and be
+       refused by the apiserver at install time instead. */}}
+{{- define "agledger.otlpEgress" -}}
+{{- with (trim (.Values.config.otelExporterOtlpEndpoint | toString)) }}
+{{- $u := urlParse . }}
+{{- $scheme := lower (default "" $u.scheme) }}
+{{- $host := default "" $u.host }}
+{{- if or (not (has $scheme (list "http" "https"))) (eq $host "") }}
+{{- fail (printf "config.otelExporterOtlpEndpoint %q is not an http:// or https:// URL with a host, so the chart cannot open egress to it" .) }}
+{{- end }}
+{{- $port := regexReplaceAll "^.*:([0-9]+)$" $host "${1}" }}
+{{- if or (eq $port $host) (not (regexMatch "^[0-9]+$" $port)) }}
+{{- $port = ternary "443" "4318" (eq $scheme "https") }}
+{{- end }}
+    # OTLP export (config.otelExporterOtlpEndpoint)
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: {{ $port }}
+          protocol: TCP
+{{- end }}
+{{- end }}
 {{- if .Values.networkPolicy.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -122,6 +155,7 @@ spec:
       ports:
         - port: 443
           protocol: TCP
+    {{- include "agledger.otlpEgress" . }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -182,4 +216,60 @@ spec:
       ports:
         - port: 443
           protocol: TCP
+    {{- include "agledger.otlpEgress" . }}
+{{- if (include "agledger.bundledPostgres" .) }}
+---
+{{- /*
+  The other end of the two egress rules above. Without a policy selecting the
+  database pod itself, the two policies above bound only who may LEAVE the api
+  and worker pods: every other pod in the namespace, and in a cluster with no
+  default-deny, every pod in the cluster, still reaches port 5432 directly. The
+  bundled Postgres holds the whole chain and its password is in a Secret those
+  pods cannot read, but a database reachable by anything is a database one
+  compromised sidecar away.
+
+  Selecting a pod with an Ingress policy is itself the default-deny for that
+  pod: everything not listed below is refused, so this needs no explicit deny
+  rule. Egress is deliberately not declared. Postgres initiates nothing here,
+  and declaring the type with no rules would also cut its DNS.
+
+  Both probes are `exec`, so the kubelet needs no network path in.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agledger.fullname" . }}-postgres
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agledger.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- /* Every workload in this release that opens a database connection, by
+           the component label each one carries: the two Deployments, the
+           migration Job, and the backup CronJob and its manual-run Job. A peer
+           with only a podSelector means "in this policy's own namespace", which
+           is where the whole release lives.
+
+           `preflight` is listed for completeness and matches nothing here: that
+           Job renders on the external-database path only, and this policy
+           renders only for the bundled one, so the two never coexist. It costs
+           nothing (a selector matching no pod admits no pod) and keeps the list
+           true if that Job ever reaches this path. */}}
+    - from:
+        {{- range (list "api" "worker" "migrate" "preflight" "backup") }}
+        - podSelector:
+            matchLabels:
+              {{- include "agledger.selectorLabels" $ | nindent 14 }}
+              app.kubernetes.io/component: {{ . }}
+        {{- end }}
+      ports:
+        - port: 5432
+          protocol: TCP
+{{- end }}
 {{- end }}

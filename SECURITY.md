@@ -2,66 +2,33 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in AGLedger, report it privately. Do not open a public GitHub issue.
+Report privately. Do not open a public GitHub issue.
 
-Email **security@agledger.ai** with:
+- Email **security@agledger.ai**, or
+- Use GitHub private vulnerability reporting on the public install repository:
+  [Report a vulnerability](https://github.com/agledger-ai/install/security/advisories/new).
 
-- A description of the vulnerability
-- Steps to reproduce
-- Impact assessment: what an attacker could achieve
-- Affected components (services, endpoints, configurations)
-- Environment details: version, deployment method (Compose or Helm), OS, relevant configuration
-- Proof of concept: screenshots, logs, or code snippets, if available
+Please include the affected component and version (and image digest, if applicable), what an
+attacker could achieve, steps to reproduce, and your deployment details (version, deployment
+method, OS, relevant configuration). If a report is sensitive enough that you do not want the
+detail sitting in plain email, say so in your first message and we will agree an encrypted
+channel with you before you send it.
 
-If the report is sensitive enough that you do not want the details sitting in plain email, say so
-in your first message to **security@agledger.ai** and we will agree an encrypted channel before you
-send them.
+Scope, the safe harbor for good-faith security research, and the coordinated disclosure timeline
+are published in the AGLedger Coordinated Vulnerability Disclosure Policy at
+<https://agledger.ai/security>. That page is the policy. This file describes how releases are
+built, scanned and verified.
 
-## Severity and Response
+## Supported Versions
 
-We acknowledge a report promptly and give you an initial assessment as soon as practicable. There
-is no fixed clock on those two steps, and we would rather say that than publish a number we cannot
-hold to.
-
-A **Security Fix** is a remediation for a vulnerability rated Critical or High under CVSS. Those two
-severities carry the release targets stated in the Support Terms:
-
-| Severity | Definition | Release target |
-|---|---|---|
-| Critical (CVSS 9.0+) | Immediate risk of data breach, auth bypass, or RCE | 7 days |
-| High (CVSS 7.0-8.9) | Significant risk requiring prompt attention | 30 days |
-
-These are targets pursued with commercially reasonable effort, not guarantees. Medium and Low
-findings are fixed in an ordinary release rather than as a Security Fix, and carry no target date.
-
-**Supported Versions** are the current major version and one prior major version (N and N-1), as
-the Support Terms define them, so a deployment does not fall out of the window by being some point
-releases behind. The declared **Security Update Support Period** for the Licensed Software is not
-less than sixty (60) months from first delivery under an Order Form, or longer where an Order Form
-says so.
+Supported Versions are the current major version and one prior major version (N and N-1), as
+defined in the Support Terms. The Security Update Support Period, and what each edition is
+contractually owed, are stated in the Software License Agreement published at
+<https://agledger.ai/license> (sections 6.2 and 6.4) and in the Support Terms.
 
 A Security Fix ships as an ordinary signed release: the image on Docker Hub and the artifacts on
 the public GitHub Releases page, neither of which is authenticated or entitlement-gated. There is
-no separate security channel to be enrolled in. What each edition is contractually owed is in the
-Software License Agreement (§ 6.2) and the Support Terms (§ 5); this file describes how fixes are
-built, scanned and published, not who is owed them.
-
-Our coordinated vulnerability disclosure policy asks for a 90-day window: please do not disclose
-publicly before a fix is available or 90 days have passed, whichever comes first. For anything under
-active exploitation we move faster and coordinate an accelerated timeline with you, and we are glad
-to coordinate CVE assignment and a joint disclosure.
-
-You will be kept informed of progress and credited in the advisory unless you ask to remain anonymous.
-
-## Safe Harbor
-
-AGLedger supports good-faith security research. We will not pursue legal action against researchers who:
-
-- Avoid privacy violations, data destruction, and service disruption
-- Interact only with their own accounts or accounts they have permission to test
-- Do not exploit a vulnerability beyond what is necessary to demonstrate it
-- Report promptly and do not disclose publicly before a fix ships
-- Do not seek financial gain beyond any bug bounty offered
+no separate security channel to be enrolled in.
 
 ## Data Sovereignty
 
@@ -70,16 +37,85 @@ AGLedger is self-hosted. All application data (records, receipts, audit logs, AP
 Outbound network access is required only for:
 
 - Pulling Docker images during install and upgrade
-- Sending a support bundle to `support.agledger.ai` (`AGLEDGER_SUPPORT_BUNDLE_URL`), and only when you explicitly upload one via `POST /v1/admin/support-bundle/upload`. `./scripts/support-bundle.sh` writes a local tarball and sends nothing
+- Sending a support bundle, and only on a deployment where you have set `AGLEDGER_SUPPORT_BUNDLE_URL` to an upload target of your own and then upload one via `POST /v1/admin/support-bundle/upload`. That variable has no default, so with it unset nothing is ever uploaded. The documented path is `./scripts/support-bundle.sh`, which makes no network call: it writes a local tarball you review and send to support@agledger.ai
+- Destinations you configure yourself, each off until you set it: webhook receivers, federation peers, your IdP's discovery and JWKS endpoints, the S3 bucket external anchors are written to, the SIEM collector, and an OTLP collector for telemetry export
 - Checking your marketplace entitlement, on a marketplace install only. Setting `AWS_MARKETPLACE_PRODUCT_ID` turns on an AWS License Manager `CheckoutLicense` call every 15 minutes. Startup and `POST /v1/admin/license/reload` reach that same call only when you have configured no license key of your own, because a key you hold is read first and settles the tier locally with no network at all. The call goes to AWS, not to AGLedger, and carries no record, agent, or usage data: the request names the product, a key fingerprint, and a count of one. It fails open, so an unreachable entitlement service never blocks or degrades anything. Leave the variable unset and no such call is ever made
 
 For restricted-network deployments, pull images into an internal registry and pass `--image` to `install.sh`. See [air-gap/README.md](air-gap/README.md).
 
+## Data retention and erasure
+
+The engine runs no retention job over the chain, and there is no retention knob.
+`audit_vault`, `events`, `webhook_deliveries` and `system_audit_log` are range-partitioned by
+month. Partitions are created ahead of the clock and nothing detaches or drops one, so those
+tables grow for the life of the install. Sizing and archival are yours: snapshot, back up or
+detach partitions with your own tooling. `audit_vault` refuses a row `DELETE` or `UPDATE`
+outright, and a `TRUNCATE` or a partition drop is refused unless the session sets
+`agledger.allow_audit_drop`, so an accidental prune is not available either. The partition-drop
+half of that guard is a `sql_drop` event trigger, which Postgres only lets a superuser create: on
+a managed database whose migrate role has no superuser-equivalent grant, it is absent and the
+row-level and `TRUNCATE` guards are what remain.
+
+There is no erasure endpoint. A record, its chain entries and its events cannot be deleted
+through the API.
+
+Scheduled sweeps delete only short-lived operational rows. None of them carries record content:
+
+| Table | What the sweep removes |
+|---|---|
+| `idempotency_keys` | expired keys, plus in-flight claims a crashed request left behind |
+| `oidc_consumed_jtis` | rows whose admin bearer token has expired |
+| `rate_limits` | expired windows, and only when `RATE_LIMIT_STORE=postgresql` |
+| `federation_nonces` | replay-protection nonces past their window |
+| `federation_idempotency` | the peer request/response cache past its window |
+| pg-boss job tables | completed jobs, under pg-boss's own retention |
+
+Webhook signing secrets are a column rather than a row: the rotation sweep clears
+`previous_secret` once the grace window closes.
+
+## Encrypted mode: what is sealed, and what destroying the key does
+
+Encrypted mode (`operatingMode: "encrypted"` on a record) seals completion evidence under a key
+you hold. The Server holds no decryption key and no key material for it. Your writer encrypts
+before submission; the envelope's `kid` is your own label for the key, stored as given and never
+resolved against anything.
+
+| Field | Encrypted mode | What the Server holds |
+|---|---|---|
+| Completion `evidence` | Sealed | The AES-256-GCM envelope as submitted. `enc`, `iv` and `tag` are stored and served verbatim and the Server never decrypts them. `kid` is the writer's own key label, stored as given. |
+| `evidenceHash` | Plaintext | The writer's SHA-256 over the cleartext, signed into the COMPLETION_SUBMITTED chain entry. It binds the sealed bytes to what the principal verdicted on. |
+| `evidence.declaredContext` | Plaintext | The envelope-to-record binding, signed into the chain entry so an auditor can check it offline. |
+| `criteria` | Plaintext | Server-readable by design: tolerance evaluation, `?criteria[key]=` search and the signed payload of every record-state chain entry all carry it verbatim. To keep a criteria value off the Server, commit to it off-record and store a hash. |
+| `humanOversight` | Plaintext | Free-form text, stored and served as written. It stays intra-org: no federation projection carries it. |
+| `metadata` | Plaintext | Unsigned annotation, served as written and never carried in the signed chain payload. |
+| `orgId`, `principalAgentId`, `performerAgentId` | Plaintext | The identity attestation. Signed into the chain and used for authorization, so encryption never covers it. |
+| `type`, `contractVersion`, `platform` | Plaintext | The registered Type the record was written against. Encrypted mode skips completion-schema validation but still records which Type was claimed. |
+| Timestamps and chain position | Plaintext | The time and order attestations: `createdAt`, the per-transition times, and each chain entry's position and hash links. |
+| `status`, `verdict`, Settlement Signal | Plaintext | The acceptance attestation. The principal decrypts off-server and renders the verdict; what lands on the chain is the decision, never the evidence it was based on. |
+
+The federation projection is narrower than any of it: a peer receives no evidence at all, sealed
+or otherwise, and `criteria` crosses as `{}`.
+
+Destroying your key renders the sealed evidence unreadable. Nothing on the Server changes,
+because the Server never held the key, and the observable result is:
+
+- Reads keep succeeding. The completion endpoints and `GET /v1/records/{id}/audit-export?evidence=true`
+  return 200 with the envelope verbatim. No read fails, and no read returns cleartext.
+- The chain entry, its hash and its signature stay verifiable. `chainIntegrity` stays `true`,
+  `integrityLevel` and `signatureCoverage` are unchanged, and the audit export stays complete.
+  The chain commits to `evidenceHash`, `declaredContext` and the state transitions, never to the
+  ciphertext and never to the cleartext.
+- Everything in the Plaintext column above stays readable, `criteria` included.
+- What is lost is re-binding. `verificationGuide.evidenceBinding` tells a verifier to re-derive
+  `evidenceHash` from the cleartext, and with the key gone nobody can produce that cleartext. The
+  signed hash remains, so the record still attests that evidence with that digest existed and was
+  accepted or rejected at that position in the chain.
+
 ## What we build and scan
 
 **OpenSSF-aligned supply chain.** SLSA Build L3 provenance, Sigstore keyless
-signing, and SBOM + OpenVEX + malware-scan attestations, all verifiable offline
-with no repository access.
+signing, and SBOM + OpenVEX + malware-scan attestations, all verifiable with no
+repository access and no AGLedger-hosted endpoint.
 
 Every release is built by GitHub Actions, and **no signing key exists on any build
 machine.** Trust flows from GitHub's OIDC identity → Sigstore Fulcio (an ephemeral
@@ -88,27 +124,40 @@ artifact was produced by *our* release workflow at a tagged commit, and it is
 verifiable against the public Sigstore trust root with **no access to the source
 repository**.
 
-Before an image is published, the release pipeline runs two **blocking** gates
-against the exact bytes being shipped. A failure on either stops the release, so a
+Before an image is published, the release pipeline runs four **blocking** gates
+against the exact bytes being shipped. A failure on any one stops the release, so a
 flagged image never reaches the registry:
 
-- **CVE scan** (Trivy, CRITICAL/HIGH, fixable): known-vulnerable OS and
-  dependency versions. Reviewed exceptions for unfixable upstream CVEs are tracked
+- **CVE scan** (Trivy, CRITICAL/HIGH, fixable), on both arches: known-vulnerable OS
+  and dependency versions. Reviewed exceptions for unfixable upstream CVEs are tracked
   in an attested OpenVEX document.
 - **Known-malware scan** (ClamAV): signature scan of the image's shipping
   filesystem, with a built-in positive control that fails the build if the signature
-  database is missing or stale (so a "clean" result can never be a no-op). This is
+  database is missing or unusable (so a "clean" result can never be a no-op; a database
+  that is old but intact still passes it). This is
   the layer CVE scanning is blind to: a compromised or typosquatted dependency that
   injects a payload has no CVE.
+- **Boot gate**, on both arches: the image runs migrations against a real PostgreSQL
+  and must serve `/health`, `/llms.txt` and `/v1/verification-keys`.
+- **FIPS boot gate**, on amd64: the same image boots with the base image's FIPS
+  provider active and must serve on the ES256 signing path, refuse federation keys,
+  and refuse to boot with `AGLEDGER_FIPS=true` and no active provider. This gate
+  tests provider behaviour rather than arch parity, which the boot gate above
+  already covers on both arches.
 
 Source code is additionally checked by Semgrep (SAST) before each release and by
 Dependabot (dependency updates) continuously.
 
 ## Release Verification
 
-**Requires cosign 3.0 or later** (and `slsa-verifier`, `crane`, and `jq` for the
+**Requires cosign 3.0 or later** (the install scripts check that `cosign` is present, not its version; an older cosign fails on the bundle format rather than passing silently) (and `slsa-verifier`, `crane`, and `jq` for the
 provenance and malware-scan steps). Every command below verifies against the public
 Sigstore trust root, with no AGLedger-hosted key or endpoint and no repository access.
+Each reads the signature from the registry and the trust root over the network; a
+host that can reach neither verifies the same release from carried material, with
+`scripts/verify-release.sh` and the release's
+`agledger-<version>-offline-verification.tar.gz`. See
+[air-gap/README.md](air-gap/README.md).
 
 ```bash
 IDENTITY='^https://github\.com/agledger-ai/agledger-api/\.github/workflows/.+@refs/tags/v.+$'
@@ -158,7 +207,12 @@ The SBOM, OpenVEX document, and the signed conformance corpus are attached to ev
 [GitHub Release on this public repo](https://github.com/agledger-ai/install/releases)
 for direct download (`agledger-<version>-sbom.cdx.json`,
 `agledger-<version>-vex.openvex.json`, `agledger-<version>-conformance-corpus.tar.gz`
-+ `.sha256` + `.sigstore.json`). The release signing above is keyless: there is no
++ `.sha256` + `.sigstore.json`), alongside
+`agledger-<version>-offline-verification.tar.gz` + `.sha256` + `.sigstore.json`,
+which carries the signature and attestation bundles and the Sigstore trust root
+for a host with no network. That archive is the trust anchor an air-gapped check
+hangs from, so verify its own `cosign verify-blob` while a network is still
+reachable, before carrying it in. The release signing above is keyless: there is no
 long-lived signing key to steal, rotate or revoke, and nothing outside a run of our release workflow
 can obtain a certificate for that identity. It is not a defence against a runner compromised while
 that job is running, which holds the OIDC token the job was issued: the isolated SLSA Build L3
@@ -170,47 +224,110 @@ published live at `GET /.well-known/agledger-vault-keys.json` and `GET /v1/verif
 `agledger/agledger` on Docker Hub is the authoritative artifact. It carries the
 Sigstore signature and the SBOM / OpenVEX / malware-scan / SLSA L3 attestations, and
 it's where every command above runs. The **AWS Marketplace** delivery (and any other
-ECR mirror) is a **byte-identical copy of that image, the same digest**, but the
+ECR mirror) is a **byte-identical copy of the linux/amd64 platform image**, but the
 Sigstore artifacts are intentionally **not** carried into ECR, because AWS
-Marketplace requires a plain image manifest and rejects attestation artifacts.
+Marketplace requires a plain image manifest and rejects attestation artifacts. Docker
+Hub publishes `:<version>` as a multi-arch index; Marketplace holds that index's
+linux/amd64 child, so the digest to compare is the child's, not the index's.
 
 So provenance for a Marketplace pull is established by **digest equality**: verify the
 authoritative Docker Hub image, then confirm the Marketplace image is the same bytes.
 
 ```bash
 # 1. Verify the authoritative public image (signature + SLSA L3, as above) and note
-#    its digest. This is the artifact that carries the full provenance.
-DH_DIGEST=$(crane digest agledger/agledger:<version>)
-echo "$DH_DIGEST"
+#    the digest of its linux/amd64 platform manifest. The signature covers the index,
+#    and the index names this digest.
+DH_AMD64_DIGEST=$(crane digest --platform linux/amd64 agledger/agledger:<version>)
+echo "$DH_AMD64_DIGEST"
 
-# 2. Confirm the AWS Marketplace image is the identical digest.
+# 2. Confirm the AWS Marketplace image is that manifest.
 aws ecr describe-images \
   --registry-id 709825985650 --repository-name ag-ledger/agledger \
   --image-ids imageTag=<version> --region us-east-1 \
   --query 'imageDetails[0].imageDigest' --output text
-# → must equal $DH_DIGEST
+# → must equal $DH_AMD64_DIGEST
 ```
 
 If the two digests match, the Marketplace image is the same bytes as the
-cryptographically verified public image, and inherits its full provenance.
+cryptographically verified public image's linux/amd64 manifest, and inherits its
+provenance. `scripts/mirror-ecr.sh` makes the same comparison after every mirror and
+fails when they differ.
+
+## Where the vault signing key lives
+
+Two custody options, chosen per install:
+
+- **Key material in the process environment** (`VAULT_SIGNING_KEY`, or a file through
+  `VAULT_SIGNING_KEY_FILE`, or SSM through `SECRETS_PROVIDER=aws-ssm`). The default. The private key
+  is in the container's environment and in whatever Secret or file supplied it, and anyone who can
+  read either can sign as this Server.
+- **AWS KMS** (`VAULT_SIGNING_KEY_KMS_ARN`; on Helm, `signing.kmsKeyArn`). The private half is a
+  non-exportable ECC_NIST_P256 key in KMS. The Server fetches the public half at boot, registers it
+  in `vault_signing_keys` under the same fingerprint scheme as a local key, and every signature is
+  one KMS `Sign` call: chain entries, checkpoints, Receipts, the DSSE attestation bundle, SCITT tree
+  heads, RFC 9421 webhook deliveries and ephemeral-certificate JWS all take the KMS key; no signing
+  site keeps a local one. Who can sign as this Server is then the KMS key policy and CloudTrail
+  records every use. KMS signs no Ed25519, so this is an ES256 chain and takes the same
+  `AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true` opt-in as a local ES256 key; upgrade the verifiers
+  first.
+
+What KMS custody changes operationally, and what it does not:
+
+- Rotation and retirement are the same two steps. Staging a new KMS key is a new ARN and a
+  restart; retirement is `POST /v1/admin/vault/signing-keys/{keyId}/retire`. A key this install
+  signed with from a file before the move goes in `VAULT_SIGNING_KEY_PREVIOUS` so its history stays
+  verifiable; `VAULT_SIGNING_KEY` and the ARN together refuse to boot.
+- When KMS does not answer, the Server fails closed. A write whose `Sign` call fails is rolled back
+  and answered 503 (`/problems/signing-key-unusable`) with a `recoveryHint` naming what to check.
+  After consecutive failures the process stops trying: `/health/ready` answers 503 with
+  `signingKey.gate` `signer_unreachable`, so a load balancer routes around it, and the worker
+  holds the jobs it has fetched rather than failing them. Every signing-key watch tick then makes
+  one probe `Sign`, and the first answered one resumes writing; nothing needs restarting. The
+  shipped alert rules (`AGLedgerVaultSignerUnreachable`, `AGLedgerVaultRemoteSignFailing`) and the
+  `agledger_vault_remote_sign_seconds` histogram are the operator's view of it.
+- Rate: one `Sign` per signature, and KMS `Sign` quotas are per account and region, shared with every
+  other caller of that key type. `VAULT_SIGNING_REMOTE_MAX_PER_SECOND` caps each process; the sum
+  across api and worker replicas has to sit under the quota.
+- The federation identity key and the license key are separate signing domains and stay where they
+  were; custody covers the vault key only.
+
+`GET /v1/admin/vault/signing-keys` reports which backend the answering process signs with
+(`signer.backend`), since the registry rows themselves do not record custody.
 
 ## If your vault signing key is compromised
 
 The full runbook is [Signing-key compromise](https://agledger.ai/docs/operations/key-compromise).
 The semantics it turns on, so you can plan against them before you need it:
 
-- **Rotation is the containment step, and a restart is what performs it.** On boot the Server
-  reconciles the key registry to the configured `VAULT_SIGNING_KEY`: it activates that key and
-  retires the previous one with a `retiredAt` instant.
-  `POST /v1/admin/vault/signing-keys/rotate` runs the same reconciliation on demand and answers
-  `already_active` against a Server that has already restarted.
+- **Containment is two steps: restart, then retire.** A process that boots with a
+  `VAULT_SIGNING_KEY` the registry does not carry registers it and starts signing with it,
+  retiring nothing, so more than one key is active while you roll.
+  `POST /v1/admin/vault/signing-keys/rotate` performs the same registration on demand and answers
+  `already_active` against a process that has already restarted. Closing the leaked key's window is
+  `POST /v1/admin/vault/signing-keys/{keyId}/retire`, and on a compromise you send
+  `{"force": true}` rather than waiting for processes to roll. Chain appends under that key stop
+  the instant the retirement commits, because an append and the retirement take the same row lock.
+  The other signers (RFC 9421 webhook deliveries, ephemeral-certificate JWS, Receipts) stop when
+  the process notices: at once on an api process, within 30 seconds on a worker, which re-reads the
+  registry on that interval. A process that has noticed fails its readiness probe and, on the
+  worker, stops consuming jobs. Anything signed with the leaked key afterwards falls outside its
+  published window: a chain scan reports `key_expired` and an offline verifier reports
+  `CHAIN_KEY_EXPIRED`. On a scheduled rotation you confirm instead that every api and worker
+  process reports the new key on its own `/health` (`signingKey.keyId`); the 422 the endpoint
+  answers while the old key has appended inside the last 300 seconds is a backstop for the case
+  the chain can see, and an idle process passes it while still holding the key. Both orders are in
+  `deploy/README.md` under "Changing the signing key".
 - **There is no revocation, by design.** A key is `active` or `retired`; there is no `compromised`
-  status, and a retired key keeps verifying the entries it signed. That is what makes routine
+  status, and a retired key keeps verifying the entries it signed inside its published window
+  (`activatedAt` to `retiredAt`), both on this Server and in `@agledger/verify`. That is what makes routine
   rotation non-destructive, and it means the product will not mark records signed inside your
   compromise window. Rotation stops future signing with that key; it says nothing about what was
   signed before it.
-- **External anchors are what bound the window.** Anchors written to Object Lock storage before the
-  exposure are ground truth an attacker holding the key could not rewrite, so they split your
+- **External anchors are what bound the window.** Anchors are written create-only (`If-None-Match`)
+  and, under Object Lock, as versions nothing can delete; a second write to an anchored position is
+  refused and reported as a fork, and a store that does not honour conditional writes is named in
+  the anchor posture (`GET /v1/admin/vault/anchors/reconcile`). Anchors written before the exposure
+  are therefore ground truth an attacker holding the key cannot rewrite, so they split your
   history into a span that is provably intact and a span you have to corroborate from outside the
   chain. Turn anchoring on (`VAULT_ANCHOR_ENABLED=true`; `VAULT_ANCHOR_INTERVAL_MINUTES` sets the
   cadence, default 360) before you need it, because enabling it during an incident bounds nothing

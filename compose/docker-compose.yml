@@ -29,8 +29,32 @@ services:
   agledger-migrate:
     image: ${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest}}
     init: true
-    command: ['dist/src/db/migrate.js']
+    # The same permission flags the image CMD carries and the api/worker
+    # commands carry. Overriding the argv drops them, and the loss is not only
+    # the sandbox: NODE_OPTIONS reaches EVERY node process in a container, Node
+    # refuses `--allow-fs-write` from a process not started with `--permission`
+    # and refuses an `--import` from one holding no `--allow-fs-read`, so a
+    # NODE_OPTIONS that reaches this service fails it at pre-execution with
+    # ERR_MISSING_OPTION and no migration runs. This service
+    # carries no env_file, so .env alone does not reach it, but an
+    # `environment:` entry here or an override file does, and the chart's
+    # migrate.extraEnv reaches its equivalent with nothing in the way.
+    # migrate.js only reads the filesystem (its own migrations directory), so
+    # --allow-fs-read=* is the whole grant it needs.
+    command: ['--permission', '--allow-fs-read=*', 'dist/src/db/migrate.js']
     restart: 'no'
+    # The Docker default is a set of 14 capabilities every container gets whether
+    # it uses them or not, CAP_CHOWN, CAP_SETUID, CAP_MKNOD and CAP_NET_RAW among
+    # them. Nothing in this image needs one: it runs as uid 65532 from the
+    # Dockerfile's USER, binds ports 3000 and 3001 (both above 1024, so no
+    # CAP_NET_BIND_SERVICE), and never changes uid at runtime. Dropping them is
+    # the compose half of what the Dockerfile's hardening note claims, and the
+    # Helm chart already drops the same set per container.
+    cap_drop: [ALL]
+    # No path from inside the container to more privilege than it started with,
+    # whatever setuid or file-capability bit a future base layer arrives
+    # carrying. It is a one-way flag on the process and its children.
+    security_opt: ['no-new-privileges:true']
     environment:
       # The bundled-PG fallback carries no password default, matching the
       # overlay that provides that database. Neither file refuses an empty
@@ -44,7 +68,14 @@ services:
       # parse-time resolution would kill `down`/`ps`/`logs` too.) Both are
       # pinned by install-preflight guards in the API build that run
       # real `docker compose config`.
-      - DATABASE_URL=${DATABASE_URL_MIGRATE:-${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-agledger}}}
+      # DATABASE_URL_DIRECT sits between the two: it bypasses a transaction-mode
+      # connection pooler, and migrations need that (one session advisory lock
+      # across every migration's transaction, plus session timeouts). An owner
+      # role named in DATABASE_URL_MIGRATE still wins, and that role's URL has
+      # to reach the database directly for the same reason. Resolved here
+      # rather than passed through, so the CLI sees exactly one connection
+      # string on this service.
+      - DATABASE_URL=${DATABASE_URL_MIGRATE:-${DATABASE_URL_DIRECT:-${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-agledger}}}}
       - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-}
       # Post-v1.0: shipped migrations are immutable; refuse any baseline checksum rebase.
       - AGLEDGER_LAUNCH_FROZEN=${AGLEDGER_LAUNCH_FROZEN:-true}
@@ -70,6 +101,9 @@ services:
   agledger-api:
     image: ${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest}}
     init: true
+    # See agledger-migrate above for why both of these are safe here.
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
     # Docker's default grace period is 10s. Both processes meter their own
     # shutdown against a 25s drain budget and force-exit at it, so the default
     # SIGKILLs them two thirds of the way through: in-flight requests severed,
@@ -115,8 +149,22 @@ services:
     # agledger-migrate exits successfully, so Postgres is already accepting
     # connections by the time the first probe runs. 20s covers the pool's first
     # connect on a cold host without buying a slow `--wait` on a healthy one.
+    #
+    # The probe's argv carries the same permission flags as the command it is
+    # probing, and that is load-bearing rather than tidy: NODE_OPTIONS reaches
+    # EVERY node process in the container, so whatever an operator has to put
+    # there for the app has to be valid for the probe too. Node refuses
+    # `--allow-fs-write` from a process not started with `--permission`, which
+    # is what the SIEM file-sink recipe in .env.example asks for, and it
+    # refuses an `--import` (the ESM way an APM agent is attached; a CJS
+    # `--require` preload is exempt) from one holding no `--allow-fs-read`.
+    # Either way the probe could not
+    # start at all: ERR_MISSING_OPTION or ERR_ACCESS_DENIED on every interval,
+    # a container that never reports healthy, and an install.sh that exits 1
+    # over a service that is serving. Docker's restart policy acts on exit and
+    # not on health, so nothing restarts it: it just stays unhealthy.
     healthcheck:
-      test: ['CMD', '/nodejs/bin/node', '-e', "fetch('http://localhost:3000/health/ready').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test: ['CMD', '/nodejs/bin/node', '--permission', '--allow-fs-read=*', '-e', "fetch('http://localhost:3000/health/ready').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       start_period: 20s
@@ -127,13 +175,20 @@ services:
   agledger-worker:
     image: ${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest}}
     init: true
+    # See agledger-migrate above for why both of these are safe here.
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
     # See agledger-api above: 25s drain budget needs more than Docker's 10s default.
     stop_grace_period: 60s
     # The worker overrides the image CMD, so it must carry the Node 24
     # Permission Model flags itself (the API inherits them from the Dockerfile
     # CMD). Same profile: deny writes + child-process/worker/addons/wasi/
     # inspector; network is ungated. File SIEM sink → add
-    # --allow-fs-write=/var/log/agledger here too.
+    # --allow-fs-write=/var/log/agledger HERE, and only here: the worker is the
+    # process that drains the SIEM cursor to the push sinks, so it is the only
+    # one that writes SIEM_FILE_PATH. The API serves the pull channel,
+    # GET /v1/siem/stream, and touches no file. Scaling this service past one
+    # replica splits the file between the containers; use the HTTP sink there.
     command: ['--permission', '--allow-fs-read=*', 'dist/src/worker.js']
     # No `ports:` mapping on purpose. The worker's health endpoint is reached
     # in-container by the healthcheck below, so publishing it to the host buys
@@ -155,8 +210,12 @@ services:
     # unreachable primary over a live socket answers 503 here rather than
     # running out this probe's timeout. `/health` on this port reports only that
     # the process is up and draining or not.
+    #
+    # The same permission flags as the API's probe, for the reason given there,
+    # and this is the service the SIEM file-sink recipe names, so this is the
+    # one that broke.
     healthcheck:
-      test: ['CMD', '/nodejs/bin/node', '-e', "fetch('http://localhost:3001/health/ready').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test: ['CMD', '/nodejs/bin/node', '--permission', '--allow-fs-read=*', '-e', "fetch('http://localhost:3001/health/ready').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       start_period: 20s
@@ -165,7 +224,7 @@ services:
   # --- Monitoring (optional, enable with --profile monitoring) ---
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.160.0
+    image: otel/opentelemetry-collector-contrib:0.161.0
     profiles: [monitoring]
     # Same restart policy the app services carry in docker-compose.prod.yml. The
     # app is configured to export at this collector permanently, so a collector
@@ -197,12 +256,16 @@ services:
     # --wait` treats a container with no healthcheck as ready the moment it is
     # running, which a crash-looping container is between restarts, so the
     # installer asks the container states directly afterwards and reports any
-    # service that is restarting, exited or unhealthy. A collector that is
-    # running and silently dropping every batch is not covered by anything: it
-    # exports no telemetry about itself that this stack scrapes.
+    # service that is restarting, exited or unhealthy. That sample alone let a
+    # loop through whenever it landed on the moments the container was up, so
+    # the installer also reads the restart counter against a baseline it takes
+    # before the `up`: a service that reads running with restarts behind it is
+    # a loop, not a start. A collector that is running and silently dropping
+    # every batch is not covered by anything: it exports no telemetry about
+    # itself that this stack scrapes.
 
   jaeger:
-    image: jaegertracing/jaeger:2.20.0
+    image: jaegertracing/jaeger:2.21.0
     profiles: [monitoring]
     restart: unless-stopped
     ports:
@@ -232,7 +295,13 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.retention.time=30d'
+      # Whichever bound is reached first wins, so this caps the disk a long
+      # retention window can take on an install nobody is watching.
+      - '--storage.tsdb.retention.size=10GB'
     volumes:
+      # Named, not the image's anonymous /prometheus volume, which `down`
+      # orphans and leaves the next `up` starting from an empty TSDB.
+      - prometheus-data:/prometheus
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       # Rule files are referenced by prometheus.yml `rule_files`.
       - ../monitoring/alerts:/etc/prometheus/alerts:ro
@@ -248,6 +317,20 @@ services:
         # credentials ... permission denied". World-readable inside a container
         # whose only other content is Prometheus itself costs nothing.
         mode: 0444
+    # The config above is frozen at container create: its interpolated content
+    # is no part of the service definition Compose hashes, and `restart` does
+    # not re-materialize it. Without this label a changed METRICS_AUTH_TOKEN
+    # reaches the API and the worker (they carry `env_file:`) and never reaches
+    # Prometheus, so every scrape 401s under an install that reported success.
+    # A label IS part of the definition, so the digest moving is what makes
+    # Compose's own decision recreate this one service. The scripts keep it in
+    # step with the token (sync_metrics_token_fingerprint in lib-compose.sh).
+    # Editing METRICS_AUTH_TOKEN by hand moves nothing here on its own: this
+    # label is what compose hashes, so a bare `up -d` after such an edit leaves
+    # Prometheus on the old token. Re-run a script, or recreate this one
+    # service by hand. .env.example says so beside the token.
+    labels:
+      com.agledger.metrics-token-fingerprint: ${METRICS_TOKEN_FINGERPRINT:-none}
     ports:
       - '127.0.0.1:${PROMETHEUS_HOST_PORT:-9090}:9090'
     # A typo in prometheus.yml (the file monitoring/README.md invites operators
@@ -263,7 +346,7 @@ services:
       retries: 3
 
   grafana:
-    image: grafana/grafana:13.2.1
+    image: grafana/grafana:13.2.2
     profiles: [monitoring]
     restart: unless-stopped
     environment:
@@ -273,6 +356,28 @@ services:
       # enabling the profile by hand sets it themselves.
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
       GF_USERS_ALLOW_SIGN_UP: 'false'
+      # Grafana's defaults.ini ships all four of these on, and each is an
+      # outbound call this stack has no use for: usage counters to
+      # stats.grafana.org every 24h, a version check and a plugin-update check
+      # against grafana.com, and the blog feed on the home dashboard. On an
+      # egress-denied network they are failures in the log rather than a broken
+      # install, which is worse: an operator reading that log cannot tell them
+      # from a real one. The stack monitors one Server and installs no plugins.
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false'
+      GF_NEWS_NEWS_FEED_ENABLED: 'false'
+      # The plugin signature public key is fetched from grafana.com on a 10-day
+      # cycle. Nothing here loads a plugin, so nothing needs the key.
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: 'true'
+      # The four above are not the whole of it, and this one carries the rest.
+      # Grafana preinstalls a list of app plugins at every start and resolves
+      # each one's version against grafana.com first, which is dozens of calls
+      # and dozens of log lines on an egress-denied network whatever the
+      # analytics switches say. With it off the image's own bundled core
+      # plugins still load, which is where the Prometheus datasource these
+      # dashboards query comes from.
+      GF_PLUGINS_PREINSTALL_DISABLED: 'true'
     ports:
       - '127.0.0.1:${GRAFANA_HOST_PORT:-3003}:3000'
     volumes:
@@ -293,6 +398,8 @@ services:
 
 volumes:
   grafana-data:
+  # Prometheus' TSDB. Bounded by the retention flags on the service above.
+  prometheus-data:
 
 configs:
   metrics_token:

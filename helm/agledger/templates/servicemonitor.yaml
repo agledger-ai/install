@@ -34,6 +34,19 @@ spec:
       - key: app.kubernetes.io/component
         operator: In
         values: [api, worker]
+  {{- /* Per-scrape ceilings, at the spec level so one setting covers both
+         endpoints. A tripped limit does not truncate the scrape, it FAILS it:
+         the target goes down, `up` reads 0 for that pod, and every rule in
+         agledger.rules.yml then reads as absent data rather than naming the
+         limit that caused it. So the defaults sit well above the shipped
+         registry. 0 means no limit on any of them, which is why these read
+         through `dig` rather than `default`: `default` treats an explicit 0 as
+         absent and would silently reimpose the ceiling. */}}
+  {{- $sm := (((.Values.monitoring).serviceMonitor) | default dict) }}
+  sampleLimit: {{ dig "sampleLimit" 50000 $sm }}
+  labelLimit: {{ dig "labelLimit" 30 $sm }}
+  labelNameLengthLimit: {{ dig "labelNameLengthLimit" 200 $sm }}
+  labelValueLengthLimit: {{ dig "labelValueLengthLimit" 200 $sm }}
   endpoints:
     - port: http
       path: /metrics

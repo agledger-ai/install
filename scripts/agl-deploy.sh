@@ -108,9 +108,11 @@ Options (env var equivalent in parens):
   -y, --yes                                     don't prompt for confirmation
   -h, --help                                    show this help
 
-Deploys the Developer Edition (Compose on Docker CE, bundled PostgreSQL) — free
-and production-ready. Enterprise (Kubernetes/Helm, external database) is the
-multi-node scale/HA tier: https://agledger.ai/docs/install
+Deploys the Compose stack on Docker CE with bundled PostgreSQL. That is the
+substrate the free Developer Edition grant covers for production; install a key
+to license it (https://agledger.ai/register). Enterprise (Kubernetes/Helm,
+external database) is the multi-node scale/HA tier:
+https://agledger.ai/docs/install
 EOF
 }
 
@@ -266,7 +268,7 @@ if [ -n "$MISSING_PKGS" ]; then
   $SUDO apt-get install -y -qq $MISSING_PKGS
 fi
 if [ "$NEED_DOCKER" = 1 ]; then
-  # Docker CE only — the Developer Edition substrate. If get.docker.com doesn't
+  # Docker CE only, the substrate the Developer Edition grant covers. If get.docker.com doesn't
   # support the release yet, fail loudly pointing at the CE install rather than
   # pulling in a different (distro-packaged) Docker.
   curl -fsSL https://get.docker.com | $SUDO sh || true
@@ -327,7 +329,7 @@ cmd_install() {
     fatal "--external-db is not supported by the remote wrapper (its secret/.env ordering is subtle).
        An external database is an Enterprise feature; run that path directly on the target:
          ssh ${AGL_SSH_TARGET} 'cd ${AGL_REMOTE_DIR} && DATABASE_URL=... scripts/install.sh --external-db --non-interactive'
-       The wrapper deploys the Developer Edition (bundled PostgreSQL)."
+       The wrapper deploys the bundled-PostgreSQL stack the Developer Edition grant covers."
   fi
 
   step "Installing prerequisites on ${AGL_SSH_TARGET}"
@@ -379,12 +381,12 @@ VERSION="$(d64 "$1")"; REMOTE_DIR="$(d64 "$2")"
 cd "$REMOTE_DIR"
 # The self-update is the point of this step: upgrade.sh never updates itself, so
 # a release's .env reconciles only reach the host by moving the checkout onto
-# that release's tag. Both halves used to be `|| true`, so a tag that does not
-# exist yet, or a checkout with local edits, silently ran the OLD upgrade.sh and
-# the wrapper still printed "Upgrade complete".
+# that release's tag.
 #
 # A failed fetch is survivable on its own: the tag may already be local. Landing
-# on the tag is not, so it is asserted rather than assumed.
+# on the tag is not, so it is asserted rather than assumed. Swallowing the
+# checkout failure runs the OLD upgrade.sh against a tag that does not exist
+# yet, or a checkout with local edits, and still reports success.
 git fetch --tags --quiet || echo "WARN: git fetch failed; falling back to the tags already in ${REMOTE_DIR}" >&2
 if ! git -c advice.detachedHead=false checkout --quiet "v${VERSION}"; then
   echo "ERROR: could not check out v${VERSION} in ${REMOTE_DIR}." >&2

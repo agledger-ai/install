@@ -40,8 +40,8 @@ agent:
 ## Shape
 
 ```
-delegated-workflow-v1 (root; seeded starter, notarize-only)
-  criteria.workflowName  = the work
+notarize-generic-v1 (root; seeded starter, notarize-only)
+  criteria.summary       = the work
   criteria.workContext   = navigation hint (see below)      <- load-bearing
     |
     +-- work-context-v1 (checkpointReason: initial)
@@ -50,6 +50,9 @@ delegated-workflow-v1 (root; seeded starter, notarize-only)
     +-- ... siblings, never children of each other
     +-- notarize-generic-v1 / your types: work artifacts, decisions
 ```
+
+Any notarize-only type works as the root; this recipe uses `notarize-generic-v1`,
+the editable example type every new org seeds by default.
 
 - **One root per piece of work.** Every checkpoint is a CHILD of the root via
   `parentRecordId`. Siblings, never chained checkpoint-to-checkpoint: the
@@ -66,11 +69,14 @@ delegated-workflow-v1 (root; seeded starter, notarize-only)
   resuming session triages a portfolio in one call rather than one call per
   root.
 - **The root carries the map.** Put this in the root's criteria (the schema
-  accepts extra fields); cold-start models read the root first and some never
-  read schema descriptions:
+  requires `summary` and accepts extra fields beyond it); cold-start models
+  read the root first and some never read schema descriptions:
 
   ```json
-  "workContext": "Durable work state lives in work-context-v1 CHILD records of this root. Head = the one nothing supersedes: GET /v1/records/search?parentRecordId=<thisRecordId>&type=work-context-v1&superseded=false. Read the head, then follow its resumeInstructions. When you write your own checkpoint, pass the head's id as the top-level supersedesRecordId field on POST /v1/records (a record field, not a criteria field). Omit it and the old head stays current, so the next session sees two heads."
+  {
+    "summary": "Q3 vendor migration",
+    "workContext": "Durable work state lives in work-context-v1 CHILD records of this root. Head = the one nothing supersedes: GET /v1/records/search?parentRecordId=<thisRecordId>&type=work-context-v1&superseded=false. Read the head, then follow its resumeInstructions. When you write your own checkpoint, pass the head's id as the top-level supersedesRecordId field on POST /v1/records (a record field, not a criteria field). Omit it and the old head stays current, so the next session sees two heads."
+  }
   ```
 
 - **Supersession is a record field, not criteria.** Pass `supersedesRecordId`
@@ -193,21 +199,17 @@ bare `type` ambiguous (422 on every record create until callers pin
 
 ## What cold-start runs taught us
 
-The conventions above were shaped by running fresh model contexts (no prior
-conversation, one generic HTTP tool, a brief of base URL + agent key + root id
-+ type name) against a live server:
+The conventions above are what a fresh agent context needs to drive this
+recipe from a brief of base URL, agent key, root id and type name:
 
-- **The schema guard held in every failed run.** No model produced a fork or
-  a stale-head successor; failures were incomplete runs, not corrupted
-  lineage.
-- **The failure mode that survives the guard is a false claim.** A checkpoint
-  can correctly supersede the head while claiming work that never happened;
-  two runs of a small model wrote `completedWork` entries for a notarization
-  that did not occur. Unchecked, that silently drops the item from
-  `pendingWork`. This is why created-record ids belong in checkpoints.
-- **Head size matters more than model size** for resume fidelity: every model
-  that completed the protocol on a compact head resumed correctly; large
-  heads produced partial resumes.
+- **The schema guard rules out a fork and a stale-head successor.** An
+  incomplete run leaves lineage intact rather than corrupting it.
+- **The failure mode the guard does not catch is a false claim.** A checkpoint
+  can correctly supersede the head while claiming work that never happened,
+  and unchecked that silently drops the item from `pendingWork`. This is why
+  created-record ids belong in checkpoints.
+- **Head size drives resume fidelity.** A compact head resumes correctly; a
+  large head produces a partial resume.
 
 ## A2A
 
@@ -249,8 +251,11 @@ both dialects:
   the delegation depth cap, the head is still one call (`data[0]` of page 1,
   default page size 50, max `limit` 100, cursor pagination), and the lineage
   check walks all pages in tens of milliseconds against a local server.
-  Sustained creation does meet the default agent rate limit (500/min; the
-  429 carries `retryAfterSeconds`). Months-long work items with thousands of
+  Sustained creation does meet the per-route cap on `POST /v1/records`
+  (200/min by default, `RATE_LIMIT_POST_RECORDS`; the 429 carries
+  `retryAfterSeconds`). That is the one that binds: an authenticated agent key
+  shares the 1000/min admin bucket, and `RATE_LIMIT_AGENT` is the
+  unauthenticated IP-keyed one. Months-long work items with thousands of
   checkpoints remain unexercised.
 - Succession attribution is byte-level verifiable: the actor key id and the
   agent id ride as CWT claims in the COSE protected header, which the Ed25519

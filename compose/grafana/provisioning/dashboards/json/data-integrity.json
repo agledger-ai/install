@@ -13,7 +13,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Bus events fired without a BUS_TO_PERSISTED mapping \u2014 they did NOT land in the events table. SIEM/webhook/federation consumers silently miss them. Non-zero = code path added without updating the map.",
       "fieldConfig": {
@@ -63,9 +63,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (busEvent) (increase(agledger_persist_event_unmapped_total[1h]))",
+          "expr": "sum by (busEvent) (increase(agledger_persist_event_unmapped_total{job=~\"$job\"}[1h]))",
           "legendFormat": "{{busEvent}}",
           "refId": "A"
         }
@@ -76,7 +76,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Parents the consistency sweep settled out of band: every child terminal, no activity for five minutes, so the sweep rolled the parent up. Movement here is NORMAL, not a fault. A parent whose children are all notarize-only has no last-child transition to settle it inline and always settles here; only a parent whose inline rollup was lost to a crash or a dropped cascade job is a real fault, and this panel cannot tell the two apart. Read the GAP instead: stuck rising while repaired stays flat means those parents cannot settle and needs a human. The sweep handles at most 50 parents per five-minute pass, so a large backfill drains at roughly 600 an hour and the two series close over hours rather than minutes.",
       "fieldConfig": {
@@ -126,18 +126,18 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(increase(agledger_auto_rollup_stuck_parents_total[1h]))",
+          "expr": "sum(increase(agledger_auto_rollup_stuck_parents_total{job=~\"$job\"}[1h]))",
           "legendFormat": "found due (1h)",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(increase(agledger_auto_rollup_repaired_parents_total[1h]))",
+          "expr": "sum(increase(agledger_auto_rollup_repaired_parents_total{job=~\"$job\"}[1h]))",
           "legendFormat": "settled by sweep (1h)",
           "refId": "B"
         }
@@ -148,7 +148,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Vault checkpoint creator skipped a record because verifyChain failed. Each cycle the record is skipped is one more cycle without a tamper-evident anchor.",
       "fieldConfig": {
@@ -198,9 +198,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(increase(agledger_vault_checkpoint_skipped_broken_total[1h]))",
+          "expr": "sum(increase(agledger_vault_checkpoint_skipped_broken_total{job=~\"$job\"}[1h]))",
           "legendFormat": "skipped (1h)",
           "refId": "A"
         }
@@ -211,7 +211,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "SIEM emission drops. HTTP: buffer overflow or post-close writes. File: stream errors or post-close writes. Customer's external SIEM has visibility gaps.",
       "fieldConfig": {
@@ -288,18 +288,18 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_siem_http_batches_dropped_total[5m]))",
+          "expr": "sum(rate(agledger_siem_http_batches_dropped_total{job=~\"$job\"}[5m]))",
           "legendFormat": "siem_http",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_siem_file_lines_dropped_total[5m]))",
+          "expr": "sum(rate(agledger_siem_file_lines_dropped_total{job=~\"$job\"}[5m]))",
           "legendFormat": "siem_file",
           "refId": "B"
         }
@@ -310,7 +310,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "description": "Does what leaves this Server arrive, and is anything permanently lost? `dead-lettered` is the one that matters: those jobs exhausted the pg-boss retry budget, so the peer will never receive that projection without an operator redrive from GET /federation/v1/admin/dlq. `post failed` is per-attempt and self-heals through retries, so a rising line there with a flat dead-lettered line is a slow peer, not data loss. `inbound conflict` counts peer projections that collided with a record already here (stale = ours won and theirs was discarded). Replaces a panel that queried agledger_federation_sequence_gaps_total and agledger_federation_sequence_reconciled_total, which no process has ever registered.",
       "fieldConfig": {
@@ -387,36 +387,36 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (kind) (increase(agledger_federation_outbound_post_succeeded_total[1h]))",
+          "expr": "sum by (kind) (increase(agledger_federation_outbound_post_succeeded_total{job=~\"$job\"}[1h]))",
           "legendFormat": "delivered {{kind}}",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (kind) (increase(agledger_federation_outbound_post_failed_total[1h]))",
+          "expr": "sum by (kind) (increase(agledger_federation_outbound_post_failed_total{job=~\"$job\"}[1h]))",
           "legendFormat": "post failed {{kind}}",
           "refId": "B"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (kind) (increase(agledger_federation_outbound_retry_exhausted_total[1h]))",
+          "expr": "sum by (kind) (increase(agledger_federation_outbound_retry_exhausted_total{job=~\"$job\"}[1h]))",
           "legendFormat": "dead-lettered {{kind}}",
           "refId": "C"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
-          "expr": "sum by (outcome) (increase(agledger_federation_inbound_conflict_total[1h]))",
+          "expr": "sum by (outcome) (increase(agledger_federation_inbound_conflict_total{job=~\"$job\"}[1h]))",
           "legendFormat": "inbound conflict {{outcome}}",
           "refId": "D"
         }
@@ -433,7 +433,58 @@
     "data-integrity"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Data source",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(agledger_process_start_time_seconds, job)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Job",
+        "multi": true,
+        "name": "job",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(agledger_process_start_time_seconds, job)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-6h",

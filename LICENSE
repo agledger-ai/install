@@ -6,16 +6,14 @@ PROPRIETARY SOFTWARE LICENSE
 
 This software, together with its associated documentation files (the "Software"),
 is the proprietary property of AGLedger LLC ("Licensor"). The Software in this
-repository consists of the AGLedger installer — deployment scripts, Docker
-Compose files, Helm chart, cosign verification key, and related packaging used
-to install and operate a self-hosted AGLedger deployment.
+repository consists of the AGLedger installer: the deployment scripts,
+configuration, charts, signature bundles, and packaging used to install and
+operate a self-hosted AGLedger deployment.
 
 This License governs your use of the installer. It is distinct from the AGLedger
 Software License Agreement ("SWLA", available at https://agledger.ai/license),
-which governs your use of the AGLedger server software itself (the container
-image published as `agledger/agledger` on Docker Hub). Your use of the server
-software is governed by the SWLA, not by this License. See Section 9 below for
-precedence rules when both apply.
+which governs your use of the AGLedger server software itself. See Section 9
+below for precedence rules when both apply.
 
 BY DOWNLOADING, INSTALLING, COPYING, OR OTHERWISE USING THE SOFTWARE (INCLUDING
 VIA `git clone`, `curl | bash`, `helm install`, OR ANY EQUIVALENT COMMAND), YOU
@@ -28,9 +26,7 @@ Licensor grants you a limited, non-exclusive, non-transferable, revocable
 license to install and use the Software solely for the purpose of installing,
 configuring, and operating a self-hosted AGLedger deployment operated by you or
 your organization, or by a third party on your behalf with your authorization.
-The Software is not designed for, and is not licensed for use with, any
-AGLedger-hosted service. AGLedger operates the AGLedger software on a self-
-hosted model; there is no hosted AGLedger API.
+The Software is not licensed for use with any AGLedger-hosted service.
 
 2. RESTRICTIONS
 
@@ -88,31 +84,31 @@ cause of action accrues, to the maximum extent permitted by applicable law.
 
 6. EXPORT COMPLIANCE
 
-The Software may include cryptographic functionality (including Ed25519, AES-
-256-GCM, SHA-256, and X25519). AGLedger LLC classifies the Software under
+The Software may include cryptographic functionality, including Ed25519
+(EdDSA), ECDSA using curve P-256 with SHA-256, HMAC-SHA-256, AES-256-GCM,
+HKDF-SHA-256, and SHA-256. AGLedger LLC classifies the Software under
 ECCN 5D002 in good faith. To the extent AGLedger LLC makes the source code of
 the Software publicly available through a public repository, that source code
 is subject to the treatment afforded under 15 CFR § 742.15(b) of the U.S.
 Export Administration Regulations. Binary and object-code distributions are
-subject to License Exception ENC under 15 CFR § 740.17, subject to the one-
-time notification and any required Encryption Registration to the U.S. Bureau
-of Industry and Security (BIS) and the NSA ENC Encryption Request Coordinator.
-This statement is not a warranty; you are responsible for independently
-confirming the correct classification and license authority for your use,
-destination, and end-user. You shall not export or re-export the Software to
-any destination, entity, or end-use prohibited by applicable export, sanctions,
-or trade-control laws.
+subject to License Exception ENC under 15 CFR § 740.17(b)(1) as self-classified
+mass-market encryption items, for which AGLedger LLC submits the annual self-
+classification report to the U.S. Bureau of Industry and Security (BIS) under
+15 CFR § 740.17(e)(3). This statement is not a warranty; you are responsible
+for independently confirming the correct classification and license authority
+for your use, destination, and end-user. You shall not export or re-export
+the Software to any destination, entity, or end-use prohibited by applicable
+export, sanctions, or trade-control laws.
 
 7. TRADEMARKS
 
-AGLedger, Agentic Ledger, Settlement Signal, and Agentic Operations and
-Accountability Protocol (AOAP) are trademarks of AGLedger LLC. All other
+AGLedger and Settlement Signal are trademarks of AGLedger LLC. All other
 trademarks are the property of their respective owners.
 
 8. PATENTS
 
-The Software is covered by one or more U.S. patent applications pending before
-the U.S. Patent and Trademark Office in AGLedger LLC's patent portfolio.
+The Software is covered by one or more issued or pending U.S. patents in
+AGLedger LLC's patent portfolio.
 
 9. RELATIONSHIP TO OTHER AGLEDGER AGREEMENTS
 

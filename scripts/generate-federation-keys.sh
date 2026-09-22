@@ -47,6 +47,11 @@ build_compose_cmd
 # forces node and drops the image's hardened --permission CMD. --stdout prints
 # the key to stdout and writes nothing to disk, so no volume mount is needed.
 # exec so the generator's exit status propagates.
+# NODE_OPTIONS cleared for the same reason vault-verify.sh clears it: `run`
+# inherits `env_file: .env`, --entrypoint drops the image's --permission, and
+# Node refuses an --allow-fs-write or an --import from a process holding neither
+# --permission nor --allow-fs-read. NODE_EXTRA_CA_CERTS is untouched.
 exec "${COMPOSE[@]}" run --rm --no-deps \
+  -e NODE_OPTIONS= \
   --entrypoint /nodejs/bin/node \
   agledger-api dist/scripts/generate-federation-keys.js --stdout
