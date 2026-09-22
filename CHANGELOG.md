@@ -4,11 +4,35 @@ This changelog tracks changes to the AGLedger installer (this repository) and, f
 
 Releases here are tagged to match the AGLedger server version they ship against.
 
-## Unreleased
+## v1.8.0 - 2026-09-22
+
+Scripts, Compose files, and Helm chart synced to AGLedger server v1.8.0.
 
 Compose keeps Prometheus series on a named `prometheus-data` volume, bounded at 30 days or 10 GB, so they survive `docker compose down`. The first start on this version begins an empty Prometheus store: the previous store sits on an anonymous volume the new mount no longer reads. Grafana dashboards and the chain are unaffected.
 
 Every shipped alert links to a runbook section in `monitoring/runbooks.md`, and a new `agledger-targets` rule group covers a process that stops being scraped, a failing scrape, restarts and event-loop lag. On Kubernetes, `monitoring.prometheusRule.overrides` retunes a named alert's severity, `for`, `keep_firing_for` or `expr` without forking the file, `monitoring.prometheusRule.runbookUrl` rebases the runbook links, and `config.otelExporterOtlpEndpoint` enables tracing and opens egress to the collector. Dashboards read through `datasource` and `job` variables.
+
+Every release publishes a signed offline-verification bundle, and an air-gapped install verifies a release from bundles carried into the enclave with no registry and no Rekor. `helm-install.sh` takes a chart and an image override, so the guided path works against a mirror. `AGLEDGER_REQUIRE_VERIFY` refuses a mirrored image and outranks `AGLEDGER_SKIP_VERIFY`.
+
+Server changes in v1.8.0:
+
+Staging a vault signing key now activates it beside the keys already active, and retiring one is a separate admin step at `POST /v1/admin/vault/signing-keys/{keyId}/retire`. More than one key can be active at once during a rolling key change, so a consumer of `GET /v1/verification-keys` resolves by `keyId` rather than taking the active one. A process whose key reads retired stops signing, answers 503 on `/health/ready`, and on the worker stops consuming jobs.
+
+The vault signing key can live in AWS KMS: set `VAULT_SIGNING_KEY_KMS_ARN` and no key material is held by the Server. A Sign that fails rolls its write back and answers 503, and repeated failures close a gate that the key watch reopens.
+
+Adds `GET /v1/admin/vault/rewind`, `POST /v1/admin/vault/rewind/acknowledge` and `POST /v1/admin/vault/anchors/reconcile`. External anchors now catch a database that has been rolled back behind a position it already anchored, and the chain refuses writes until an operator acknowledges the rewind.
+
+Removes `environment` from the api-key create body, the create response and the key listing: a live-or-test label on a row in one Server's own database named nothing the engine read. Removes `previousKeyId` from the signing-key rotate response, which no longer describes what rotation does.
+
+A database outage answers 503 naming the dependency, on every door the API serves, rather than a generic error.
+
+The SIEM feed validates against OCSF 1.4.0 and gains an HTTP push sink: `SIEM_HTTP_URL` with `SIEM_HTTP_MODE` of `ndjson` or `hec` for Splunk HEC. A collector that rejects the request is told apart from one that is down, and the file sink follows a logrotate rename-and-create rotation.
+
+`DATABASE_URL_DIRECT` carries LISTEN, the session advisory locks and migrations, so the transactional pool can run through a connection pooler in transaction mode. `WEBHOOK_ENCRYPTION_KEY_PREVIOUS` lets a webhook secret stored under a previous encryption key keep delivering while it is re-encrypted under the current one. `RATE_LIMIT_POST_RECORDS` and `RATE_LIMIT_POST_RECORDS_BULK` make those two caps configurable.
+
+A receiver or peer that answers with `Retry-After` gets the next attempt at the instant it named, and a rate limit no longer walks a healthy subscription to an open circuit breaker.
+
+Migration 008 repairs signing-key activation windows that opened after the entries they cover, and from this release only the retirement path may retire a key. Rolling back to 1.7.0 after a key change leaves that pod logging a warning with a cold verification-key cache; it keeps serving and keeps publishing its keys.
 
 ## v1.7.0 — 2026-09-12
 
