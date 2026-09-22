@@ -65,7 +65,7 @@ carries to any processor that exposes a dispute lifecycle.
 
 ## Lessons for implementers
 
-What we learned building and exercising this recipe: the things worth knowing before you adapt it.
+The things worth knowing before you adapt it.
 
 ### Set expectations on what the notary does, and does not, do
 

@@ -22,6 +22,16 @@ spec:
         {{- include "agledger.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: worker
       annotations:
+        {{- /* A ConfigMap or Secret value change must roll this Deployment.
+               `envFrom` resolves both once, at pod start, so without these two
+               annotations an upgrade that only changed a value leaves every pod
+               running the old one, and a vault signing key change in particular
+               would land on no process at all. The secret checksum is empty
+               under secrets.existingSecret: see agledger.secretChecksum. */}}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with (include "agledger.secretChecksum" .) }}
+        checksum/secret: {{ . }}
+        {{- end }}
         # Federation outbound, webhook delivery, worker_jobs_processed,
         # persist_event_unmapped, and SIEM mapper counters fire in this
         # process. Without these annotations the prometheus-pod-discoverer

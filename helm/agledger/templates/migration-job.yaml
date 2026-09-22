@@ -51,7 +51,16 @@ spec:
         - name: migrate
           image: {{ include "agledger.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/nodejs/bin/node", "dist/src/db/migrate.js"]
+          # Node 24 Permission Model hardening, the same prefix the api and
+          # worker containers carry (see values.yaml `permission`). Not only
+          # the sandbox: NODE_OPTIONS reaches every node process in a
+          # container, Node refuses `--allow-fs-write` from a process not
+          # started with `--permission` and an `--import` from one holding no
+          # `--allow-fs-read`, and migrate.extraEnv/extraEnvFrom
+          # reach this container. Without the prefix such a value fails the
+          # Job at pre-execution with ERR_MISSING_OPTION and no migration
+          # runs. migrate.js only reads the filesystem.
+          command: ["/nodejs/bin/node", {{ include "agledger.permissionArgs" . }}"dist/src/db/migrate.js"]
           envFrom:
             - configMapRef:
                 name: {{ include "agledger.fullname" . }}
@@ -73,6 +82,14 @@ spec:
                 secretKeyRef:
                   name: {{ include "agledger.secretName" . }}
                   key: DATABASE_URL_MIGRATE
+            {{- /* The migrate CLI prefers DATABASE_URL_DIRECT over DATABASE_URL,
+                   which is right when the pool is pooled and no owner role is
+                   named. Here an owner role IS named and arrives as
+                   DATABASE_URL, so the direct URL is cleared on this Job to
+                   keep the DDL on the role that can do it. The owner URL must
+                   itself reach the database directly. */}}
+            - name: DATABASE_URL_DIRECT
+              value: ""
           {{- end }}
           {{- with .Values.migrate.extraEnv }}
           {{- include "agledger.envList" . | trim | nindent 12 }}

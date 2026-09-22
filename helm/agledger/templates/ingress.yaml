@@ -10,6 +10,24 @@
 */}}
 {{- fail "ingress.enabled is true with no ingress.hosts. An Ingress needs at least one rule: with none, spec.rules renders null and the API server rejects the object outright (\"either 'defaultBackend' or 'rules' must be specified\"), so the install fails after the rest of the release is already applied. Name the hostname this Server is reached at:\n  --set ingress.enabled=true --set ingress.hosts[0].host=agledger.example.com\nThe chart will not fall back to a host-less defaultBackend: that publishes this Server on every request the controller cannot match elsewhere, which is wider exposure than enabling an ingress asks for, and it leaves config.externalUrl with no hostname to derive from. On OpenShift, route.enabled lets the router generate the hostname instead; to reach the Server with no ingress at all, port-forward the Service." }}
 {{- end }}
+{{- /*
+  `tls: []` is the shipped default, so an ingress named by host alone reaches
+  here. An Ingress with no `tls` block is served over plain HTTP, and the two
+  things that cross it are the API key in the Authorization header and the
+  record bodies it writes, so the object the chart would render publishes both
+  in the clear with nothing in the output saying so. The OpenShift Route path
+  already answers this the other way (route.tls.enabled defaults true with
+  insecureEdgeTerminationPolicy: Redirect); this is the two agreeing.
+
+  The ALB annotation is the third way an Ingress carries TLS and the chart
+  already reads it as one: `agledger.externalUrl` derives https from it, so
+  refusing it here would refuse the standard AWS shape (certificate on the load
+  balancer, no `tls` block) while signing its URL as https.
+*/}}
+{{- $albCert := hasKey ((.Values.ingress).annotations | default dict) "alb.ingress.kubernetes.io/certificate-arn" }}
+{{- if and (not ((.Values.ingress).tls | default list)) (not $albCert) (not ((.Values.ingress).allowPlainHttp)) }}
+{{- fail "ingress.enabled is true with no ingress.tls. An Ingress with no tls block is served over plain HTTP, so the API keys in the Authorization header and the record bodies they write cross the network in the clear. Name the certificate:\n  --set ingress.tls[0].secretName=agledger-tls --set ingress.tls[0].hosts[0]=<the host in ingress.hosts>\nAn AWS ALB holding the certificate says so with its own annotation and needs nothing here:\n  --set ingress.annotations.alb\\.ingress\\.kubernetes\\.io/certificate-arn=<arn>\nAnything else terminating TLS in front of this Ingress (a service mesh, another cloud load balancer) has to say so:\n  --set ingress.allowPlainHttp=true\nThat flag also makes the derived AGLEDGER_EXTERNAL_URL https, because the public URL in that arrangement is https; set config.externalUrl explicitly if it is not.\nOn OpenShift, route.enabled terminates TLS at the router and redirects HTTP by default." }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

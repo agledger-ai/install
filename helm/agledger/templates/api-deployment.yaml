@@ -22,6 +22,16 @@ spec:
         {{- include "agledger.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
       annotations:
+        {{- /* A ConfigMap or Secret value change must roll this Deployment.
+               `envFrom` resolves both once, at pod start, so without these two
+               annotations an upgrade that only changed a value leaves every pod
+               running the old one, and a vault signing key change in particular
+               would land on no process at all. The secret checksum is empty
+               under secrets.existingSecret: see agledger.secretChecksum. */}}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with (include "agledger.secretChecksum" .) }}
+        checksum/secret: {{ . }}
+        {{- end }}
         {{- /* Annotation-based discovery has no way to carry a credential: the
                conventional kubernetes-pods scrape job reads these three keys and
                nothing else. /metrics is gated by default under

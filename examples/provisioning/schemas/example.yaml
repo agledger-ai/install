@@ -77,3 +77,26 @@ schemas:
         evidencePath: currency
         valueType: string
     defaultGateMode: auto
+
+  # The 90% shape: no completionSchema at all. A Type that declares none is
+  # notarize-only, so a record against it is terminal at RECORDED on create and
+  # there is no completion to submit. Omitting the key and writing
+  # `completionSchema: {}` mean the same thing here as on POST /v1/schemas.
+  - type: CUSTOM-DELIVERY-NOTE-v1
+    displayName: Delivery Note
+    category: Logistics
+    recordSchema:
+      type: object
+      required:
+        - shipment_ref
+        - delivered_at
+      properties:
+        shipment_ref:
+          type: string
+          maxLength: 100
+          description: Carrier shipment reference the note is recorded against.
+        delivered_at:
+          type: string
+          format: date-time
+          description: When the delivery was observed (ISO 8601).
+      additionalProperties: false

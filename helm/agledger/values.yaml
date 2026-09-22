@@ -31,9 +31,10 @@
 # exercised on a live OpenShift cluster; that half follows from the SCC rules.
 #
 # What is actually dropped is the whole pod-level block below, which is
-# `runAsNonRoot: true` alongside the two uid/gid keys. Every container-level
-# control is untouched on all three workloads: read-only root filesystem, no
-# privilege escalation, all capabilities dropped.
+# `runAsNonRoot: true` alongside the two uid/gid keys and the RuntimeDefault
+# seccomp profile. Every container-level control is untouched on all three
+# workloads: read-only root filesystem, no privilege escalation, all
+# capabilities dropped.
 #
 # Non-root therefore still holds, but by a different guarantee. On OpenShift
 # restricted-v2 enforces it directly, along with a default seccomp profile. Off
@@ -41,8 +42,12 @@
 # longer independently verifies. That is fine for the stock image and worth
 # knowing if you point `image.repository` at a derived one.
 #
-# The bundled PostgreSQL is unaffected and needs no equivalent: it requests no
-# securityContext at all, which is precisely what restricted-v2 admits.
+# The bundled PostgreSQL follows the same rule for the same reason. Its pod-level
+# block asks for uid/gid 70, the `postgres` user in the upstream image, which is
+# outside the namespace range exactly as 65532 is; this flag drops that block too
+# and leaves restricted-v2 to assign one. Its container-level controls (read-only
+# root filesystem, no privilege escalation, all capabilities dropped) are
+# untouched, as they are everywhere else.
 #
 # `-f values-openshift.yaml` sets exactly this flag and nothing else. Prefer
 # `--set` when installing straight from the OCI registry, since reaching the
@@ -88,16 +93,29 @@ image:
 #     during a rollout. On a single 2 vCPU node this fails to schedule and
 #     `helm upgrade` hangs.
 # Node 24 Permission Model runtime hardening (--permission, stable in Node 24).
-# Applied to both the API and worker. Denies filesystem WRITES, child processes,
-# worker threads, native addons, WASI, and the inspector — the primitives a
-# compromised npm dependency reaches for. Network is NOT gated by Node's
-# permission model, so listeners + outbound webhook/JWKS/federation calls are
-# unaffected. Both the API and worker boot verified-clean under this profile.
+# Applied to every container in the release that runs an entry script: the API
+# and worker Deployments, and the migration and preflight Jobs. Denies
+# filesystem WRITES, child processes, worker threads, native addons, WASI, and
+# the inspector — the primitives a compromised npm dependency reaches for.
+# Network is NOT gated by Node's permission model, so listeners + outbound
+# webhook/JWKS/federation calls are unaffected. All four boot verified-clean
+# under this profile; the two Jobs only read.
+#
+# Turning this off is not only a loss of sandbox. NODE_OPTIONS reaches every
+# node process in a container, and Node refuses `--allow-fs-write` from one not
+# started with `--permission`, so with `enabled: false` a NODE_OPTIONS in
+# `extraEnv` or `migrate.extraEnv` fails its container at pre-execution. Widen
+# the sandbox through extraAllowArgs below rather than through NODE_OPTIONS.
 permission:
   enabled: true
-  # Extra node --allow-* args appended to both API and worker argv. Use to widen
+  # Extra node --allow-* args appended to the argv of all four. Use to widen
   # the sandbox for opt-in features that need a denied capability, e.g.:
   #   - "--allow-fs-write=/var/log/agledger"   # file SIEM sink (SIEM_FILE_ENABLED)
+  # The file sink is written by the WORKER only: it is the process that drains
+  # the shared SIEM cursor to the push sinks, and the API serves the pull
+  # channel (GET /v1/siem/stream) without touching the filesystem. With
+  # worker.replicaCount above 1 the feed is split across the pods' files and
+  # neither is complete; use the HTTP sink there, which is one collector.
   extraAllowArgs: []
 
 api:
@@ -105,6 +123,16 @@ api:
   # Recreate is the safe default for single-node clusters. Switch to RollingUpdate
   # once you have multiple nodes (or a node large enough to host both old and new
   # pods simultaneously).
+  #
+  # Either way an upgrade runs two releases against one schema: the migration is
+  # a pre-upgrade hook Job, so it finishes while the pods you are leaving are
+  # still serving. Recreate holds that window to the pod swap; RollingUpdate
+  # stretches it across the whole rollout, with pods of both releases answering
+  # this Service at once. Migrations are written to serve the previous release,
+  # so nothing has to be ordered around it, but a security control a release
+  # introduces binds only the pods carrying that release. Read connectedVersions
+  # on GET /v1/admin/system-health to see which versions are still attached.
+  # deploy/README.md, "Two releases against one schema".
   strategy:
     type: Recreate
   resources:
@@ -154,10 +182,22 @@ api:
     #               values: [api]
     #         topologyKey: kubernetes.io/hostname
   topologySpreadConstraints: []
+  # Also the pod-level block for the migrate, preflight and backup workloads:
+  # each of those reads `api.podSecurityContext`, so one edit here moves all of
+  # them together and none of them can drift.
   podSecurityContext:
     runAsNonRoot: true
     runAsUser: 65532
     fsGroup: 65532
+    # The syscall filter the Pod Security Standards' `restricted` profile
+    # requires. Without it the kubelet runs the container `Unconfined`, which
+    # leaves the whole syscall table reachable from inside it. RuntimeDefault is
+    # the container runtime's own profile (containerd and CRI-O ship the same
+    # blocklist), so it costs nothing on a normal workload and a namespace
+    # labelled `pod-security.kubernetes.io/enforce: restricted` rejects the pod
+    # without it. Set `seccompProfile: null` here to run Unconfined.
+    seccompProfile:
+      type: RuntimeDefault
   securityContext:
     readOnlyRootFilesystem: true
     allowPrivilegeEscalation: false
@@ -171,6 +211,11 @@ api:
 # See `api` above for sizing guidance — same single-node vs. HA tradeoff applies.
 worker:
   replicaCount: 1
+  # Same Recreate default and the same mixed-release window as `api.strategy`
+  # above. The worker's own share of it: pg-boss schedules live in the database,
+  # so a worker on the older release meets jobs the newer release's schedule
+  # minted, fails them rather than completing them, and counts them on
+  # agledger_maintenance_unknown_task_total.
   strategy:
     type: Recreate
   resources:
@@ -200,6 +245,9 @@ worker:
     runAsNonRoot: true
     runAsUser: 65532
     fsGroup: 65532
+    # See `api.podSecurityContext` above for what this is and how to turn it off.
+    seccompProfile:
+      type: RuntimeDefault
   securityContext:
     readOnlyRootFilesystem: true
     allowPrivilegeEscalation: false
@@ -315,7 +363,10 @@ database:
                    # external-database one in every other respect too (hook
                    # migration, runtime-role preflight gate, outbound database
                    # egress, and no ALLOW_DB_WITHOUT_SSL, so the production
-                   # sslmode= requirement stands). See postgres.bundled.enabled.
+                   # database TLS requirement stands: sslmode must be require,
+                   # verify-ca or verify-full, and uselibpqcompat=true needs an
+                   # sslrootcert beside it or the driver encrypts without
+                   # verifying the certificate). See postgres.bundled.enabled.
                    # IMPORTANT: the role that runs MIGRATIONS (this URL, or
                    # secrets.databaseUrlMigrate if set) must be a SUPERUSER —
                    # rds_superuser on Amazon RDS/Aurora, a true superuser on
@@ -443,6 +494,32 @@ postgres:
         memory: 256Mi
       limits:
         memory: 1Gi
+    # uid/gid 70 is the `postgres` user in the upstream Alpine image. The image
+    # declares no USER of its own and its entrypoint drops privileges itself, so
+    # without this the pod runs the entrypoint as root. `fsGroup` is what makes
+    # the mounted PVC writable by that uid; asking for the uid without it leaves
+    # initdb failing on "Permission denied" against the data directory.
+    #
+    # Dropped wholesale on OpenShift, along with every other pod-level block in
+    # this file, by `openshift.enabled` (see the note at the top).
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 70
+      fsGroup: 70
+      seccompProfile:
+        type: RuntimeDefault
+    # `readOnlyRootFilesystem: true` holds here because the chart mounts the two
+    # paths the server writes outside its data directory: /var/run/postgresql for
+    # the Unix socket and lock file, and /tmp. Measured against the pinned image
+    # above: initdb completes, the server starts, and it accepts connections.
+    # Dropping either mount puts it back to "could not create lock file
+    # /var/run/postgresql/.s.PGSQL.5432.lock: Read-only file system".
+    securityContext:
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
 
 # ---
 # Extra environment (API + worker)
@@ -582,10 +659,12 @@ secrets:
                              # filled in. Add --algorithm es256 for FIPS hosts.
                              # Preserved across upgrades once set.
   webhookEncryptionKey: ""
+  webhookEncryptionKeyPrevious: ""  # optional. The previous WEBHOOK_ENCRYPTION_KEY after a rotation; stored secrets are re-encrypted under the current key on their next delivery
   # Bearer token for GET /metrics. Auto-generated (48 chars) if empty and
   # preserved across upgrades, so the ServiceMonitor and the Prometheus you
   # pointed at this install keep scraping. Read it with:
-  #   kubectl get secret <release>-agledger-chart -o jsonpath='{.data.METRICS_AUTH_TOKEN}' | base64 -d
+  #   kubectl get secret -n <ns> -l app.kubernetes.io/instance=<release> \
+  #     -o jsonpath='{.items[0].data.METRICS_AUTH_TOKEN}' | base64 -d
   # Set to "-" to mint none, which leaves /metrics behind the ordinary API-key
   # chain in production (METRICS_AUTH_REQUIRED defaults true there).
   # Preserved the same way apiKeySecret is, and lost the same way under a
@@ -598,20 +677,62 @@ secrets:
                              # note on database.externalUrl: rds_superuser on RDS/Aurora,
                              # superuser on self-managed PG), agledger_app for DML
                              # (API/Worker). scripts/setup-db-roles.sh wires this split.
+  databaseUrlDirect: ""     # optional — a connection string that bypasses a
+                             # connection pooler running in transaction mode
+                             # (PgBouncer pool_mode=transaction, RDS Proxy).
+                             # Required when DATABASE_URL points at one: the API
+                             # and Worker refuse to boot otherwise, because the
+                             # LISTEN client, the session-level advisory locks
+                             # and migrations all need a session that stays
+                             # theirs. Leave empty for a direct database or a
+                             # pooler in session mode, and everything runs on
+                             # DATABASE_URL as before. On RDS, this is the
+                             # instance or cluster endpoint rather than the
+                             # proxy endpoint.
   # The Developer Edition key from agledger.ai/register is a compact string
   # (agl_dev_v1_...), and that is the format to put here. `licenseKey` below is
   # the older PEM file contents; set one or the other, not both.
   # Precedence, highest first: license, license.keyFile, licenseKey.
   license: ""               # optional. Compact activation string (AGLEDGER_LICENSE)
   licenseKey: ""            # optional. Inline PEM license string (AGLEDGER_LICENSE_KEY)
-  apiKeySecretPrevious: ""  # optional — Previous API_KEY_SECRET for key rotation (zero-downtime)
+  apiKeySecretPrevious: ""  # optional. The previous API_KEY_SECRET, honoured beside the current one while keys are re-hashed. A chart-managed Secret change rolls both Deployments; with existingSecret, restart them yourself
+  # optional — the vault signing key this install has stopped signing with.
+  # Registered as retired so GET /v1/verification-keys keeps publishing it and
+  # everything it signed stays verifiable offline. Its window is derived from
+  # the chain, so history under it does not fall outside it.
+  #
+  # Changing the signing key is two steps and this chart covers the first: set
+  # secrets.vaultSigningKey to the new key and upgrade. The checksum annotations
+  # on both pod templates roll the api and the worker, each process registers
+  # the key it holds and starts signing with it, and the old key stays active
+  # until you retire it with
+  # POST /v1/admin/vault/signing-keys/{keyId}/retire. deploy/README.md has both
+  # orders (scheduled and compromise).
+  vaultSigningKeyPrevious: ""
   existingSecret: ""        # set to use a pre-existing Kubernetes Secret
+                             # With this set the chart writes no Secret and cannot
+                             # see what is in yours, so nothing here notices when
+                             # you change a value in it: RESTART BOTH DEPLOYMENTS
+                             # YOURSELF after every change
+                             # (kubectl rollout restart deploy -n <ns>
+                             #  -l app.kubernetes.io/instance=<release>,
+                             #  which restarts both without depending on
+                             #  the rendered workload names).
+                             # That matters most for
+                             # VAULT_SIGNING_KEY: a process that never restarts
+                             # goes on signing with the key it booted with.
                              # The Secret must contain these keys (as env var names):
                              #   DATABASE_URL          (required) — PostgreSQL connection string
                              #   API_KEY_SECRET        (required) — HMAC key for API key hashing
-                             #   VAULT_SIGNING_KEY     (required) — Ed25519 key for audit vault signatures
+                             #   VAULT_SIGNING_KEY     (required unless signing.kmsKeyArn is set) — Ed25519 key
+                             #     for audit vault signatures
+                             #   VAULT_SIGNING_KEY_PREVIOUS (optional) — a key this install
+                             #     has stopped signing with, registered as retired so its
+                             #     history stays verifiable
                              #   WEBHOOK_ENCRYPTION_KEY (optional) — AES key for webhook payloads
                              #   DATABASE_URL_MIGRATE  (optional) — Owner-role URL for migrations
+                             #   DATABASE_URL_DIRECT   (optional) — pooler-bypassing URL for
+                             #     LISTEN, session advisory locks and migrations
                              #   AGLEDGER_LICENSE      (optional): compact key, agl_<tier>_v1_...
                              #   AGLEDGER_LICENSE_KEY  (optional) — PEM license string
                              #   METRICS_AUTH_TOKEN    (optional) — bearer token for GET /metrics.
@@ -626,7 +747,11 @@ secrets:
 # ---
 # License (Developer Edition or Enterprise)
 # ---
-# No license = Developer Edition (all features enabled: enforcement is contractual, not software).
+# A license is required to run AGLedger in production, and the Developer Edition
+# key is free: register at https://agledger.ai/register. With no key at all this
+# deployment is Unlicensed Use, not Developer Edition: permitted for evaluation,
+# development and testing only, and only for the Evaluation Period the license
+# sets (https://agledger.ai/license, section 2.5).
 # Everything fails open. No key configured, or a key that was removed, logs a WARN
 # banner every 24h; a key that fails validation logs an ERROR every 30 minutes.
 license:
@@ -635,7 +760,10 @@ license:
     enabled: false          # Mount a PEM license file from a K8s Secret
     secretName: ""          # Name of the K8s Secret containing the license PEM
     secretKey: license.pem  # Key within the Secret
-    mountPath: /run/secrets/agledger-license.pem  # Path inside the container
+    mountPath: /run/secrets/agledger-license  # Directory inside the container; the
+                             # file lands at <mountPath>/<secretKey>. A directory
+                             # mount is what lets a rotated Secret reach
+                             # POST /v1/admin/license/reload without a pod restart.
 
 # ---
 # AWS Marketplace — alternative license source via License Manager
@@ -647,6 +775,35 @@ marketplace:
   serviceAccountAnnotations: {}
   # Example:
   #   eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/agledger-marketplace
+
+# ---
+# Vault signing key custody
+# ---
+# By default the chart holds the vault signing key as key material in its
+# Secret (secrets.vaultSigningKey). Set kmsKeyArn instead to sign with a key
+# whose private half never leaves AWS KMS: the Server fetches the public half
+# at boot, registers it like a local key, and makes one KMS Sign call per
+# chain entry, checkpoint, Receipt, signed webhook delivery and certificate.
+# With kmsKeyArn set the chart writes no VAULT_SIGNING_KEY and does not
+# require secrets.vaultSigningKey; a key this install has signed with before
+# goes in secrets.vaultSigningKeyPrevious so its history stays verifiable.
+#
+# The key must be asymmetric, key spec ECC_NIST_P256, usage SIGN_VERIFY. KMS
+# signs no Ed25519, so this is an ES256 chain: set
+# config.allowNonDefaultSigningAlg: true and upgrade every consumer that
+# verifies this chain first (@agledger/verify 1.4.0 or newer). The pods reach
+# KMS through IRSA: grant kms:GetPublicKey and kms:Sign on the key to a role
+# and name it in serviceAccount.annotations.
+#
+# When KMS stops answering, a process refuses every write (503) rather than
+# write unsigned, fails its readiness probe, and resumes on its own when a
+# probe Sign is answered. deploy/monitoring/alerts ships the two rules.
+signing:
+  kmsKeyArn: ""             # arn:aws:kms:<region>:<account>:key/<id> (or :alias/<name>); region comes from the ARN
+  kmsEndpoint: ""           # KMS endpoint override (a VPC endpoint); empty = the regional endpoint
+  remoteMaxPerSecond: null  # Per-process ceiling on Sign calls (default 100). KMS Sign quotas are
+                            # per account and region and shared with every caller, so the sum
+                            # across api and worker replicas has to sit under the quota.
 
 # ---
 # Application Config
@@ -677,6 +834,22 @@ config:
                     # signing that host all along; only one with no ingress and no route
                     # host fell back to https://localhost.
   otelProvider: "generic"
+  # OTLP endpoint. Tracing and OTel metric export stay off until this is set,
+  # and on Kubernetes this value is the only thing that turns them on.
+  # It must be the BASE url of the collector's HTTP receiver (port 4318), with
+  # no `/v1/...` suffix: this build exports OTLP over HTTP with a JSON body,
+  # and the exporters append the per-signal path (`/v1/traces`, `/v1/metrics`)
+  # themselves. A `:4317` value (that is the gRPC receiver) or one that already
+  # carries a signal path still boots; the Server WARNs at startup naming the
+  # fix, and nothing reaches the collector until it is corrected.
+  # Rendered into the ConfigMap only when non-empty.
+  #   otelExporterOtlpEndpoint: http://otel-collector.observability:4318
+  # With the shipped networkPolicy on, setting this also opens egress from the
+  # API and worker pods to any pod in the cluster on the endpoint's port (the
+  # URL's own, else 443 for https and 4318 for http). A collector outside the
+  # cluster, on a private address or on a public one at any port but 443,
+  # still needs an egress entry of your own.
+  otelExporterOtlpEndpoint: ""
   # Primary contract type for agent discovery docs (/llms.txt, /llms-full.txt).
   # Pick your primary use case so agents see it first; empty string uses the
   # first alphabetical active contract as a deterministic fallback.
@@ -687,15 +860,31 @@ config:
   # the advertised limit is the limit), `memory` on a single replica. Set
   # "memory" or "postgresql" to decide it yourself.
   rateLimitStore: ""
-  # API_KEY_MAX_LIFETIME_SECONDS. Empty means no cap. When set, a mint asking for
-  # an expiresAt beyond the cap is refused with a 422 naming the ceiling, and a
-  # mint that omits expiresAt gets the capped window rather than a key that never
-  # expires. It binds BOTH doors: keys minted through the API and keys minted
-  # from the provisioning directory, which re-opens the window on every reconcile
-  # for the keys it manages. Find the keys that predate the policy with
-  # GET /v1/admin/api-keys?neverExpires=true.
-  # Set through extraEnv, e.g. 90 days:
+  # Key lifetime. Two separate knobs, both set through extraEnv.
+  #
+  # API_KEY_DEFAULT_LIFETIME_SECONDS is what an admin or agent key gets when the
+  # mint names no expiresAt. It defaults to 7776000 (90 days) with no chart
+  # value set, so a stock install does not issue permanent bearers; set it to
+  # "0" to go back to non-expiring keys. It fills in only what the caller did
+  # not ask for, so an explicit expiresAt further out still succeeds.
+  # AGLEDGER_PLATFORM_KEY_DEFAULT_LIFETIME_SECONDS is the same for platform
+  # keys and defaults to 0 (exempt): minting a platform key needs a platform
+  # credential, so an install whose only one expires with no OIDC issuer mapped
+  # to the platform role has locked itself out.
+  #
+  # API_KEY_MAX_LIFETIME_SECONDS is the ceiling, empty meaning no cap. A mint
+  # asking for an expiresAt beyond it is refused with a 422 naming the ceiling
+  # rather than clamped, and it applies to every role. With both set, a mint
+  # that names no expiry gets the smaller of the two.
+  #
+  # Both bind BOTH doors: keys minted through the API and keys minted from the
+  # provisioning directory, which re-opens the window on every reconcile for the
+  # keys it manages. Find the keys that predate the policy with
+  # GET /v1/admin/api-keys?neverExpires=true; the engine also reports the count
+  # at boot.
   #   extraEnv:
+  #     - name: API_KEY_DEFAULT_LIFETIME_SECONDS
+  #       value: "7776000"
   #     - name: API_KEY_MAX_LIFETIME_SECONDS
   #       value: "7776000"
   corsEnabled: true
@@ -747,10 +936,41 @@ ingress:
   #    paths:
   #      - path: /
   #        pathType: Prefix
+  # Required whenever enabled is true, for the same reason `hosts` is: an
+  # Ingress with no `tls` block is served over plain HTTP, and what crosses it
+  # is API keys in an Authorization header and the record bodies they write.
+  # The chart refuses that render rather than publishing the Server in the
+  # clear, so an enabled ingress names a certificate here or says explicitly
+  # that it does not want one via `allowPlainHttp` below. The OpenShift Route
+  # path makes the same choice by default (`route.tls.enabled: true` with
+  # `insecureEdgeTerminationPolicy: Redirect`), so the two agree.
+  #
+  # UPGRADING: a release that enables `ingress` with none of `tls`, an ALB
+  # certificate annotation, or `allowPlainHttp` rendered before and does not
+  # now. The render names which of the three to add. GKE's pre-shared or
+  # managed-certificate annotations are not recognised as TLS by this chart, so
+  # that arrangement is the `allowPlainHttp` case.
   tls: []
   #  - secretName: agledger-tls
   #    hosts:
   #      - api.agledger.example.com
+  # The way out when TLS terminates in front of this Ingress and the controller
+  # is genuinely reached over plain HTTP: a service mesh, or a cloud load
+  # balancer holding the certificate and speaking HTTP to the cluster. It admits
+  # nothing on its own, it only says the empty `tls` above is deliberate.
+  #
+  # An AWS ALB needs neither this nor `tls`: its
+  # `alb.ingress.kubernetes.io/certificate-arn` annotation already says the load
+  # balancer holds the certificate, and the chart reads it as TLS. GKE's
+  # `ingress.gcp.kubernetes.io/pre-shared-cert` and
+  # `networking.gke.io/managed-certificates` are not read that way, so a GKE
+  # ingress terminating TLS at the load balancer is this flag's case.
+  #
+  # Because the stated case IS https at the front door, this also makes the
+  # AGLEDGER_EXTERNAL_URL derived from the first ingress host https. That value
+  # is the permanent issuer signed into every record, so set config.externalUrl
+  # explicitly if this Server is genuinely published over plain HTTP.
+  allowPlainHttp: false
 
 # ---
 # OpenShift Route
@@ -804,6 +1024,11 @@ hpa:
 # install README; it is a kubectl recipe rather than a Job, because a restore
 # has preflight questions (a superuser for the audit event trigger, the runtime
 # role gate) that an operator has to answer rather than a template.
+# `helm test` runs one Pod that curls /health. An air-gapped cluster points
+# this at its registry's copy.
+tests:
+  image: curlimages/curl:8.18.0
+
 backup:
   cronJob:
     enabled: false
@@ -865,6 +1090,19 @@ monitoring:
     additionalLabels: {}
     interval: 30s
     scrapeTimeout: 10s
+    # Per-scrape ceilings, written at the ServiceMonitor spec level so they
+    # cover both endpoints. A tripped limit fails the WHOLE scrape: the target
+    # goes down, `up` reads 0, and every alert below reads as "no data" rather
+    # than naming the limit. So they are sized well above what the registry
+    # can reach, not close to it: the HTTP histogram alone is 14 series per
+    # (method, route, status code) and a long-running API with every route
+    # exercised sits in the low tens of thousands. Raise sampleLimit before
+    # adding a high-cardinality label. 0 on any of them means no limit.
+    # The three label limits need Prometheus 2.27 or later; sampleLimit is older.
+    sampleLimit: 50000
+    labelLimit: 30
+    labelNameLengthLimit: 200
+    labelValueLengthLimit: 200
     # Who the API NetworkPolicy admits on port 3000 for the scrape. The policy's
     # default ingressFrom names ingress controllers, which Prometheus is not, so
     # without this the `health` endpoint scrapes (the worker policy admits any
@@ -879,6 +1117,45 @@ monitoring:
   prometheusRule:
     enabled: false
     additionalLabels: {}
+    # Base URL of the runbook every shipped alert links to in its
+    # `runbook_url` annotation. The chart rewrites the shipped base to this
+    # value, so one setting repoints every link at an internal wiki. The
+    # anchors do not change: each alert appends `#<lowercase alert name>`, so
+    # whatever you point at needs a heading per alert under those same anchors.
+    runbookUrl: https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md
+    # Per-alert changes without forking the rules file, keyed by alert name
+    # exactly as it appears in the chart's files/alerts/agledger.rules.yml.
+    # An override naming an alert that does not exist FAILS the render: a typo
+    # that silently changed nothing is the failure mode this exists to avoid.
+    #
+    #   overrides:
+    #     AGLedgerWorkerJobsFailing:
+    #       severity: critical    # replaces labels.severity
+    #       for: 30m              # replaces the pending duration
+    #       keepFiringFor: 5m     # renders as the CRD's keep_firing_for
+    #       expr: |               # full replacement, not a patch
+    #         sum(rate(agledger_worker_jobs_processed_total{status="failure"}[10m]))
+    #         / clamp_min(sum(rate(agledger_worker_jobs_processed_total[10m])), 0.001) > 0.25
+    #     AGLedgerPartitionRunwayLow:
+    #       disabled: true        # drops the rule. A group left with no rules
+    #                             # is dropped with it.
+    overrides: {}
+    # Customer-authored groups, appended verbatim after the shipped ones.
+    # Same shape as the `groups:` entries of a Prometheus rule file. Nothing
+    # here is checked against the metric registry the way the shipped rules
+    # are, so an expression naming a metric this build does not emit renders
+    # and then never fires. `promtool check rules` on the rendered spec is the
+    # check this chart cannot do for you.
+    additionalGroups: []
+    #  - name: my-org-agledger
+    #    rules:
+    #      - alert: MyOrgNoRecordsWritten
+    #        expr: increase(agledger_records_created_total[30m]) == 0
+    #        for: 1h
+    #        labels:
+    #          severity: warning
+    #        annotations:
+    #          summary: "No records written in the last 30m"
   grafanaDashboards:
     enabled: false
     # The label the Grafana sidecar watches. Matches the grafana chart default.
@@ -921,6 +1198,7 @@ pdb:
 serviceAccount:
   create: true
   name: ""
+  annotations: {}           # e.g. eks.amazonaws.com/role-arn for IRSA (KMS custody, anchoring)
 
 # ---
 # Provisioning (YAML config-as-code)
@@ -949,10 +1227,16 @@ provisioning:
     agents: ""       # ConfigMap name for agents/*.yaml
     webhooks: ""     # ConfigMap name for webhooks/*.yaml
     schemas: ""      # ConfigMap name for schemas/*.yaml
-    # ConfigMap carrying the root-level trusted-issuers.yaml. Unlike the four
-    # above it is mounted as a single file, so the ConfigMap must have a key
-    # named exactly `trusted-issuers.yaml`; any other key is not projected and
-    # the loader reports no file.
+    # ConfigMap carrying trusted-issuers.yaml. Mounted as a directory at
+    # <configPath>/trusted-issuers/, like the four above, but projecting a
+    # single key: the ConfigMap must have one named exactly
+    # `trusted-issuers.yaml`, and any other key is not projected. The loader
+    # takes the file at <configPath>/trusted-issuers/trusted-issuers.yaml or at
+    # <configPath>/trusted-issuers.yaml, and the chart uses the first; the
+    # second is the plain on-disk layout Compose and bare-metal installs use.
+    # A single-file subPath mount is deliberately not used, because kubelet
+    # never refreshes one, so an edited ConfigMap could not reach a running pod
+    # and the reload would report a clean no-op over the original bytes.
     trustedIssuers: ""
 
   # Inline YAML content — a ConfigMap is created automatically.
@@ -990,18 +1274,22 @@ provisioning:
   #          - record.created
 
   # Which external IdPs this Server accepts JWTs from. A list, not a map of
-  # files: the loader reads one fixed file, `trusted-issuers.yaml`, at the
-  # provisioning root, and the chart renders these entries under its
-  # `trusted_issuers:` key. Same validators as POST /v1/admin/trusted-issuers,
+  # files: the loader reads one fixed file name, `trusted-issuers.yaml`, which
+  # the chart projects at <configPath>/trusted-issuers/ and renders these
+  # entries into under its `trusted_issuers:` key. Same validators as POST /v1/admin/trusted-issuers,
   # so what the admin API refuses this refuses too.
   #
   # Rows created here carry managed_by = 'provisioning' and are reconciled on
-  # every pass: dropping an entry deletes its row. Rows an operator created
-  # through the admin API are left alone and reported as skipped.
+  # every pass: dropping an entry deletes its row, and editing its
+  # expectedAudience or appliesTo, or adding an orgId to a global entry,
+  # updates the row in place. Rows an operator created through the admin API
+  # are left alone and reported as skipped.
   #
   # jwksUri is optional; without it the loader runs OIDC discovery against the
-  # issuer at boot, which means a Server that cannot reach the IdP does not
-  # finish that pass.
+  # issuer on every pass, so a moved jwks_uri is picked up on reload. An IdP
+  # this Server cannot reach refuses a new entry for that pass; an entry that
+  # already has a row keeps its stored jwks_uri with a warning, and every other
+  # field it declares still applies. The rest of the file still applies.
   #
   # autoProvisionAgents (default false) lets one row create the agents it has
   # never seen: the first token from an unknown subject makes an ephemeral agent
@@ -1026,12 +1314,68 @@ provisioning:
   #     org (default 1000, max 100000). At the cap the exchange is refused.
   # Each creation writes an AGENT_AUTO_PROVISIONED chain entry and an
   # auth.agent_auto_provisioned row on the SIEM stream.
+  #
+  # subjectAllowlist (default null) names the exact `sub` values a row admits,
+  # compared character for character. A verified token whose subject is not
+  # listed is refused with 401 and reason `subject_not_allowlisted`. Which
+  # subject is compared depends on the door the row serves: the admin bearer's
+  # own sub, the exchanging workload's sub at POST /v1/auth/oidc/cert, and the
+  # delegation token's sub (the principal acted for, never act.sub) on the
+  # AGLedger-On-Behalf-Of header. An `appliesTo: any` row serves all three and
+  # one list gates all three, so split the row per appliesTo before adding a
+  # list only one door should carry. With autoProvisionAgents on, this is what
+  # stops an IdP-side assignment mistake from creating an agent here. Narrowing
+  # the list stops the next cert exchange and does NOT revoke certs already
+  # minted, which run to their own expiresAt; POST
+  # /v1/admin/trusted-issuers/{id}/revoke-certs ends the live ones.
+  #
+  # jtiSingleUse (default false) accepts each admin bearer's token id once,
+  # across every replica, and refuses a second presentation with 401 and reason
+  # `jti_replayed`. Set it when the client mints a token per request, such as a
+  # per-call client_credentials grant against Okta or Keycloak; leave it off
+  # for a polling dashboard holding one token for a session, for a grant
+  # metered per month, and for a projected Kubernetes service-account token,
+  # which the kubelet rewrites only at 80 percent of its TTL (about 48 minutes
+  # on the 1h default), so a pod re-presents one token for that whole window.
+  #
+  # The id is the jti claim, or the claim named under the claimMapping logical
+  # name `jti`; the standard jti wins when the token carries both. Okta and
+  # Keycloak mint jti by default. Entra ID mints none on an access or an ID
+  # token and cannot be configured to; it mints uti, so an Entra row writes
+  # claimMapping: { jti: uti }. Auth0's default access-token profile mints
+  # neither: switch that API to the RFC 9068 profile, or leave the flag off. A
+  # Google service-account ID token has no per-token id at all and cannot be
+  # made single use.
+  #
+  # The flag governs the admin bearer alone, but the id it reads is shared.
+  # POST /v1/auth/oidc/cert is single use per token id whatever the flag says
+  # and resolves the id the same way, so a jti entry in claimMapping makes that
+  # door single use per the mapped claim too. A token resolving no id is
+  # exchangeable repeatedly there; an empty resolved id is refused with 400.
+  #
+  # A token with no id is admitted on every request even with the flag set,
+  # which is the flag enforcing nothing: each such admission increments
+  # agledger_oidc_admin_jti_unenforceable_total and the engine logs one WARN
+  # per row per process naming the fix. An id that is empty or over 512
+  # characters is refused with reason `jti_unregistrable`. The on-behalf-of
+  # header is never deduplicated on any id.
   trustedIssuers: []
   #  - issuerUrl: https://login.example.com/
   #    expectedAudience: agledger
   #    appliesTo: any
   #    orgId: null
   #    label: Corporate IdP
+  #  - issuerUrl: https://login.example.com/
+  #    expectedAudience: agledger
+  #    appliesTo: admin
+  #    orgId: null
+  #    label: Corporate IdP (operator SSO)
+  #    claimMapping:
+  #      role: agledger_role
+  #      scopes: agledger_scopes
+  #    jtiSingleUse: true
+  #    subjectAllowlist:
+  #      - svc-agledger-admin@corp.example.com
   #  - issuerUrl: https://kubernetes.default.svc/
   #    expectedAudience: agledger
   #    appliesTo: agent
@@ -1040,9 +1384,12 @@ provisioning:
   #    autoProvisionAgents: true
   #    autoProvisionScopeProfile: agent-performer-only
   #    autoProvisionMaxAgents: 500
+  #    subjectAllowlist:
+  #      - system:serviceaccount:agledger:worker
 
-  # A type with a structured completionSchema runs the completion phase; `{}`
-  # makes it notarize-only, terminal at RECORDED on create.
+  # A type with a structured completionSchema runs the completion phase.
+  # Omitting the key, or writing `{}`, makes it notarize-only, terminal at
+  # RECORDED on create, which is what POST /v1/schemas does with it too.
   schemas: {}
   #  custom-type.yaml: |
   #    schemas:

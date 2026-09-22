@@ -37,7 +37,7 @@
       "committedWaitDays": {
         "type": "integer",
         "minimum": 0,
-        "description": "The waiting period (in whole days) the employer commits to before final adverse action, so the candidate can dispute. OPERATOR POLICY, not a statutory number: production deployments MUST set >= 1 (EEOC-informed practice is 5 business days); 0 disables the wait and exists for integration wiring only. The v2 wait gate enforces this window against SIGNED time (create the wait gate as a child of this record); the policy floor itself is an operator-side cross-check against the employer policy record (api#972). NOTE: notarize this record under the sender agent's key (not an org-admin key); an admin-notarized record has no performer and cannot anchor the wait-gate child (delegation is self-assignment only)."
+        "description": "The waiting period (in whole days) the employer commits to before final adverse action, so the candidate can dispute. OPERATOR POLICY, not a statutory number: production deployments MUST set >= 1 (EEOC-informed practice is 5 business days); 0 disables the wait and exists for integration wiring only. The v2 wait gate enforces this window against SIGNED time (create the wait gate as a child of this record); the policy floor itself is an operator-side cross-check against the employer policy record. NOTE: notarize this record under the sender agent's key (not an org-admin key); an admin-notarized record has no performer and cannot anchor the wait-gate child (delegation is self-assignment only)."
       },
       "sentAt": {
         "type": "string",
