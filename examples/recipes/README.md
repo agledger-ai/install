@@ -30,6 +30,7 @@ rather than WHAT the work is, and they compose with any vertical above.
 | Recipe | What it covers | Directory |
 |--------|----------------|-----------|
 | Agent Work Context | Durable work state for AI agents: one root record per piece of work, immutable signed checkpoints as children, first-class signed supersession so the current head is one query (`?superseded=false`) rather than a guess at the newest row, cold-start resume and handoff with tamper-evident succession, and a client-side lineage-coherence checker. Ships both a `register.sh` path and an importable manifest (`manifests/`, publisher `agledger-recipes`) for digest-matched distribution across Servers. | [`work-context/`](work-context/) |
+| Agent drift | An ops loop over `GET /v1/agents/drift`: a standard-library script pages the fleet, selects the agents whose numbers moved in either direction, and gathers the per-type series and record history for each; a brief hands the dossier to the model or person who decides expected, watch or escalate, and each tick's decisions are notarized so the loop's own judgment is on the ledger it watches. No types to register. | [`agent-drift/`](agent-drift/) |
 
 We add and exercise new verticals over time. If you need one that is not here yet,
 contact sales@agledger.ai.
