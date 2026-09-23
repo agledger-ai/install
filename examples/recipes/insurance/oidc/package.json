@@ -1,0 +1,15 @@
+{
+  "name": "agledger-recipe-insurance-oidc",
+  "private": true,
+  "type": "module",
+  "description": "Insurance claim flow with no AGLedger secret in any agent: OIDC workload identity, cert exchange, sealed agent signatures.",
+  "scripts": {
+    "walkthrough": "node --env-file=oidc.env walkthrough.mjs"
+  },
+  "dependencies": {
+    "@agledger/sdk": "1.12.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
