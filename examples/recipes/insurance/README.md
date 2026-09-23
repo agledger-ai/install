@@ -73,6 +73,14 @@ For the per-call mechanics (preview, compatibility modes, versioning, retiring, 
 sharing types across Servers), see the **Define Custom Types** guide. For the Notify
 subscriptions in `notify.yaml`, see the **Webhooks** guide.
 
+## Run it with no API key in any agent
+
+`oidc/` runs the same claim flow on OIDC workload identity: each agent authenticates with a
+token from your own identity provider, exchanges it for a short-lived cert, and every write
+carries the agent's own signature, re-checkable offline. It includes a Keycloak realm, the
+operator setup, an SDK walkthrough, and what bringing it up teaches. Its walkthrough installs
+`@agledger/sdk` from npm, or from your internal mirror on an air-gapped host.
+
 ## Air-gapped
 
 This recipe is files. Once you have this directory on the target host, `register.sh`
