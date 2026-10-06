@@ -16,7 +16,7 @@ medical director are the deciders.
 
 This recipe was built and exercised against a reference HL7 Da Vinci payer system (the
 Burden-Reduction br-payer Prior Authorization Support service) driving real PAS
-`$submit` calls and the X12 review-action codes it returns, so the gate hand-off matches
+`$submit` calls and the X12 review-action codes it returns, so the gate decision matches
 how an actual payer renders prior-auth decisions.
 
 ## The pattern: decide at the system-of-record seam
@@ -61,12 +61,13 @@ registry, no shared signing infrastructure.
 
 ```bash
 export AGLEDGER_API_URL=https://agledger.internal.example
-export AGLEDGER_API_KEY=agl_...   # an admin/platform key with schemas:write
+export AGLEDGER_API_KEY=agl_adm_...   # an admin key with schemas:write; register.sh refuses a platform key
 ./register.sh
 ```
 
 `register.sh` POSTs each type to `POST /v1/schemas` in order and prints what landed.
-Re-running registers a new version of any type whose schema changed compatibly; an
+Re-running registers a new version of any type whose schema changed compatibly, and a type whose file is unchanged answers 200 with its current version
+and registers nothing; an
 incompatible change is rejected and reported. See `register.sh` for the `RECIPE_FORCE=1`
 reset option (destructive; scratch orgs only).
 

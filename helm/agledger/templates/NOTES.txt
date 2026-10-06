@@ -27,14 +27,14 @@ AGLedger has been installed successfully.
   API URL:  {{ if ((.Values.route).tls).enabled }}https{{ else }}http{{ end }}://{{ .Values.route.host }}
 {{- $apiBase = printf "%s://%s" (ternary "https" "http" (((.Values.route).tls).enabled | default false)) .Values.route.host }}
 {{- else }}
-  API URL:  kubectl get route {{ include "agledger.fullname" . }} -o jsonpath='{.spec.host}'
+  API URL:  kubectl get route {{ include "agledger.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.spec.host}'
             (the router generates the hostname when route.host is unset)
             The commands below use $AGLEDGER_URL; set it from that hostname:
               export AGLEDGER_URL="{{ if ((.Values.route).tls).enabled }}https{{ else }}http{{ end }}://$(kubectl get route {{ include "agledger.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.spec.host}')"
 {{- $apiBase = "$AGLEDGER_URL" }}
 {{- end }}
 {{- else }}
-  API URL:  kubectl port-forward svc/{{ include "agledger.fullname" . }} 3001:80
+  API URL:  kubectl port-forward svc/{{ include "agledger.fullname" . }} -n {{ .Release.Namespace }} 3001:80
             then open http://localhost:3001
             Every command below assumes that port-forward is running.
 {{- end }}
@@ -85,7 +85,7 @@ Database:   External (configured via DATABASE_URL secret)
 
 Next steps:
   1. Create a platform API key:
-     kubectl exec deploy/{{ include "agledger.fullname" . }}-api -- \
+     kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "agledger.fullname" . }}-api -- \
        env NODE_OPTIONS= /nodejs/bin/node dist/scripts/init.js --non-interactive
 
   2. Verify health:
@@ -95,8 +95,11 @@ Next steps:
      curl {{ $apiBase }}/openapi.json
      curl {{ $apiBase }}/llms.txt
 {{- if eq .Values.config.nodeEnv "production" }}
-     Swagger UI at /docs is off under NODE_ENV=production. Turn it on with
-     --set extraEnv[0].name=SWAGGER_UI_ENABLED --set extraEnv[0].value=true
+     Swagger UI at /docs is off under NODE_ENV=production. To turn it on, add
+       - name: SWAGGER_UI_ENABLED
+         value: "true"
+     to extraEnv in your values file, beside the entries already there.
+     A --set on an extraEnv index replaces the whole list your values file sets.
 {{- else }}
      Swagger UI: {{ $apiBase }}/docs
 {{- end }}
@@ -124,7 +127,7 @@ Provisioning:
   Prune:       enabled (removed resources will be deactivated)
   {{- end }}
   Reload:      curl -X POST -H "Authorization: Bearer <platform-key>" {{ $apiBase }}/v1/admin/provisioning/reload
-  Or:          kubectl exec deploy/{{ include "agledger.fullname" . }}-api -- kill -SIGHUP 1
+  Or:          kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "agledger.fullname" . }}-api -- sh -c 'kill -HUP 1'
 {{- end }}
 
 {{- if ((.Values.backup).preUpgrade).enabled }}
@@ -138,6 +141,18 @@ Pre-upgrade backup:
   against a claim that is not there yet does not fail fast: the pod stays
   Pending and the upgrade blocks until its timeout.
 {{- end }}
+{{- end }}
+{{- if and (or ((.Values.backup).cronJob).enabled ((.Values.backup).preUpgrade).enabled) ((.Values.backup).persistence).enabled (not ((.Values.backup).persistence).existingClaim) (not ((.Values.backup).persistence).storageClassName) }}
+
+Backup volume:
+  The backup PersistentVolumeClaim takes your cluster's DEFAULT storageclass.
+  With none, the claim stays Pending, every backup Job waits behind it, and no
+  backup runs, while this install reports success. Check:
+    kubectl get pvc {{ include "agledger.fullname" . }}-backups -n {{ .Release.Namespace }}   # should be Bound, not Pending
+  A class that binds on first use (WaitForFirstConsumer) shows Pending until
+  the first backup Job runs; that one is fine. If there is no default, name a
+  class, delete the Pending claim (it holds nothing), and re-run:
+    helm upgrade --install ... --set backup.persistence.storageClassName=<class>
 {{- end }}
 {{- if not .Values.secrets.existingSecret }}
 {{- if not .Values.secrets.gitops }}
@@ -226,6 +241,26 @@ Running on OpenShift?
   65532: must be in the ranges: [...]`. Re-run with:
     --set openshift.enabled=true
   See the `openshift` block in values.yaml, or https://agledger.ai/docs/install
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+
+NetworkPolicy: the API admits port 3000 only from the pods below, each matched
+in the namespaces named beside it{{ if .Values.networkPolicy.ingressCIDRs }}, and from the address ranges below{{ end }}. An
+ingress controller or Prometheus anywhere else is dropped at the network layer,
+which reads as a 502/504 or a down target with nothing in the pod logs. Change
+them in networkPolicy.ingressFrom, networkPolicy.ingressCIDRs (an ALB with
+target-type ip connects from VPC addresses, not from a pod){{ if ((.Values.monitoring).serviceMonitor).enabled }} and monitoring.serviceMonitor.scrapeFrom{{ end }}:
+{{- range .Values.networkPolicy.ingressFrom }}
+  - pods {{ toJson ((.podSelector) | default dict) }} in namespaces {{ toJson ((.namespaceSelector) | default dict) }}
+{{- end }}
+{{- range .Values.networkPolicy.ingressCIDRs }}
+  - addresses {{ . }}
+{{- end }}
+{{- if ((.Values.monitoring).serviceMonitor).enabled }}
+{{- range ((.Values.monitoring).serviceMonitor).scrapeFrom }}
+  - pods {{ toJson ((.podSelector) | default dict) }} in namespaces {{ toJson ((.namespaceSelector) | default dict) }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 Documentation: https://agledger.ai/docs

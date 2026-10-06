@@ -1,8 +1,13 @@
 # Orgs (with inline agents + API keys) provisioned as config-as-code.
-# Reconciled on every boot; rows are tagged managed_by=provisioning. The natural
-# key is `name` - keep it stable across reconciles (renaming creates a new org).
+# Reconciled on every boot; rows are tagged managed_by=provisioning. A Server
+# runs one org: declare it here and first boot creates it under this name. On a
+# Server whose org already exists, use that org's name (GET /v1/admin/orgs) and
+# provisioning takes it over. Any other name is refused as a second org, so the
+# name is not changed from here. `Default` is the name first boot gives the org
+# when AGLEDGER_DEFAULT_ORG_NAME is unset; the agents and webhooks files name the
+# same org, so change all three together.
 orgs:
-  - name: Acme Corp
+  - name: Default
 
     # ---------------------------------------------------------------------
     # API keys are declared here, and this starter file declares none on

@@ -38,11 +38,24 @@ import argparse, json, os, sys, time, urllib.error, urllib.parse, urllib.request
 COUNTS = ('records', 'completions', 'verdicts', 'accepted', 'rejected', 'overturned')
 
 
+def api_base(raw):
+    """Refuse anything but http/https. urllib would happily open file:// or
+    ftp://, and this script gets copied into places where the base URL is not
+    always as trusted as an operator's own shell."""
+    u = urllib.parse.urlparse(raw)
+    if u.scheme not in ('http', 'https'):
+        sys.exit(f"AGLEDGER_API_URL must be http or https, got {u.scheme or 'no'} scheme: {raw}")
+    if not u.netloc:
+        sys.exit(f'AGLEDGER_API_URL has no host: {raw}')
+    return raw.rstrip('/')
+
+
 def api(base, key, path, params=None):
     q = {k: v for k, v in (params or {}).items() if v is not None}
     url = base.rstrip('/') + path + (('?' + urllib.parse.urlencode(q)) if q else '')
     req = urllib.request.Request(url, headers={'Authorization': f'Bearer {key}', 'Accept': 'application/json'})
     try:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- scheme is pinned to http/https by api_base() in main()
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, json.loads(r.read() or b'{}'), {k.lower(): v for k, v in r.headers.items()}
     except urllib.error.HTTPError as e:
@@ -120,7 +133,7 @@ def main():
     ap.add_argument('--quiet', action='store_true', help='no text summary')
     a = ap.parse_args()
 
-    base = os.environ.get('AGLEDGER_API_URL') or sys.exit('AGLEDGER_API_URL not set')
+    base = api_base(os.environ.get('AGLEDGER_API_URL') or sys.exit('AGLEDGER_API_URL not set'))
     key = os.environ.get('AGLEDGER_API_KEY') or sys.exit('AGLEDGER_API_KEY not set')
 
     t0 = time.time()

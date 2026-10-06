@@ -14,6 +14,25 @@ set -euo pipefail
 # Supported: Ubuntu 22.04+, macOS 14+ (amd64 only — Apple Silicon via Rosetta)
 # =============================================================================
 
+# The install inputs the operator set in the environment, read before
+# lib-compose.sh assigns any defaults, so every re-run line this script prints
+# carries them: run literally, a line that dropped AGLEDGER_REQUIRE_VERIFY
+# installs an image the original run refused, and one that dropped
+# DATABASE_URL installs the bundled database instead. A URL carries its
+# password, so the two database URLs are named with a placeholder the operator
+# fills in rather than printed. The compose project and the published ports
+# are not here; the lines that change them name them.
+RERUN_ENV=""
+for _rerun_var in AGLEDGER_IMAGE AGLEDGER_SIGNING_ALGORITHM AGLEDGER_FIPS AGLEDGER_REQUIRE_VERIFY \
+  AGLEDGER_SKIP_VERIFY AGLEDGER_VERIFY_BUNDLE_DIR ALLOW_DB_WITHOUT_SSL POSTGRES_USER POSTGRES_DB \
+  ECR_REGISTRY AWS_REGION; do
+  [[ -n "${!_rerun_var+set}" ]] && RERUN_ENV="${RERUN_ENV}${_rerun_var}=$(printf '%q' "${!_rerun_var}") "
+done
+for _rerun_var in DATABASE_URL DATABASE_URL_MIGRATE; do
+  [[ -n "${!_rerun_var+set}" ]] && RERUN_ENV="${RERUN_ENV}${_rerun_var}='<the ${_rerun_var} this run used>' "
+done
+unset _rerun_var
+
 # --- Shared Helpers ---
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,6 +81,28 @@ REQUESTED_VERSION=""
 EXTERNAL_DB_FLAG=false
 FIPS_FLAG=false
 CUSTOM_IMAGE=""
+
+# The flags this run was started with, kept before the parser consumes them, so
+# every re-run line this script prints carries them: run literally, a line that
+# dropped --version or --image resolves Docker Hub's latest instead.
+INSTALL_ARGV=("$@")
+
+# " --flag value ..." from INSTALL_ARGV, each word %q-quoted so it pastes back
+# verbatim. `--no-version` leaves out --version and its value, for a line that
+# names its own. Indexed rather than "${INSTALL_ARGV[@]}", which `set -u` refuses
+# on an empty array in bash 3.2.
+rerun_flags() {
+  local drop_version="${1:-}" i=0 n=${#INSTALL_ARGV[@]} out=""
+  while (( i < n )); do
+    if [[ "$drop_version" == "--no-version" && "${INSTALL_ARGV[i]}" == "--version" ]]; then
+      i=$(( i + 2 ))
+      continue
+    fi
+    out="${out} $(printf '%q' "${INSTALL_ARGV[i]}")"
+    i=$(( i + 1 ))
+  done
+  printf '%s' "$out"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -155,7 +196,7 @@ esac
 # so a registry port (e.g. localhost:5000/agledger) isn't mistaken for one.
 #
 # A digest ref is refused rather than carried through. The same composition
-# turns `repo@sha256:abc` into `repo@sha256:abc:1.4.0`, which docker rejects
+# turns `repo@sha256:abc` into `repo@sha256:abc:2.0.1`, which docker rejects
 # with a parse error naming neither flag. There is also nothing to gain by
 # accepting one: this script resolves the digest itself and pins the stack to
 # it, so a caller-supplied digest only restates what verification already
@@ -388,7 +429,7 @@ if [[ ${#PORT_CONFLICTS[@]} -gt 0 ]]; then
   echo ""
   error "Docker would fail this as 'port is already allocated' partway through starting the stack."
   error "Each line names the variable that moves it. Nothing answers on these right now:"
-  error "  $(suggest_port_assignments conflicting)./scripts/install.sh"
+  error "  ${COMPOSE_PROJECT_NAME:+COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME} }${RERUN_ENV}$(suggest_port_assignments conflicting)./scripts/install.sh$(rerun_flags)"
   # The advice differs by what is holding the port. Most of the time it is
   # something unrelated on the host (a system Postgres on 5432) and moving the
   # port is the whole fix. Only when THIS directory already holds an install
@@ -406,7 +447,7 @@ if [[ ${#PORT_CONFLICTS[@]} -gt 0 ]]; then
     # Every published port, not just the colliding ones: in a fresh directory the
     # stack next door holds no ports on THIS project's behalf, so each one this
     # run publishes has to be free on its own.
-    error "  COMPOSE_PROJECT_NAME=agledger-2 $(suggest_port_assignments all)./scripts/install.sh"
+    error "  COMPOSE_PROJECT_NAME=agledger-2 ${RERUN_ENV}$(suggest_port_assignments all)./scripts/install.sh$(rerun_flags)"
   else
     error "Installing alongside an AGLedger that lives in another directory needs nothing"
     error "more than the port variables above; run it from THIS directory."
@@ -469,7 +510,7 @@ case "$VERSION_SOURCE" in
     # reach here, and only one of them has a version-preserving command to hand
     # back:
     #   - genuinely empty: real install state with no AGLEDGER_VERSION line at
-    #     all, from an install that predates this script recording one.
+    #     all, from a .env written by hand or with that line removed.
     #   - the literal string "latest": the .env.example placeholder. It reads
     #     like a version but is a floating tag, so playing it back with
     #     --version does not restore what is running, it resolves to whatever
@@ -488,7 +529,7 @@ case "$VERSION_SOURCE" in
       error "  docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps          # IMAGE column names the running tag"
       error "  curl -s http://localhost:${API_HOST_PORT}/health/ready         # or the running API's own \"version\" field"
       error ""
-      error "  ./scripts/install.sh --version <that version>"
+      error "  ${RERUN_ENV}./scripts/install.sh --version <that version>$(rerun_flags --no-version)"
       fatal "Refusing to resolve a version for an install with no recorded version."
     fi
     if [[ "$RECORDED_TAG" == "latest" ]]; then
@@ -502,7 +543,7 @@ case "$VERSION_SOURCE" in
       error "  docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps          # IMAGE column names the running tag"
       error "  curl -s http://localhost:${API_HOST_PORT}/health/ready         # or the running API's own \"version\" field"
       error ""
-      error "  ./scripts/install.sh --version <that version>"
+      error "  ${RERUN_ENV}./scripts/install.sh --version <that version>$(rerun_flags --no-version)"
       error ""
       error "To move to a newer release instead (backs up first, writes a rollback marker):"
       error "  ./scripts/upgrade.sh <VERSION>"
@@ -516,7 +557,7 @@ case "$VERSION_SOURCE" in
     error ""
     error "To stay on '${RECORDED_TAG}' (re-install path, no version change, so long as your"
     error "registry keeps that tag pointing at what it did when this install started):"
-    error "  ./scripts/install.sh --version ${RECORDED_TAG}"
+    error "  ${RERUN_ENV}./scripts/install.sh --version ${RECORDED_TAG}$(rerun_flags --no-version)"
     error ""
     error "To move to a specific release (backs up first, writes a rollback marker):"
     error "  ./scripts/upgrade.sh <VERSION>"
@@ -703,7 +744,7 @@ refuse_credentials_against_existing_volume() {
   error "  3. Install alongside it, under a separate project name AND its own host ports."
   error "     The project name separates containers, network and volumes; host ports are"
   error "     global to the machine, so they have to move too:"
-  error "       COMPOSE_PROJECT_NAME=agledger-2 $(suggest_port_assignments all)./scripts/install.sh"
+  error "       COMPOSE_PROJECT_NAME=agledger-2 ${RERUN_ENV}$(suggest_port_assignments all)./scripts/install.sh$(rerun_flags)"
   fatal "Refusing to generate credentials that cannot authenticate against the existing volume."
 }
 
@@ -734,7 +775,7 @@ if project_switch_orphans_install "${COMPOSE_PROJECT_NAME:-}"; then
   # the operator asked for and they are free. Echoing them back is the whole
   # point: a recipe carrying different numbers reads as a correction the
   # operator did not make and has no way to check.
-  error "  COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME} $(suggest_port_assignments all)./scripts/install.sh"
+  error "  COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME} ${RERUN_ENV}$(suggest_port_assignments all)./scripts/install.sh$(rerun_flags)"
   echo ""
   error "To re-run against the stack that IS installed here, drop COMPOSE_PROJECT_NAME"
   error "(or set it to '${INSTALLED_PROJECT}'). Ports and --fips still reconcile in place."
@@ -813,7 +854,7 @@ if [[ -f "$ENV_FILE" ]]; then
       error "Rotate to ES256 first; entries already written keep verifying under the retired key:"
       error "  1. docker run --rm ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION} dist/scripts/generate-signing-key.js --algorithm es256"
       error "  2. put the new VAULT_SIGNING_KEY and AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true in ${ENV_FILE}"
-      error "  3. docker compose up -d --force-recreate   (the restart performs the rotation)"
+      error "  3. cd ${COMPOSE_DIR} && docker compose up -d --force-recreate   (the restart performs the rotation)"
       error "  4. confirm: curl -s http://localhost:${API_HOST_PORT}/v1/verification-keys"
       error "Then re-run with --fips."
       fatal "Refusing to activate FIPS against a key the provider cannot use."
@@ -828,7 +869,7 @@ if [[ -f "$ENV_FILE" ]]; then
       warn "To change the algorithm on an install that already has a chain, rotate rather than reinstall:"
       warn "  1. docker run --rm ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION} dist/scripts/generate-signing-key.js --algorithm ${AGLEDGER_SIGNING_ALGORITHM}"
       warn "  2. put the new VAULT_SIGNING_KEY and AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true in ${ENV_FILE}"
-      warn "  3. docker compose up -d --force-recreate   (the restart is what rotates: boot reconciles"
+      warn "  3. cd ${COMPOSE_DIR} && docker compose up -d --force-recreate   (the restart is what rotates: boot reconciles"
       warn "     the key registry to the configured key, retiring the previous one)"
       warn "  4. confirm: curl -s ${API_URL:-http://localhost:${API_HOST_PORT}}/v1/verification-keys"
       warn "Entries already written keep verifying under the retired key; only new entries use the new one."
@@ -970,12 +1011,22 @@ case "$(pg_password_action "$ENV_FILE" "${EXTERNAL_DB_FLAG}")" in
     ;;
 esac
 
+# The bundled database's runtime role. The migration gives agledger_app a
+# login under this password on every run, and the API and worker connect as
+# it, so the audit chain's privilege gate binds them. See
+# app_role_password_action (lib-compose.sh).
+if [[ "$(app_role_password_action "$ENV_FILE" "$PUBLISHES_BUNDLED_PG")" == "generate" ]]; then
+  upsert_env_var AGLEDGER_APP_ROLE_PASSWORD "$(openssl rand -hex 24)" "$ENV_FILE"
+  RECONCILE_CHANGES+=("generated AGLEDGER_APP_ROLE_PASSWORD (the API and worker now connect as agledger_app)")
+  info "Generated AGLEDGER_APP_ROLE_PASSWORD"
+fi
+
 # A federation identity, whether or not this install ever federates. It costs
 # nothing on a Server that does not (it is an identifier, not a secret, and
 # nothing reads it until a peer handshake), and it is the difference between
-# federation working and dead-ending: without it the Server reports the literal
-# "default" to its operator, and the peer's handshake refuses that value
-# because `peerHubId` is declared `format: uuid`. Generated here rather
+# federation working and dead-ending: without it the Server has no identity to
+# hand a peer, and the peer's handshake refuses anything but a UUID because
+# `peerHubId` is declared `format: uuid`. Generated here rather
 # than defaulted in the engine because it has to be STABLE across restarts, and
 # .env is what survives a container.
 HUB_ID_ACTION="$(federation_hub_id_action "$ENV_FILE")"
@@ -986,13 +1037,6 @@ case "$HUB_ID_ACTION" in
     upsert_env_var AGLEDGER_INSTANCE_ID "${AGLEDGER_INSTANCE_ID_VALUE}" "$ENV_FILE"
     RECONCILE_CHANGES+=("generated AGLEDGER_INSTANCE_ID (this Server's federation identity; it had none)")
     info "Generated AGLEDGER_INSTANCE_ID (this Server's federation identity)"
-    ;;
-  adopt-legacy-org-id:*)
-    # The retired AGLEDGER_ORGANIZATION_ID fallback was this Server's identity
-    # and peers may hold it. Carry it forward rather than mint a new one.
-    upsert_env_var AGLEDGER_INSTANCE_ID "${HUB_ID_ACTION#adopt-legacy-org-id:}" "$ENV_FILE"
-    RECONCILE_CHANGES+=("adopted AGLEDGER_ORGANIZATION_ID as AGLEDGER_INSTANCE_ID")
-    info "Adopted AGLEDGER_ORGANIZATION_ID as AGLEDGER_INSTANCE_ID (the identity peers already hold); AGLEDGER_ORGANIZATION_ID can be deleted from .env"
     ;;
 esac
 
@@ -1051,6 +1095,11 @@ if [[ "$HAS_SIGNING_KEY" != true ]]; then
   fi
   upsert_env_var VAULT_SIGNING_KEY "${VAULT_SIGNING_KEY}" "$ENV_FILE"
   RECONCILE_CHANGES+=("generated VAULT_SIGNING_KEY (${SIGNING_ALGORITHM})")
+  VAULT_SIGNING_KEY_PIN=$(echo "$VAULT_SIGNING_KEY_OUTPUT" | parse_signing_key_pin || true)
+  if [[ -n "$VAULT_SIGNING_KEY_PIN" ]]; then
+    info "Vault signing key pin: ${VAULT_SIGNING_KEY_PIN}"
+    info "  Give it to anyone who verifies this install offline; it is not secret. dist/scripts/signing-key-digest.js derives it again from VAULT_SIGNING_KEY."
+  fi
   if [[ "$SIGNING_ALGORITHM" == "es256" ]]; then
     upsert_env_var AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG true "$ENV_FILE"
     RECONCILE_CHANGES+=("set AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true (non-default algorithm opt-in)")
@@ -1067,18 +1116,18 @@ chmod 600 "$ENV_FILE"
 #
 # Everything resolved above has already had its turn in the precedence chain
 # (flag, then .env, then default), so .env must not get a second turn on the
-# way back. Each of these was a silent no-op install before it was held:
+# way back. Each of these, sourced over, makes a silent no-op install:
 #
 #   AGLEDGER_VERSION     a fresh .env from .env.example carries `latest`, so
-#                        the source installed :latest over an explicit
+#                        the source would install :latest over an explicit
 #                        --version.
-#   AGLEDGER_IMAGE       --image named a new registry, the run authenticated,
-#                        pulled and signature-checked from it, and then wrote
-#                        the old registry back to .env and left the stack on
-#                        it. A revert to Docker Hub never happened either.
-#   AGLEDGER_IMAGE_PIN   the digest just verified was replaced by the one from
-#                        the previous install, so .env named a version the
-#                        stack was not running. (The pin is empty when the ref
+#   AGLEDGER_IMAGE       --image names a new registry, the run authenticates,
+#                        pulls and signature-checks from it, and then would
+#                        write the old registry back to .env and leave the
+#                        stack on it, and a revert to Docker Hub never happens.
+#   AGLEDGER_IMAGE_PIN   the digest just verified would be replaced by the one
+#                        from the previous install, so .env names a version the
+#                        stack is not running. (The pin is empty when the ref
 #                        carries no usable RepoDigest: the registry reported
 #                        none, or no registry was reached at all and the run is
 #                        continuing on an image already in the local store. The
@@ -1096,7 +1145,7 @@ snapshot_resolved_var AGLEDGER_IMAGE_PIN
 REQUESTED_PROJECT="${COMPOSE_PROJECT_NAME:-}"
 # Read, not `source`: the shell is a parser of its own and disagrees with
 # compose on a DATABASE_URL carrying more than one query parameter (see
-# load_env_file). Unquoted, `&` backgrounded the assignment and this run aborted
+# load_env_file). Unquoted, `&` backgrounds the assignment and this run aborts
 # with "External database mode requires DATABASE_URL in .env" over a file that
 # sets it.
 load_env_file "$ENV_FILE"
@@ -1136,9 +1185,8 @@ if [[ "$FIPS_FLAG" == true ]]; then
 fi
 
 # --- Idempotent Environment Reconciliation ---
-# Runs on BOTH fresh and existing .env so the COMPOSE_FILE and version-tracking fixes
-# reach customers who installed at v0.19.16 and re-run install.sh at v0.19.17+.
-# Never auto-flips security-sensitive values — only adds missing keys and
+# Runs on BOTH fresh and existing .env, so a re-run brings COMPOSE_FILE and the
+# version-tracking keys up to date on an existing install. Never auto-flips security-sensitive values — only adds missing keys and
 # updates version-tracking keys.
 #
 # RECONCILE_CHANGES is declared with the secret backfills above, which append to
@@ -1147,7 +1195,9 @@ fi
 # Persist COMPOSE_FILE so manual `docker compose` commands from compose/
 # pick up all overlays (prod + optional bundled postgres). Without this, manual
 # commands drop to bare docker-compose.yml and the postgres container stops
-# reacting to `restart`.
+# reacting to `restart`. The override file is created first when there is none,
+# so the list always names one and a later edit to it needs only `up -d`.
+ensure_compose_override_file
 build_overlay_list
 
 # Setting COMPOSE_FILE is what turns Compose's automatic docker-compose.override.yml
@@ -1156,7 +1206,7 @@ build_overlay_list
 # being applied, and one forgotten from an earlier experiment is worth saying out
 # loud before the stack comes up with it.
 COMPOSE_OVERRIDE_FILE="$(compose_override_file)"
-if [[ -n "$COMPOSE_OVERRIDE_FILE" ]]; then
+if [[ -n "$COMPOSE_OVERRIDE_FILE" ]] && ! compose_override_is_stub "$COMPOSE_OVERRIDE_FILE"; then
   warn "Applying ${COMPOSE_OVERRIDE_FILE} on top of the shipped compose files. Remove it if that is not what you want."
 fi
 
@@ -1373,20 +1423,18 @@ fi
 BUNDLED_OTLP_ENDPOINT="http://otel-collector:4318"
 OTLP_ENDPOINT_EFFECTIVE=""
 GRAFANA_PASSWORD_STATE=keep
-# `--with-monitoring` alone was the wrong gate. An install stood up with it
-# before COMPOSE_PROFILES was persisted has the collector, Jaeger, Prometheus
-# and Grafana running and nothing in .env selecting them, and the operator's
-# re-run of plain `install.sh` is exactly how that .env gets repaired everywhere
-# else. Without asking the containers, that run brought `up -d` with the profile
-# unselected: all four stayed on the old image with the old port bindings while
-# the banner reported a complete install. The containers are the only honest
-# answer to "is monitoring part of this install", so ask them too.
+# `--with-monitoring` alone is the wrong gate. A monitoring stack started by
+# hand has the collector, Jaeger, Prometheus and Grafana running and nothing in
+# .env selecting them, and a re-run of plain `install.sh` would then bring `up
+# -d` with the profile unselected: all four would stay on the old image with
+# the old port bindings while the banner reported a complete install. The
+# containers are the only honest answer to "is monitoring part of this
+# install", so ask them too.
 MONITORING_ACTIVE=false
 if [[ "$WITH_MONITORING" == true ]] || monitoring_containers_running; then
   MONITORING_ACTIVE=true
-  # Grafana is the one bundled service with its own login, and it was the one
-  # secret this installer did not generate: compose defaulted it to `admin` and
-  # the summary below printed "admin / admin". Generated here like every other
+  # Grafana is the one bundled service with its own login, and with the variable
+  # empty it falls back to its built-in `admin`. Generated here like every other
   # credential, but only when Grafana has not already initialized its database:
   # the password is applied when the admin user is created and ignored on every
   # later boot, so on an existing monitoring install writing a new one would
@@ -1398,8 +1446,8 @@ if [[ "$WITH_MONITORING" == true ]] || monitoring_containers_running; then
     RECONCILE_CHANGES+=("generated GRAFANA_ADMIN_PASSWORD")
   elif [[ "$GRAFANA_PASSWORD_STATE" == "stale" ]]; then
     warn "Grafana already has a database on this host, so its admin password is whatever it was first started with."
-    warn "  Releases before this one defaulted it to 'admin'. To set a new one:"
-    warn "    docker compose exec grafana grafana cli admin reset-admin-password <new-password>"
+    warn "  If it was first started with GRAFANA_ADMIN_PASSWORD empty, that is Grafana's built-in 'admin'. To set a new one:"
+    warn "    cd ${COMPOSE_DIR} && docker compose exec grafana grafana cli admin reset-admin-password <new-password>"
     warn "  then record it as GRAFANA_ADMIN_PASSWORD in ${ENV_FILE}."
   fi
 
@@ -1417,27 +1465,21 @@ if [[ "$WITH_MONITORING" == true ]] || monitoring_containers_running; then
 
   EXISTING_OTLP=$(get_env_value OTEL_EXPORTER_OTLP_ENDPOINT "$ENV_FILE")
   OTLP_ENDPOINT_EFFECTIVE="$EXISTING_OTLP"
-  # Repair the gRPC port an earlier .env.example documented; leave any other
-  # value alone, since it points at the operator's own collector.
-  if [[ -z "$EXISTING_OTLP" ]] || [[ "$EXISTING_OTLP" == "http://otel-collector:4317" ]]; then
-    if [[ "$EXISTING_OTLP" != "$BUNDLED_OTLP_ENDPOINT" ]]; then
-      upsert_env_var OTEL_EXPORTER_OTLP_ENDPOINT "${BUNDLED_OTLP_ENDPOINT}" "$ENV_FILE"
-      if [[ -z "$EXISTING_OTLP" ]]; then
-        RECONCILE_CHANGES+=("enabled tracing: OTEL_EXPORTER_OTLP_ENDPOINT=${BUNDLED_OTLP_ENDPOINT}")
-      else
-        RECONCILE_CHANGES+=("fixed OTEL_EXPORTER_OTLP_ENDPOINT: ${EXISTING_OTLP} → ${BUNDLED_OTLP_ENDPOINT} (OTLP/HTTP receiver)")
-      fi
-    fi
+  # Fill it in when absent; leave any value alone, since it points at the
+  # operator's own collector.
+  if [[ -z "$EXISTING_OTLP" ]]; then
+    upsert_env_var OTEL_EXPORTER_OTLP_ENDPOINT "${BUNDLED_OTLP_ENDPOINT}" "$ENV_FILE"
+    RECONCILE_CHANGES+=("enabled tracing: OTEL_EXPORTER_OTLP_ENDPOINT=${BUNDLED_OTLP_ENDPOINT}")
     OTLP_ENDPOINT_EFFECTIVE="$BUNDLED_OTLP_ENDPOINT"
   fi
 fi
 
 # Record the database mode in .env so the startup banner shows correctly.
 #
-# The old test was an unanchored `grep -q 'AGLEDGER_PG_BUNDLED='`, which matched
-# the commented `# AGLEDGER_PG_BUNDLED=false` that every .env inherits from
-# .env.example, so the line was never written on any install. get_env_value
-# reads it the way compose does, which is to say it ignores comments.
+# Read through get_env_value, which reads the file the way compose does and so
+# ignores the commented `# AGLEDGER_PG_BUNDLED=false` every .env inherits from
+# .env.example; an unanchored grep would match that comment and never write
+# the line.
 #
 # Not a RECONCILE_CHANGES entry on the bundled path: docker-compose.postgres.yml
 # sets the same variable in the container's `environment:`, which wins over
@@ -1476,9 +1518,20 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   # the node binary, so naming it again in the command position appends instead
   # of replacing: node ends up parsing its own ELF binary and dies with a
   # SyntaxError for every DATABASE_URL, valid or not.
-  info "Testing database connectivity..."
+  # With DATABASE_URL_MIGRATE set, DATABASE_URL names agledger_app, a role the
+  # baseline migration creates, so on a fresh database it cannot log in yet.
+  # These checks connect as the migration role; the runtime role is checked
+  # once the migration has run (the preflight gate below).
+  MIGRATE_URL="${DATABASE_URL_MIGRATE:-${DATABASE_URL}}"
+  if [[ -n "${DATABASE_URL_MIGRATE:-}" ]]; then
+    CONNECT_VAR=DATABASE_URL_MIGRATE
+    info "Testing database connectivity as the migration role (DATABASE_URL_MIGRATE); DATABASE_URL is checked after migrating..."
+  else
+    CONNECT_VAR=DATABASE_URL
+    info "Testing database connectivity..."
+  fi
   DB_TEST_OUTPUT=$(docker run --rm \
-    -e DATABASE_URL="${DATABASE_URL}" \
+    -e DATABASE_URL="${MIGRATE_URL}" \
     -e ALLOW_DB_WITHOUT_SSL="${ALLOW_DB_WITHOUT_SSL:-false}" \
     --entrypoint /nodejs/bin/node \
     "${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}}" \
@@ -1491,7 +1544,7 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
     " 2>&1) || {
     error "Cannot connect to external database."
     error "Output: ${DB_TEST_OUTPUT}"
-    fatal "Fix DATABASE_URL in .env and re-run."
+    fatal "Fix ${CONNECT_VAR} in .env and re-run."
   }
   PG_VERSION_STR=$(echo "$DB_TEST_OUTPUT" | grep '^PG_VERSION=' | head -1 | cut -d= -f2- || true)
   if [[ -n "$PG_VERSION_STR" ]]; then
@@ -1509,7 +1562,7 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   # Test LISTEN/NOTIFY (pg-boss requirement)
   info "Testing LISTEN/NOTIFY support..."
   LISTEN_OUTPUT=$(docker run --rm \
-    -e DATABASE_URL="${DATABASE_URL}" \
+    -e DATABASE_URL="${MIGRATE_URL}" \
     -e ALLOW_DB_WITHOUT_SSL="${ALLOW_DB_WITHOUT_SSL:-false}" \
     --entrypoint /nodejs/bin/node \
     "${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}}" \
@@ -1539,7 +1592,6 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   # "permission denied to create event trigger" from inside a migration, with
   # the requirement stated in the AWS runbook only.
   info "Checking migration privileges..."
-  MIGRATE_URL="${DATABASE_URL_MIGRATE:-${DATABASE_URL}}"
   PRIV_OUTPUT=$(docker run --rm \
     -e DATABASE_URL="${MIGRATE_URL}" \
     -e ALLOW_DB_WITHOUT_SSL="${ALLOW_DB_WITHOUT_SSL:-false}" \
@@ -1637,7 +1689,10 @@ if "${COMPOSE[@]}" pull; then
   info "All images pulled"
 else
   COMPOSE_IMAGES=()
-  mapfile -t COMPOSE_IMAGES < <("${COMPOSE[@]}" config --images 2>/dev/null || true)
+  # Read loop rather than `mapfile`, for bash 3.2 (see CONFIG_GAPS above).
+  while IFS= read -r compose_image; do
+    COMPOSE_IMAGES+=("$compose_image")
+  done < <("${COMPOSE[@]}" config --images 2>/dev/null || true)
   if [[ ${#COMPOSE_IMAGES[@]} -eq 0 ]]; then
     fatal "Could not pull the stack's images, and could not read which images it runs. See the output above."
   fi
@@ -1682,7 +1737,7 @@ if [[ "${USES_BUNDLED_PG}" == "true" ]]; then
   done
 
   if [[ $ELAPSED -ge $HEALTHCHECK_TIMEOUT ]]; then
-    fatal "Postgres did not become healthy within ${HEALTHCHECK_TIMEOUT}s. Check: docker compose logs postgres"
+    fatal "Postgres did not become healthy within ${HEALTHCHECK_TIMEOUT}s. Check: cd ${COMPOSE_DIR} && docker compose logs postgres"
   fi
 
   # Postgres's healthcheck runs inside its own container (pg_isready) and can
@@ -1747,12 +1802,12 @@ info "Migrations complete"
 step "Checking runtime role privileges and connection topology"
 
 # The ids this tree knows about. The image being installed can be older than
-# the tree installing it (`--version 1.7.0` is documented and supported), and
+# the tree installing it (`--version 2.0.0` is documented and supported), and
 # an older image refuses the whole list over the ids it does not have rather
 # than running the ones it does. `preflight_unknown_only_ids` reads them back
 # out of that refusal so the gate can ask again for what that image can
 # actually check, and say which conditions went unchecked.
-PREFLIGHT_GATE_CHECKS="runtime-role,role-passwords,topology,pgboss"
+PREFLIGHT_GATE_CHECKS="boot-config,runtime-role,role-passwords,topology,pgboss"
 
 # The runner preflight_gate_run drives, so the retry re-runs the same call with
 # a reduced list. Its output is captured rather than streamed, because the
@@ -1805,19 +1860,32 @@ if [[ $PREFLIGHT_RC -eq 2 ]]; then
 fi
 
 if [[ $PREFLIGHT_RC -ne 0 ]]; then
+  # Read from the report, because the gate runs boot-config beside the role
+  # checks and a refused setting is not a role that cannot serve: sending an
+  # operator through grants and poolers for AGLEDGER_EXTERNAL_URL=ftp://... is a
+  # diagnosis of something no check found.
+  PREFLIGHT_FAILURE_KINDS="$(preflight_failure_kinds "$PREFLIGHT_GATE_OUTPUT")"
   echo ""
-  error "The role in DATABASE_URL is not ready to serve. The report above is the diagnosis: a"
-  error "privilege failure names the role and the exact grant to run; a connection failure names"
-  error "what the connection attempt returned, which no grant will fix."
-  error "If the report names a check other than the ones below, that image runs more than this gate"
-  error "asked for (--only landed in 1.5.0 and an image older than that ignores it): read the check"
-  error "it named, which is the diagnosis whatever this text expected."
-  error "A role-password failure names a role still carrying the password the baseline migration"
-  error "creates it with, which is a second way into this chain; the migration just run closes"
-  error "that by itself, so reaching it here means it could not."
-  error "A connection-topology failure means DATABASE_URL reaches PostgreSQL through a pooler in"
-  error "transaction mode. Set DATABASE_URL_DIRECT to a connection string that does not, and"
-  error "leave DATABASE_URL where it is."
+  if [[ "$PREFLIGHT_FAILURE_KINDS" == *boot* ]]; then
+    error "The Server would refuse to boot on this configuration. Each failed Boot configuration line"
+    error "above names the setting and what it accepts. Correct it in ${ENV_FILE}, or in the"
+    error "environment you ran this installer with if you set it there."
+  fi
+  if [[ "$PREFLIGHT_FAILURE_KINDS" == *role* ]]; then
+    error "The role in DATABASE_URL is not ready to serve. The report above is the diagnosis: a"
+    error "privilege failure names the role and the exact grant to run; a connection failure names"
+    error "what the connection attempt returned, which no grant will fix."
+    error "A role-password failure names a role still carrying the password the baseline migration"
+    error "creates it with, which is a second way into this chain; the migration just run closes"
+    error "that by itself, so reaching it here means it could not."
+    error "A connection-topology failure means DATABASE_URL reaches PostgreSQL through a pooler in"
+    error "transaction mode. Set DATABASE_URL_DIRECT to a connection string that does not, and"
+    error "leave DATABASE_URL where it is."
+  fi
+  if [[ -z "$PREFLIGHT_FAILURE_KINDS" ]]; then
+    error "Preflight exited ${PREFLIGHT_RC} without reporting a failed check, so nothing above is a"
+    error "diagnosis of your database or configuration. The last lines it printed are the error."
+  fi
   error "Migrations are already applied, so re-running this installer after fixing it is safe."
   fatal "Fix what the check reported and re-run."
 fi
@@ -1954,8 +2022,7 @@ write_platform_key_to_env() {
 REUSED_PLATFORM_KEY=false
 EXISTING_PLATFORM_KEY=""
 if grep -qE '^PLATFORM_API_KEY=agl_plt_' "$ENV_FILE" 2>/dev/null; then
-  # Use the LAST entry — defensive against older installs that appended
-  # multiple lines. We de-dupe below.
+  # The last entry, the one compose itself resolves a repeated key to.
   EXISTING_PLATFORM_KEY=$(grep -E '^PLATFORM_API_KEY=agl_plt_' "$ENV_FILE" | tail -1 | cut -d= -f2-)
 fi
 
@@ -1963,8 +2030,6 @@ if [[ -n "$EXISTING_PLATFORM_KEY" ]]; then
   step "Reusing existing platform API key from .env"
   PLATFORM_KEY="$EXISTING_PLATFORM_KEY"
   REUSED_PLATFORM_KEY=true
-  # De-dupe, in case an older install appended more than one line.
-  write_platform_key_to_env "$PLATFORM_KEY" "from initial install"
   info "Platform API key retained (install is idempotent)"
 else
   step "Creating platform API key"
@@ -2094,7 +2159,7 @@ if [[ "$MONITORING_ACTIVE" == true ]]; then
     echo ""
     if all_compose_services_up "${SECOND_UP_SERVICES[@]}"; then
       error "Every container reports running, so the wait itself timed out rather than a"
-      error "container failing. Re-check with: docker compose ps"
+      error "container failing. Re-check with: cd ${COMPOSE_DIR} && docker compose ps"
     else
       report_failed_compose_services "${SECOND_UP_SERVICES[@]}" || true
     fi
@@ -2173,6 +2238,7 @@ if [[ "$REUSED_PLATFORM_KEY" == true ]] && [[ -n "${PLATFORM_KEY:-}" ]]; then
     warn "That .env has outlived the data it was minted against (a recreated volume,"
     warn "a restored .env, or a copied deploy tree). Minting a replacement."
     if mint_platform_key; then
+      REUSED_PLATFORM_KEY=false
       info "Platform API key replaced; ${ENV_FILE} now holds the working one."
     else
       # mint_platform_key leaves PLATFORM_KEY empty when it fails, so the
@@ -2289,7 +2355,11 @@ else
 fi
 echo ""
 
-if [[ -n "${PLATFORM_KEY:-}" ]]; then
+if [[ -n "${PLATFORM_KEY:-}" && "$REUSED_PLATFORM_KEY" == true ]]; then
+  # A re-run kept the key an earlier run printed, so it is not repeated into
+  # this terminal's scrollback; the operator is told where it lives instead.
+  echo -e "  ${BOLD}Platform API Key:${NC} kept from the first install, in PLATFORM_API_KEY in ${ENV_FILE}"
+elif [[ -n "${PLATFORM_KEY:-}" ]]; then
   echo -e "  ${BOLD}${RED}Platform API Key (SAVE THIS — shown only once):${NC}"
   echo ""
   echo -e "    ${YELLOW}${PLATFORM_KEY}${NC}"
@@ -2333,34 +2403,28 @@ fi
 echo ""
 echo -e "  ${BOLD}Next steps:${NC}"
 echo -e "    Learn what AGLedger does:   https://agledger.ai/how-it-works"
-echo -e "    Self-hosted install guide:  https://agledger.ai/docs/guides/self-hosted/install"
+echo -e "    Self-hosted install guide:  https://agledger.ai/docs/install/"
 echo -e "    API reference (hosted):     https://agledger.ai/api"
-echo -e "    Container status:           docker compose ps"
+echo -e "    Container status:           cd ${COMPOSE_DIR} && docker compose ps"
 
 # The people who have to upgrade their verifier are usually not the operator
 # running this script, so the floor has to be stated here, at the moment the
-# operator decides they are done. Ed25519 is the default and needs no callout.
+# operator decides they are done. It applies to every install, whatever the
+# algorithm: an older verifier fails a dump of this Server outright.
+if [[ -n "$MIN_VERIFIER_VERSION" ]]; then
+  echo ""
+  echo -e "    Anyone verifying this chain offline needs @agledger/verify >= ${MIN_VERIFIER_VERSION}."
+  echo -e "    Tell whoever consumes your exports and dumps BEFORE they run one: an older"
+  echo -e "    release fails a dump of this Server once an admin has read a record."
+fi
 if [[ -n "$ACTIVE_SIGNING_ALG" && "$ACTIVE_SIGNING_ALG" != "Ed25519" ]]; then
   echo ""
   echo -e "  ${YELLOW}${BOLD}⚠ This Server signs with ${ACTIVE_SIGNING_ALG}, not the default Ed25519${NC}"
-  if [[ -n "$MIN_VERIFIER_VERSION" ]]; then
-    echo -e "    Anyone verifying this chain offline needs @agledger/verify >= ${MIN_VERIFIER_VERSION}."
-    echo -e "    The algorithm support lives in its @agledger/verify-core dependency; that floor"
-    echo -e "    is the @agledger/verify release which resolves a core carrying it under every"
-    echo -e "    install shape, which is why it is the version to quote."
-    echo -e "    Tell whoever consumes your exports BEFORE they run one. A verifier that cannot"
-    echo -e "    compute the algorithm does not always say so: recent builds report"
-    echo -e "    CHAIN_UNSUPPORTED_ALGORITHM and name the fix, but older ones report a signature"
-    echo -e "    failure, which reads as tampering on a chain that is perfectly intact."
-  else
-    echo -e "    Anyone verifying this chain offline needs a verifier release that supports"
-    echo -e "    ${ACTIVE_SIGNING_ALG}. Check ${API_URL}/v1/verification-keys for minVerifierVersion."
-  fi
   echo -e "    Federation is not available on this configuration, and agent surfaces pinned to"
   echo -e "    Ed25519 (webhook signingAlg: ed25519) refuse with an error naming what to use."
   if fips_overlay_enabled; then
     echo -e "    The OpenSSL FIPS provider is active in every container (AGLEDGER_FIPS=true)."
-    echo -e "    Confirm with: docker compose exec -e NODE_OPTIONS= agledger-api /nodejs/bin/node -e \\"
+    echo -e "    Confirm with: cd ${COMPOSE_DIR} && docker compose exec -e NODE_OPTIONS= agledger-api /nodejs/bin/node -e \\"
     echo -e "      \"console.log(require('crypto').getFips())\"   (1 means active)"
   else
     echo -e "    This Server signs with ES256 but is NOT running the OpenSSL FIPS provider."
@@ -2387,7 +2451,7 @@ if [[ "$ISSUER_NAMES_A_PORT" == true && "$CONFIGURED_ISSUER" != *":${API_HOST_PO
   echo -e "    a different Server whose published keys will not match this export."
   echo -e "    Left alone because records signed under it may already exist. Either:"
   echo -e "      keep it   any earlier records stay consistent, new ones inherit the bad URL"
-  echo -e "      change it in ${ENV_FILE}, then docker compose up -d"
+  echo -e "      change it in ${ENV_FILE}, then: cd ${COMPOSE_DIR} && docker compose up -d"
   echo -e "                new records resolve, any earlier ones keep the old iss"
 fi
 

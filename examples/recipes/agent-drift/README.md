@@ -101,10 +101,11 @@ records, not the counts.
 Drift needs two windows of activity, and a fresh install has one. A customer
 migrating history can place records in the baseline window with the backfill
 import (`POST /v1/admin/records/import`, platform key, `admin:backfill`) and a
-backdated `createdAt`. Imported records count toward `records`, but an
-imported record's verdict is not counted by drift and reads `PENDING` in the
-history feed, so an acceptance-rate shift cannot be staged through the import.
-Volume shifts (`new`, `quiet`, a changed record count) can.
+backdated `createdAt`. Imported records count like any other: toward
+`records`, toward `acceptanceRate` through their imported verdict, and in the
+history feed under the outcome they carry. So both volume shifts (`new`,
+`quiet`, a changed record count) and an acceptance-rate shift can be staged
+through the import.
 
 ## What it does not do
 

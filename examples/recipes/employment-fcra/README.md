@@ -40,8 +40,11 @@ Two acts are gated by the engine and two by humans:
   relatedness) before a candidate is screened out. The reviewer renders the verdict; AGLedger
   holds it with attribution and never renders it. A decision to initiate adverse action with any
   Green factor recorded as not-considered is refused by the schema.
-- **The final adverse action (human, principal).** The terminal decision, reachable only through a
-  reference to the FULFILLED wait gate. On `decision: adverse` the full FCRA 615(a) disclosure
+- **The final adverse action (human, principal).** The terminal decision. It carries `waitGateRef`,
+  the id of the FULFILLED wait gate, inside the signed record; the engine does not check that
+  reference (a record naming a FAILED or nonexistent gate is accepted), so your orchestrator opens
+  this record only after the gate settles FULFILLED, and a reader or your own system checks the
+  reference against the gate's status. On `decision: adverse` the full FCRA 615(a) disclosure
   block is conditional-required (CRA identity and phone, the CRA-did-not-decide statement, the
   free-report-within-60-days right, the dispute right); a reversed-to-hire outcome needs none of it.
 
@@ -66,7 +69,7 @@ on-chain.
 | 04 | `ironvale-individualized-assessment-v1` | **principal-gate** | The EEOC Green-factors review by a human. On `initiate-adverse` all three factors are conditional-required true. |
 | 05 | `ironvale-pre-adverse-notice-v1` | notarize-only | The FCRA 604(b)(3) notice that starts the clock: report copy and summary of rights are const-true, `committedWaitDays` states the window, and the record's signed timestamp is T0. |
 | 06 | `ironvale-wait-window-gate-v1` | **engine-gate (auto)** | The clock: a child of the pre-adverse notice that refuses to settle until the committed wait has elapsed between the notice's and its own engine-signed timestamps (expression rule on signed time). |
-| 07 | `ironvale-final-adverse-action-v1` | **principal-gate** | The terminal human decision (adverse or reversed-to-hire), reachable only via the FULFILLED wait gate, with the 615(a) disclosure block conditional-required on adverse. |
+| 07 | `ironvale-final-adverse-action-v1` | **principal-gate** | The terminal human decision (adverse or reversed-to-hire), carrying a signed `waitGateRef` to the FULFILLED wait gate (a reference the engine does not check), with the 615(a) disclosure block conditional-required on adverse. |
 
 ## The CRA seam
 
@@ -134,8 +137,9 @@ record's own. You supply no datetime, so an orchestrator cannot understate the f
 form of this recipe compared two supplied datetimes and leaned on an offline cross-check to catch
 an early floor; that gap is closed.) The contract:
 
-- **Notarize the pre-adverse notice under the sending agent's key**, not an org-admin key. An
-  admin-notarized record has no performer and can never anchor children.
+- **Notarize the pre-adverse notice under the sending agent's key**, or with an org-admin key that
+  names the sending agent as `principalAgentId`. A notice that names no performer makes its
+  principal the performer, and only that performer can be the principal of a child under it.
 - **Create the wait gate at final-action attempt time** with `parentRecordId` set to the notice
   and `preAdverseRef` echoing the same id; the offline cross-check asserts the echo matches.
 - **Only the notice's performer key may create the gate**, and the gate's principal is that same
@@ -171,21 +175,21 @@ allows `0` for integration wiring only; production deployments must set at least
 
 Three identities should be distinct: the screening orchestrator (performer), the individualized-
 assessment reviewer (principal on 04), and the final-action authorizer (principal on 07); bind
-keys to named humans through your IdP where you can. The engine enforces that a performer cannot
-render the verdict on a record they performed, within a single record; it does not enforce
-reviewer-is-not-authorizer across records. Likewise `gateMode` is a record-creation parameter, not
-a schema field, so a caller could create the assessment or the final action with `gateMode: auto`
-and bypass the human verdict. Your orchestrator owns both rules: route the two human gates through
-principal mode always, and provision the three roles as distinct identities. Every verdict is
-attributed on-chain, so a self-escalation is catchable; the point is to make it impossible in your
-deployment, not merely visible.
+keys to named humans through your IdP where you can. The engine refuses the verdict from a
+performer who is not the principal, but it accepts a record where one identity is both (the record
+carries `selfPrincipal: true`), and it does not enforce reviewer-is-not-authorizer across records.
+The human gates themselves are the engine's: the assessment and the final action declare
+`defaultGateMode: principal` and carry no gate rules, so a create that passes `gateMode: auto` on
+either is refused (400). Your orchestrator owns separation: provision the three roles as distinct
+identities. Every verdict is attributed on-chain, so a self-escalation is catchable; the point is to
+make it impossible in your deployment, not merely visible.
 
 ### Notice routing: scope the candidate channel server-side
 
 The FCRA notices are required TO the candidate (the mirror of the finance-KYC no-tip-off
 inversion), but the flow also produces records the candidate must never see: the individualized
 assessment carries the reviewer's privileged reasoning, and the raw consumer-report record carries
-the CRA's disposition. Scope the candidate subscription with `recordTypes` (API v1.2.0 and later)
+the CRA's disposition. Scope the candidate subscription with `recordTypes`
 to exactly the two notice types, as `notify.yaml` does, and the Server refuses to deliver anything
 else to that endpoint. The physical letter is a separate seam: the recipe notarizes the decision
 and the interval, and letter fulfillment is wired to the CRA or a managed service by env.
@@ -220,12 +224,13 @@ no shared signing infrastructure.
 
 ```bash
 export AGLEDGER_API_URL=https://agledger.internal.example
-export AGLEDGER_API_KEY=agl_...   # an admin/platform key with schemas:write
+export AGLEDGER_API_KEY=agl_adm_...   # an admin key with schemas:write; register.sh refuses a platform key
 ./register.sh
 ```
 
 `register.sh` POSTs each type to `POST /v1/schemas` in order and prints what landed. Re-running
-registers a new version of any type whose schema changed compatibly; an incompatible change is
+registers a new version of any type whose schema changed compatibly, and a type whose file is unchanged answers 200 with its current version
+and registers nothing; an incompatible change is
 rejected and reported. See `register.sh` for the `RECIPE_FORCE=1` reset option (destructive;
 scratch orgs only).
 

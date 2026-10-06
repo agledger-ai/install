@@ -1,6 +1,8 @@
 # Finance / KYC vertical recipe: Notify (webhook) subscriptions.
 # A declarative list of the webhook subscriptions this recipe expects. Create each
-# one against your Server with POST /v1/webhooks (see the Webhooks guide). The
+# one against your Server with POST /v1/webhooks (see the Webhooks guide), sending
+# each entry's fields as the body; the comment above each entry is its label for you,
+# not a field (the route refuses unknown fields). The
 # signing secret is returned ONCE at create time, so capture it then; it is null on
 # every subsequent read. The same subscriptions can be provisioned as config-as-code
 # instead: deploy/examples/provisioning/webhooks/example.yaml carries eventTypes and
@@ -34,8 +36,8 @@ subscriptions:
   # No recordTypes here, so this channel receives every contract type in the recipe,
   # the regulatory report included. It is staffed by compliance, which is entitled
   # to see that report. Narrow it with recordTypes if yours is not.
-  - name: compliance-ops
-    url: https://kyc-events.example.com/agledger
+  # compliance-ops
+  - url: https://kyc-events.example.com/agledger
     signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
     eventTypes:
       - record.created            # an onboarding/screening step opened
@@ -45,8 +47,8 @@ subscriptions:
       - signal.emitted            # terminal compliance signal fired
   # Regulator channel: the INVERTED notice. SAR -> FinCEN / blocking report -> OFAC.
   # Never the subject.
-  - name: regulator-reports
-    url: https://regulator-intake.example.com/agledger
+  # regulator-reports
+  - url: https://regulator-intake.example.com/agledger
     signingAlg: ed25519           # durable, offline-verifiable signed proof for the examiner
     eventTypes:
       - record.created
@@ -54,8 +56,8 @@ subscriptions:
     recordTypes:
       - keystone-regulatory-report-v1   # the only type delivered to this channel
   # Customer channel: the credit-mirror ECOA+FCRA adverse-action notice TO the applicant.
-  - name: applicant-notices
-    url: https://applicant-notices.example.com/agledger
+  # applicant-notices
+  - url: https://applicant-notices.example.com/agledger
     signingAlg: hmac
     eventTypes:
       - record.created

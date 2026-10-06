@@ -121,16 +121,18 @@ Silence: no.
 A gate-worker job was queued, ran, and gave up after exhausting its retries. Two counters feed this:
 a cascade rollup that ran out of retries on the last child's job, and a lost DLQ advisory pass.
 
-Check whether the consistency sweep is settling what the rollup did not:
+Check whether the consistency sweep is rolling up the parents the rollup did not (the rollup only
+ever fails a parent, or expires one past its own deadline; children never settle one):
 
 ```promql
 increase(agledger_auto_rollup_stuck_parents_total[1h])
 increase(agledger_auto_rollup_repaired_parents_total[1h])
 ```
 
-Do: if repaired keeps pace with stuck, the sweep is doing its job and no action is needed. It settles
-a parent five to ten minutes after its tree goes quiet. If stuck climbs and repaired does not, read
-the worker log for the repair error and look for a parent left `ACTIVE` with every child terminal. A
+Do: if repaired keeps pace with stuck, the sweep is doing its job and no action is needed. It rolls
+up a parent five to ten minutes after its tree goes quiet. If stuck climbs and repaired does not, read
+the worker log for the repair error and look for a parent left `ACTIVE` with every child terminal and
+one of them failed. A
 lost advisory pass is not repairable: the record is correctly awaiting its principal and only the
 advisory annotation is gone.
 
@@ -391,13 +393,68 @@ as a stopgap, at the cost of per-replica counting.
 
 Silence: no. An unthrottled public API is the exposure here.
 
+## AGLedgerProvisioningErrors
+
+The last provisioning run on at least one API replica did not load or apply the whole
+`PROVISIONING_CONFIG_PATH` directory. What it could read was applied; what it could not is missing
+from the running install, and the Server serves without it; `GET /v1/admin/system-health` reports
+the load errors in `degradedReasons`. `stage="load"` is a file that did
+not parse (commonly a `${VAR}` reference with no default) or an entry that failed validation, and
+while it is non-zero prune is suppressed. `stage="reconcile"` is a parsed resource that failed to
+apply.
+
+Check what failed:
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/provisioning/status"
+```
+
+Do: fix the files, then `POST /v1/admin/provisioning/reload`. The reload runs on the one API replica
+that takes the request, and each replica reports its own last run, so send `SIGHUP` to the others or
+restart them to clear their readings.
+
+Silence: while a known file is being fixed.
+
+## AGLedgerCacheInvalidationListenerDown
+
+One process's LISTEN session for cache invalidation has been down for five minutes. Every replica
+broadcasts its cache changes on it: an API key revoked, a signing key retired, a chain rewind
+detected or acknowledged, a rate-limit exemption added or removed. The process the alert names
+hears none of them, and serves each cache until it expires or is re-read on its own cadence
+(the API-key cache's TTL, the rewind state's periodic re-read, the signing-key watch). The runtime
+rate-limit exemption set has no expiry, so that replica keeps the set it had until the session is
+back. The process retries the connection every few seconds on its own.
+
+Check the process's own report and the failed attempts:
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/system-health"
+```
+
+```promql
+sum by (instance) (increase(agledger_pg_listener_reconnect_failures_total[15m]))
+```
+
+The log line on each failed attempt is `Failed to start pg LISTEN`, with the driver's error.
+
+Do: the session needs a direct, session-mode connection. Where a transaction-mode pooler sits in
+front of the database, `DATABASE_URL_DIRECT` has to name the database itself; check that it does
+and that the database accepts another connection (`max_connections`). Once the session is back,
+every cache that only a broadcast would change is dropped or re-read on that process: the API-key,
+account and cert caches, the schema registry, the key trust walk, trusted-issuer keys, `llms.txt`
+and the rewind state. The rate-limit exemption set is rebuilt from `RATE_LIMIT_EXEMPT_OWNERS` and
+the exemption changes recorded since the process started, which is the set it would hold had it
+heard every broadcast. Nothing needs a restart.
+
+Silence: during a database maintenance window that drops connections.
+
 ## AGLedgerConfigReloadFailing
 
 A config reload or cache refresh is failing, so the running configuration may not match what is on
 disk and replicas may be serving stale schemas. The operator edited a file, saw no error, and is
 running something else.
 
-Check which of the four moved, then the matching surface:
+Check which of the five moved, then the matching surface:
 
 ```bash
 curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/provisioning/status"
@@ -408,8 +465,13 @@ Do: for provisioning failures, that endpoint reports the parse or apply error ag
 `POST /v1/admin/provisioning/reload`. For `llms.txt` customization failures, check the file named by
 `AGLEDGER_LLMS_TXT_OVERRIDE_PATH` (or the prepend and append paths) is readable and under the 128 KB
 cap, then `POST /v1/admin/discovery/reload`. For schema warm-cache failures,
-`POST /v1/admin/schemas/cache/flush` re-warms. Cache-invalidation drops mean the LISTEN/NOTIFY
-connection is down, which the pg listener retries on its own.
+`POST /v1/admin/schemas/cache/flush` re-warms. Cache-invalidation drops are invalidations that
+arrived and could not be applied (a local handler threw, a NOTIFY could not be sent, a payload
+did not parse or named a type this release does not know); a LISTEN connection that is down
+receives nothing and is `AGLedgerCacheInvalidationListenerDown` instead. An exemption rebuild
+failure is a process that reconnected its LISTEN session and could not read the exemption changes
+made meanwhile (the log line names the error): `GET /v1/admin/rate-limit-exemptions` on that
+replica may lack a change made elsewhere; re-issue it, or restart that process.
 
 Silence: a few hours, if you have confirmed which config is stale and that it does not matter yet.
 
@@ -534,16 +596,23 @@ be restricted. If the subjects are not ones you recognise, the IdP is issuing to
 this Server was never told about: that is a question for whoever administers the IdP, and the
 allowlist is doing its job in the meantime.
 
-A refusal on the delegation counter with `reason = delegation_actor_binding_mismatch` is a different
-event and does not belong to this alert: see the CRITICAL severity that reason carries on the SIEM
-feed.
+A refusal on the delegation counter with `reason = delegation_actor_binding_mismatch`, or on the
+cert exchange counter with `reason = cert_agent_binding_mismatch` (a verified token whose exchange
+named an agent the token does not bind to), is a different event and does not belong to this alert:
+see the CRITICAL severity those reasons carry on the SIEM feed.
 
 Silence: a few hours while the allowlist is being brought up to date.
 
 ## AGLedgerVaultIntegrityCheckFailed
 
-The daily integrity check verified a sample of chains and one did not. The hash chain did not
-verify.
+The daily integrity check verified a sample of chains, the record-less chains, the read log and
+the key registry's trust walk, and one of them did not verify. The worker log line `Vault integrity
+check found broken chains` lists each failure in `errors`; a `key registry` entry there is a
+registry finding rather than a chain break. A `key registry standing` entry is listed but not
+counted, and never fires this alert on its own: a standing finding is one no setting clears whose
+remedy has been carried out (a retired row's `retired_at` that differs from its signed retirement,
+or a later admission a leaked key signed once it is distrusted from an instant no later than that
+admission and retired with force), so it stays as the record of what happened.
 
 Do not restart into this. Capture the state first:
 
@@ -554,6 +623,15 @@ curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/vault/
 
 and take a database backup before any remediation.
 
+Each entry under `brokenRecords` (and `globalChains.brokenChains`) names the break at `brokenAt` and
+`reason`. An entry that also carries `firstFinding` has an earlier key-window or unsupported-algorithm
+entry, which is what an offline verifier reports first; the break that matters is still the one at
+`brokenAt`. A `reason` of `signing_key_unanchored` means the entry was signed by a key no key
+statement links to a key held outside the database: a row written into `vault_signing_keys`
+directly, or a key a forced retirement left unanchored. The scan's `keyRegistry` block lists such keys in
+`unanchoredKeyIds` (not a failure by itself), and its `findings` (`key_statement_invalid`,
+`key_closure_invalid`, `key_window_drift`) fail `healthy` unless they carry `standing: true`.
+
 Do: work out whether the break is a missing entry or a modified one. A missing entry usually has
 `AGLedgerChainEntryDropped` in its history; a modified one does not, and means something wrote to
 `audit_vault` outside the engine. Compare against the signed checkpoints, which are anchored
@@ -563,14 +641,48 @@ independently:
 curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/audit-vault/checkpoints"
 ```
 
+A `reason` of `key_expired` or `key_not_yet_active` is a key-window break, not a modified entry:
+the entry is intact and signed, but by a key outside the window the Server publishes for it. See
+`AGLedgerVaultKeyWindowViolation` below.
+
 Silence: never.
+
+## AGLedgerVaultKeyWindowViolation
+
+A chain carries an entry signed outside the published `[activatedAt, retiredAt]` window of the key
+that signed it. The chain is still checkpointed, so the integrity check can read clean, but an
+offline verifier fails every export carrying the entry with `CHAIN_KEY_EXPIRED` or
+`CHAIN_KEY_NOT_YET_ACTIVE`. Run a scan and read each broken chain's `reason` and `brokenAt`:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/vault/scan"
+```
+
+Two causes:
+
+- A process kept signing after its key was retired: an api or worker replica that missed the
+  rotation. GET /health on each replica names the key it holds; restart the one on the old key.
+- `VAULT_DISTRUSTED_KEYS` names a key with an `@<instant>`. The leaked key's window ends at that
+  instant, so nothing it signed from then on verifies, honest entries included (a `RESTORE_EPOCH`
+  the key signed as an acknowledgement among them). What it signed from the instant until a key you
+  trust retired it is counted with `reason="signing_key_distrusted"`: the scan lists those entries
+  under `distrustedEntries` as accounted for rather than broken, and the counter keeps rising on
+  each checkpoint cycle of a chain that carries one, because each is a write under a key you say
+  leaked. Compare each entry's time and signing key with the instant and the retirement. An entry
+  it signed after that retirement is `reason="key_expired"` and a broken chain in the scan: the key's
+  private half is still in use against this database. Nothing re-signs them; what the operator
+  controls is that no further entry is signed under that key, which the restart onto the new key
+  and its forced retirement already ensure.
+
+Silence: for the second cause, `reason="signing_key_distrusted"` once every listed entry is
+accounted for against the instant; never for a `key_expired` entry written after the retirement.
 
 ## AGLedgerVaultSignerUnreachable
 
 The vault signing key is held in AWS KMS (`VAULT_SIGNING_KEY_KMS_ARN`) and a process has stopped
 signing because consecutive Sign calls failed. That process answers 503 on every write and on
-`/health/ready`, so a load balancer routes around it; on the worker, fetched jobs are held rather
-than failed. It reopens on its own: every signing-key watch tick makes one probe Sign, and the
+`/health/ready`, so a load balancer routes around it. A worker stops fetching jobs and puts back
+any it fetched but had not started, so they wait in the queue rather than fail. It reopens on its own: every signing-key watch tick makes one probe Sign, and the
 first answered one resumes writing.
 
 Check, from the affected process:
@@ -586,15 +698,21 @@ disabled or pending deletion (`KMSInvalidStateException`), and the role missing 
 (`AccessDeniedException`).
 
 Do: fix the cause. Nothing on the Server needs restarting; the watch reopens the gate. If the key
-is gone for good, stage a new KMS key by setting the new ARN and restarting, then retire the old
-key id: the same two steps as any rotation.
+is only disabled, re-enable it long enough to stage a new KMS key the usual way: the new ARN,
+`VAULT_SIGNING_KEY_PREVIOUS_KMS_ARN` set to the old one, a restart, then retire the old key id
+from a process on the new key. If it is gone for good, nothing can sign the succession: set
+`VAULT_TRUST_ANCHORS` to the pins of the keys whose history you vouch for (the old key's among
+them), set the new ARN and restart, and the new key registers under a fresh genesis whose pin you
+give to auditors. Without that the new process reports `signingKey.gate` `unanchored` and signs
+nothing.
 
 Silence: never. A process in this state writes nothing.
 
 ## AGLedgerVaultRemoteSignFailing
 
-Individual KMS Sign calls are failing without tripping the gate above. Each failure is one write
-answered 503 to its caller, retryable.
+Individual KMS Sign calls are failing without tripping the gate above. Each failure is either one
+write answered 503 to its caller, retryable, or a failed probe of the signing-key watch, which signs
+once each watch interval on every api and worker process whether or not anything is written.
 
 Check the process log for the AWS error name on the failed calls, and the latency histogram:
 
@@ -609,6 +727,72 @@ itself is raised through AWS Service Quotas. A rising p99 with no errors is the 
 every chain append holds its transaction open for that long.
 
 Silence: while a quota increase is pending, if the failure rate is one you accept.
+
+## AGLedgerVaultAnchorsNotLanding
+
+Checkpoints are being written but their S3 anchors are not landing, and each checkpoint run's retry
+has failed for over two intervals. Nothing is lost while they wait: the checkpoints are in the
+database and stay queued in `vault_anchor_pending` until an upload succeeds. But until one does,
+the entries they cover have no evidence outside the database, which is the one layer a privileged
+database user cannot rewrite.
+
+Check how many, how old, and what the store said:
+
+```promql
+max(agledger_vault_anchor_pending)
+max(agledger_vault_anchor_pending_oldest_age_seconds) / 3600
+sum by (outcome) (increase(agledger_vault_anchor_upload_total[6h]))
+```
+
+```sql
+SELECT attempts, last_attempt_at, last_error FROM vault_anchor_pending ORDER BY created_at LIMIT 5;
+```
+
+Do: `last_error` names the failure. The usual ones are credentials the worker no longer has, a
+bucket policy or Object Lock setting that refuses the write, and egress to the endpoint. Fix it, and
+each checkpoint run retries the queue, least recently tried first, for 10 seconds before it writes
+new checkpoints; a large backlog drains over several runs, and a shorter
+`VAULT_ANCHOR_INTERVAL_MINUTES` brings them sooner. A run that finds the store still failing stops
+asking it until the next run, and queues what it writes.
+
+Turning anchoring off stops the retries and this alert; the queue is kept, and is retried once
+anchoring is back on.
+
+Silence: while a known store outage is being fixed. Never otherwise.
+
+## AGLedgerChainWritesRefused
+
+External anchors put this database behind a chain position it had already anchored, which is what a
+restore to an earlier backup leaves behind, and the Server has stopped writing to the chain. Records,
+completions, verdicts, schema registrations and SCITT registrations answer `409` with
+`reason: CHAIN_REWIND_DETECTED`. The next entry would take a position the lost history already
+signed and delivered, and both copies would verify, so the Server waits for a person.
+
+Check the evidence and which anchor check found it:
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/vault/rewind"
+```
+
+Do: find out what left this Server after the backup the database was restored from: webhook
+deliveries, the SIEM stream of `system_audit_log`, Settlement Signals, and federation peers. The
+"What none of this detects" list in the deploy README says where each can disagree. Then
+acknowledge with a note saying what you reconciled; it is written onto the chain and cannot be
+edited afterwards:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" -H "Content-Type: application/json" \
+  -d '{"note":"<what was reconciled, by whom>"}' "$AGLEDGER_URL/v1/admin/vault/rewind/acknowledge"
+```
+
+Writes resume on every replica within 30 seconds, and a `RESTORE_EPOCH` entry marks where the two
+histories part.
+
+A replica that could not re-read the state after a change broadcast also reads 1, until a read
+succeeds. If `GET /v1/admin/vault/rewind` shows nothing open, check that replica's database
+connection instead.
+
+Silence: never.
 
 ## AGLedgerCheckpointSkippedBrokenChain
 
@@ -706,8 +890,9 @@ Silence: no. Every other partition rule reads healthy through this state, which 
 
 ## AGLedgerPartitionMaintenanceNotRunning
 
-The runway gauges have not been refreshed for over 36 hours, or they are absent entirely. The job is
-not failing, it is not running.
+The daily job has not refreshed the runway gauges for over 36 hours, or they are absent entirely. The
+job is not failing, it is not running. Each worker also re-reads the gauges every 10 minutes, so their
+readings are current; what this says is that nothing is creating partitions.
 
 Check that the worker is up and that its schedule still holds the entry:
 
@@ -722,9 +907,11 @@ scheduled task shares. Then:
 docker compose -f deploy/compose/docker-compose.yml ps agledger-worker
 ```
 
-Do: a restarted worker publishes nothing until the next 02:00, which is why the rule holds for 26
-hours. Past that, either the worker is down (see `AGLedgerWorkerTargetAbsent`) or its pg-boss
-schedule lost the `partition-management` entry, which a restart re-registers. Confirm the real runway
+Do: every worker boot queues one partition-management run, so a restarted worker publishes the
+gauges within minutes. If they are still absent or stale, either the worker is down (see
+`AGLedgerWorkerTargetAbsent`), the run is failing (see `AGLedgerPartitionMaintenanceFailing` and
+the worker log), or its pg-boss schedule lost the `partition-management` entry, which a restart
+re-registers. Confirm the real runway
 with `SELECT * FROM partition_runway();` before deciding how urgent it is.
 
 Silence: through a planned worker outage. Not otherwise.
@@ -781,6 +968,8 @@ SELECT pid, state, wait_event_type, left(query, 80) FROM pg_stat_activity
  WHERE datname = current_database() ORDER BY xact_start LIMIT 10;
 ```
 
+Every worker re-reads the runway every 10 minutes, so the alert clears within that of the refill.
+
 Do: after the refill, work out why the daily job stopped. A refill without that just moves the
 outage three months out.
 
@@ -807,6 +996,29 @@ months, the job would never have created that month and the rows are simply park
 
 Silence: yes, for parked rows outside the job's window. A day at a time otherwise.
 
+## AGLedgerFederationZeroRowNearHorizon
+
+Terminal records that should have federated and have no outbound delivery row at all are waiting
+for the zero-row recovery sweep, and the oldest has used more than half of the recovery horizon
+(`AGLEDGER_FEDERATION_ZERO_ROW_HORIZON_MINUTES`). A record older than the horizon leaves the sweep's
+window and never reaches its peers, with nothing else to re-drive it.
+
+Check how old, and whether the sweep is filling its batch:
+
+```promql
+max by (kind) (agledger_federation_zero_row_oldest_candidate_age_seconds) / 60
+max (agledger_federation_zero_row_horizon_seconds) / 60
+```
+
+and the worker log for `Federation zero-row recovery filled its batch`.
+
+Do: a full batch every cycle means more records lose their outbound row than one cycle re-drives;
+raise `AGLEDGER_FEDERATION_ZERO_ROW_BATCH_SIZE`. A zero-row candidate is a crash between a record's
+commit and its outbound write, so a steady supply of them means a worker that keeps dying mid-publish:
+read the worker's restarts and its log before raising anything.
+
+Silence: no. A record past the horizon is lost to its peers.
+
 ## AGLedgerFederationDeadLettered
 
 Outbound federation jobs exhausted their retries and dead-lettered. They will never reach the peer
@@ -829,6 +1041,45 @@ curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/federat
 ```
 
 Silence: through a known peer maintenance window.
+
+## AGLedgerFederationDeliveriesGivenUp
+
+Dead-lettered federation legs first failed more than a day ago, so the recovery sweep has stopped
+re-enqueueing them. A leg here reaches its peer only through a manual recover, and pg-boss deletes a
+dead-lettered job 14 days after it dead-lettered; after that the peer never gets it, and nothing
+records that it did not.
+
+Check how many, and which peers:
+
+```promql
+max by (sweep) (agledger_federation_dlq_jobs)
+max(agledger_federation_dlq_oldest_first_failure_age_seconds) / 3600
+```
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/federation/v1/admin/dlq"
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/federation/v1/admin/peers"
+```
+
+Each listed job carries `peerHubId`, `kind` and `firstFailedAt`. A day of failure is almost always
+the peer's configuration rather than an outage: a rotated signing key, a moved endpoint, a revoked
+peering.
+
+Do: fix the peer, then redrive. Preview first with `dryRun`, which reports what would move:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" -H 'Content-Type: application/json' \
+  -d '{"dryRun":true}' "$AGLEDGER_URL/federation/v1/admin/dlq/recover"
+curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/federation/v1/admin/dlq/recover"
+```
+
+A redriven leg keeps its first-failure time, so one that fails again comes straight back here
+rather than getting another day of automatic retries. The recover reaches only legs that first
+failed within the last 30 days. One older than that stays counted here, `dryRun` reports nothing to
+move, and it waits in the DLQ until pg-boss deletes it: record which peer and record it was for from
+the listing, and reconcile with the peer by hand.
+
+Silence: while a peer that is being decommissioned is removed. Its legs will never land.
 
 ## AGLedgerFederationSchemaDigestMismatch
 
@@ -855,6 +1106,180 @@ description is enough to change the digest, so a cosmetic edit on one Server is 
 
 Silence: yes, until the next maintenance window, if the affected type is not in use across the peer
 link.
+
+## AGLedgerWebhooksDeadLettered
+
+Webhook deliveries were dead-lettered in the last hour for the `reason` the alert names. The
+receiver never got them, and nothing retries a dead-lettered delivery: each stays in
+`webhook_delivery_dlq` until an operator retries or discards it. Reasons:
+
+- `retries_exhausted`: the endpoint failed every attempt of the retry ladder.
+- `circuit_open`: the endpoint's breaker is open, so deliveries skip the attempt.
+- `gone`: the receiver answered 410, which also deactivated the subscription.
+- `redirect`, `client_error`: the receiver answered a 3xx or a 4xx, which is not retried.
+- `ssrf_blocked`: the URL resolves to an address the egress guard refuses (`SSRF_ALLOW_CIDRS`).
+- `secret_missing`, `secret_undecryptable`, `signing_key_missing`: this Server could not sign
+  the delivery.
+
+`paused` and `subscription_inactive` dead-letter too, and are left out of this alert. A pause is the
+operator's choice. A subscription is inactive after a delete, a provisioning prune, or the engine
+deactivating it, which follows a `gone` or `circuit_open` dead letter this alert has already fired
+on.
+
+Check what is parked and which endpoints are failing:
+
+```promql
+max(agledger_webhook_dlq_entries)
+max(agledger_webhook_dlq_oldest_age_seconds) / 3600
+```
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/webhook-dlq?limit=50"
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/webhooks/health"
+```
+
+Do: fix the endpoint or the signing material first, then retry one entry, or a batch with
+`retry-all`, which takes the newest entries first:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/webhook-dlq/<dlqId>/retry"
+curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/webhook-dlq/retry-all"
+```
+
+An entry whose subscription is inactive is refused on retry (422, `allowedActions: ["discard"]`),
+and `retry-all` leaves it in place and counts it in `skippedInactive`. The listing marks it
+`subscriptionActive: false`. It counts in `agledger_webhook_dlq_entries`, and keeps
+`GET /v1/admin/system-health` degraded, until it is discarded or its subscription is active again
+(a provisioning reload reactivates one its directory still declares, after which it retries):
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/webhook-dlq/<dlqId>"
+```
+
+A discard does not lose the event: `GET /v1/events` and the record still carry it.
+
+Silence: while a known receiver outage is being fixed.
+
+## AGLedgerWebhookSubscriptionsNotDelivering
+
+Webhook subscriptions have stopped taking deliveries. The `state` label says how:
+
+- `breaker_open`: the endpoint failed enough consecutive deliveries to open its circuit breaker,
+  and it keeps reopening: after each cool-down the next event is sent as a probe, and it failed.
+- `disabled`: the engine deactivated the subscription after its breaker stayed open through
+  sustained failures (a receiver answering 410 deactivates it too, and counts here when its breaker
+  was open).
+
+Either way, new events for the subscription are skipped at dispatch: they are dropped, not
+dead-lettered, so `AGLedgerWebhooksDeadLettered` does not count them and a DLQ retry cannot bring
+them back.
+
+Check which subscriptions, and what they last did:
+
+```promql
+max by (state) (agledger_webhook_subscriptions_not_delivering)
+```
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/webhooks/health"
+```
+
+Each row of the health listing carries `circuitState`, `consecutiveFailures`, `isActive` and when
+it last delivered and last failed. The delivery history, with the receiver's responses, is at
+`GET /v1/webhooks/<webhookId>/deliveries`, which answers only the subscription's owner, so read it
+with the owning org's admin key.
+
+Do: fix the receiver first. Then close the breaker, which resets its failure count and lets
+deliveries resume:
+
+```bash
+curl -sS -X PATCH -H "Authorization: Bearer $AGLEDGER_KEY" -H 'Content-Type: application/json' \
+  -d '{"state":"closed"}' "$AGLEDGER_URL/v1/admin/webhooks/<webhookId>/circuit-breaker"
+```
+
+A `disabled` subscription stays inactive after that: its owner re-creates it, or a provisioning
+reload reactivates one its directory declares. Closing its breaker is also how a subscription that
+was deleted on purpose while failing is dismissed from this alert and from the health listing.
+
+The events the subscription missed are recovered by the receiver replaying
+`GET /v1/events?since=<its lastSuccessfulAt>`, or its `createdAt` if it never delivered.
+`circuitOpenedAt` moves each time a failed probe
+reopens the breaker, so it can be later than the first event dropped. Retry what was dead-lettered
+while it was failing from `GET /v1/admin/webhook-dlq`.
+
+Silence: while a known receiver outage is being fixed.
+
+## AGLedgerTrustedIssuerJwksFailing
+
+Enabled trusted issuers are failing to fetch the keys at their `jwks_uri`, so OIDC tokens they
+would validate are refused with the outcome as their reason: admin bearers, the ephemeral
+certificate exchange, and delegated on-behalf-of calls. The `outcome` label says which failure:
+
+- `jwks_fetch_failed`: the host is unreachable, timed out, answered non-200, or served something
+  that is not a JWKS.
+- `jwks_fetch_blocked`: the SSRF egress guard refused the address this Server resolved it to.
+
+A replica whose key cache for the row is still warm keeps accepting its tokens until the cache
+expires, so callers can see refusals from one replica and not another for a few minutes.
+
+Check which rows, and what the fetch said:
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/admin/trusted-issuers?enabled=true"
+```
+
+The listing's `nextSteps` names the failing rows; each row carries `jwksLastFetchOutcome`,
+`jwksLastFetchError` and `jwksLastSuccessAt`, the last of which says how long it has been unable to
+refresh its keys.
+
+Do: for `jwks_fetch_blocked`, add the IdP's address range to `SSRF_ALLOW_CIDRS` on the Server and
+restart it; the setting is read at startup. No value admits loopback or cloud metadata, so a
+`jwksUri` on one of those has to move to an address the Server reaches from outside itself. For `jwks_fetch_failed`, check egress from the Server to
+the IdP, then the URL itself. Correct a wrong URL with `PATCH /v1/admin/trusted-issuers/{id}`, which
+clears the recorded outcome, and disable an issuer nobody uses with the same PATCH and
+`{"enabled": false}`. A row with `managedBy: "provisioning"` refuses the PATCH with 409; change it in
+its provisioning file and reload instead.
+
+The gauge counts a failure recorded in the last 15 minutes. A failing row is refetched on every
+token presented against it and re-recorded while they keep arriving, so the alert holds through a
+live outage and clears once the IdP answers or the tokens stop.
+
+Silence: while a known IdP outage is being fixed.
+
+## AGLedgerDisputesStuck
+
+Disputes are sitting at `EVIDENCE_WINDOW` when the engine should have moved them to
+`PENDING_RESOLUTION`, where the record's principal is asked to resolve them. The `reason` label says
+which:
+
+- `window_overdue`: the evidence window closed more than 15 minutes ago and the
+  `evidence-window-expiry` sweep has not moved the dispute. The sweep is failing, is not running,
+  or is behind a burst of disputes whose windows closed together.
+- `no_window_close`: the dispute has no close instant, so the sweep has nothing to act on and will
+  never move it. Every path that opens a dispute sets one, so this is a row written some other way.
+
+Check:
+
+```promql
+max by (reason) (agledger_disputes_stuck)
+sum(increase(agledger_maintenance_sweep_failures_total{task="evidence-window-expiry"}[3h]))
+```
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/disputes?status=EVIDENCE_WINDOW"
+```
+
+The worker's `dispute-stale-recovery` sweep logs them every five minutes, oldest first up to a cap,
+with each one's `disputeId` and `recordId`.
+
+Do: for `window_overdue`, read the worker log for the `evidence-window-expiry` sweep's error, or
+confirm the worker is running at all (`AGLedgerWorkerTargetAbsent`); once the sweep runs, it drains
+the backlog oldest first over successive cycles. For `no_window_close`, the dispute can still be
+closed: the record's principal or an org-admin key resolves it at
+`POST /v1/disputes/{id}/resolve`, which is accepted from `EVIDENCE_WINDOW`, or its initiator or an
+org-admin key withdraws it at `POST /v1/records/{recordId}/dispute/withdraw`.
+
+Silence: never for `no_window_close`, which does not clear on its own.
 
 ## AGLedgerHighErrorRate
 
@@ -954,8 +1379,9 @@ Silence: through a planned failover.
 
 ## AGLedgerQueueBacklogGrowing
 
-A pg-boss queue has held more than 1000 pending jobs for fifteen minutes. Either the worker is down
-or it cannot keep up.
+A pg-boss queue has held more than 1000 jobs ready to run and not taken for fifteen minutes. Either
+the worker is down or it cannot keep up. Jobs waiting out a retry backoff are `deferred` and do not
+count: no added worker runs them sooner.
 
 Check which queue and whether anything is running:
 
@@ -1047,10 +1473,69 @@ pool with nothing free. The throw in the worker log names which.
 Silence: for a cleanup sweep whose table you have checked, while the database problem is fixed.
 Never for a recovery sweep.
 
+## AGLedgerVaultCheckpointsFallingBehind
+
+Each checkpoint run reads the records table in id order, oldest first, and checkpoints every chain
+with entries past its last checkpoint, anchoring as it goes, for up to 45 seconds plus the chain,
+page and anchor batch in progress when the time runs out. A run that runs out
+of time stops there, and the next run goes on from that point. This alert means every run in the
+last thirteen hours stopped before the end of the table. At a `VAULT_ANCHOR_INTERVAL_MINUTES` above
+780 a thirteen-hour window can hold no run, so the alert cannot fire; watch the `behind` series
+directly at that cadence.
+
+What it costs: an entry has no signed checkpoint until a run reaches its chain, and with
+`VAULT_ANCHOR_ENABLED` no S3 anchor either. A deleted or rewritten entry is caught by the hash walk
+either way, but truncation from the end of a chain is caught only by a checkpoint.
+
+Check:
+
+```promql
+sum(increase(agledger_maintenance_sweep_behind_total{task="vault-checkpoints"}[13h]))
+sum(increase(agledger_maintenance_sweep_rows_total{task="vault-checkpoints"}[13h]))
+histogram_quantile(0.95, sum by (le) (rate(agledger_maintenance_sweep_duration_seconds_bucket{task="vault-checkpoints"}[13h])))
+```
+
+Do: shorten `VAULT_ANCHOR_INTERVAL_MINUTES` so runs come more often; each run's budget is fixed. A
+steady row count means the runs are working and the write rate is above what they cover at this
+cadence. A falling one means the database or the signer has slowed down (check
+`AGLedgerVaultSignerUnreachable` and the database pool alerts). The first runs after an upgrade from
+a release that checkpointed a fixed 100 chains per run work through the backlog that release left,
+and can hold this alert for as long as that takes.
+
+Silence: while a known backlog drains and the row count is climbing. Never otherwise.
+
+## AGLedgerExpiryRollupFailing
+
+The expiry sweep rolls each FAILED child that passed its deadline (its principal can no longer
+request a revision, so the child counts as failed) up onto its ACTIVE parent, which fails, or
+expires when it is past its own deadline. It catches each
+parent's failure so that one parent cannot hold back the rest, so the sweep itself completes and
+`AGLedgerMaintenanceSweepFailing` does not fire. This one does: at least two such attempts threw in
+three hours.
+
+Check which records, and why:
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml logs --tail=1000 agledger-worker \
+  | grep 'rolling a FAILED child past its deadline up onto its parent threw'
+```
+
+Each line carries the parent's `recordId` and the error.
+
+Do: a database error (a lock timeout, a pool exhausted) clears on its own and the next cycle rolls
+up the parent. An error that repeats for the same record is a defect: capture the log line and the
+record, and file it. The parent stays ACTIVE in the meantime and its principal can still close it
+by its own completion or cancellation.
+
+Silence: while a known database incident is in progress.
+
 ## AGLedgerMaintenanceSweepFallingBehind
 
 A maintenance sweep that bounds its own work has spent at least six of the last hour's cycles
-stopping with rows still waiting. Today that is `oidc-jti-cleanup` and nothing else: it drains the
+stopping with rows still waiting. Two sweeps report it, and the alert's `task` label says which.
+The consumed-jti register first; `idempotency-cleanup` has its own section below.
+
+`oidc-jti-cleanup` drains the
 consumed-jti register (`oidc_consumed_jtis`) in batches of 1000 for up to 30 seconds a cycle, every
 5 minutes, and a cycle that hits the 30 seconds with expired rows left reports itself behind.
 
@@ -1103,6 +1588,29 @@ Silence: while the table's size is known and acceptable, and for as long as the 
 is expected. Not open-ended: the alert clears itself within the hour once the sweep catches up, so a
 warning that keeps coming back is a table that keeps growing.
 
+### task="idempotency-cleanup"
+
+This sweep drains `idempotency_keys` on the same batch, budget and cadence as the jti register, in
+two arms: keys past their seven-day TTL that finished, and claims still in flight an hour after they
+were taken, which belong to requests that crashed before releasing them. One row lands per mutation
+sent with an `Idempotency-Key` header, so what feeds it is the write rate of callers that use the
+header.
+
+Nothing is lost, and what a lagging cycle leaves differs by arm. An expired key the sweep has not
+reached still replays its cached response to a caller that resends it, which is the behaviour the
+caller already had inside the TTL, carried a little longer. A crashed claim the sweep has not
+reached keeps answering 409 to a retry with that key, so a backlog in this arm is callers waiting
+longer than the hour to reuse a key. `SELECT count(*) FROM idempotency_keys WHERE in_flight AND
+created_at < now() - interval '1 hour';` says which arm the backlog is in.
+
+Do: check the table's size first
+(`SELECT count(*), pg_size_pretty(pg_total_relation_size('idempotency_keys')) FROM idempotency_keys;`),
+then the same bloat and autovacuum checks as above. Each arm deletes through its own index
+(`idx_idempotency_keys_expires`, `idx_idempotency_keys_in_flight`), so a cycle that runs to its
+budget with a low row count is the database, not the query.
+
+Silence: on the same terms as the jti register.
+
 ## AGLedgerApiKeyExpiringTomorrow
 
 Active API keys expire within 24 hours. An expired key stops authenticating with no warning to its
@@ -1137,18 +1645,14 @@ Both keys authenticate until the revoke lands, which is the overlap window on th
 `scopes` gives the new key the role's default profile rather than whatever the expiring one carried.
 For a sweep, `POST /v1/admin/api-keys/bulk-revoke` does the revoke half in one call.
 
-`POST /v1/auth/keys/rotate` is a different thing and is what a key holder runs for itself: it rotates
-the CALLER's own key, under the `ROTATE_OWN_API_KEY` authority, and names no key in the body. With no
-body `gracePeriodSeconds` is 0 and the old key stops working the moment the call returns, so pass it
-explicitly whenever anything else is still presenting that key:
+`POST /v1/auth/keys/rotate` does not clear this alert. It replaces the CALLER's own secret and keeps
+its `expiresAt`, so the replacement lapses no later than the rotated key would have; a rotation
+that renewed would let a stolen key keep itself alive indefinitely. Renewal is the mint above.
 
-```bash
-curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" -H 'Content-Type: application/json' \
-  -d '{"gracePeriodSeconds":3600}' "$AGLEDGER_URL/v1/auth/keys/rotate"
-```
-
-Capped by `AUTH_KEY_ROTATION_MAX_GRACE_SECONDS`, 7 days by default. Run with `$AGLEDGER_KEY` it
-rotates the platform key you are using to work the alert, so capture `apiKey` from the response.
+If the key running out is the platform key you are working the alert with, the mint above is still
+the route: a platform key mints platform keys, so present it to `POST /v1/admin/api-keys` with
+`role: "platform"`, `ownerType: "platform"` and `ownerId: "00000000-0000-0000-0000-000000000000"`
+before it lapses, confirm the new key authenticates, then revoke the old one.
 
 The rule reads the 24-hour window rather than the 7-day one on purpose: an install running
 `API_KEY_MAX_LIFETIME_SECONDS` keeps keys inside a 7-day window as its steady state, so a 7-day rule
@@ -1159,8 +1663,8 @@ Expect this rule to fire on an install that has been running for 90 days without
 named its own `expiresAt`, so the first cohort comes due together. Platform keys are exempt by
 default (`AGLEDGER_PLATFORM_KEY_DEFAULT_LIFETIME_SECONDS`, `0`), and the engine logs a WARN at boot
 when the last active platform key is inside 14 days of expiry: that one has no recovery once it
-lapses, because minting a platform key requires a platform credential. Rotate it, or register a
-trusted issuer mapped to the platform role first.
+lapses, because minting a platform key requires a platform credential. Mint its replacement with it
+while it still works, as above, or register a trusted issuer mapped to the platform role first.
 
 Silence: yes, if the keys are known to be retiring with their agents.
 
@@ -1202,6 +1706,46 @@ curl -sX POST -H "Authorization: Bearer $AGLEDGER_KEY" -H 'Content-Type: applica
 `neverUsed` is refused on the sweep unless `createdBefore` is beside it, because on its own it also
 matches the replacement key minted minutes ago. The lockout guard still applies: an org-admin sweep
 that would leave the org with no working admin door is refused with 403 before anything is revoked.
+
+## Open disputes (no alert)
+
+`agledger_disputes_open{status}` counts disputes at `EVIDENCE_WINDOW` and `PENDING_RESOLUTION`, and
+`agledger_disputes_open_oldest_age_seconds{status}` says how long ago the oldest of each was opened.
+There is no shipped alert on either. A dispute at `PENDING_RESOLUTION` waits for the record's
+principal to render an outcome at `POST /v1/disputes/{id}/resolve`, and the engine does not decide
+for them however long it takes. The engine-side fault, a dispute the sweeps should have moved and
+did not, is `AGLedgerDisputesStuck`.
+
+Work the queue on a cadence that suits the install:
+
+```bash
+curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/v1/disputes?status=PENDING_RESOLUTION"
+```
+
+The worker also logs, at info and up to a cap per run, disputes that have sat at
+`PENDING_RESOLUTION` for over a week.
+
+## Records without a deadline (no alert)
+
+`agledger_records_without_deadline{status}` counts records in a state a deadline would time out that
+hold no deadline, and `agledger_records_without_deadline_oldest_age_seconds{status}` says how long
+ago the oldest of each was created. `status` is the internal state (`DRAFT`, `REGISTERED`, `ACTIVE`,
+`PENDING_VERDICT` and the rest of the `TIME_OUT` action's states in the authority declaration),
+not the display status the API returns. The API reads it every 5 minutes rather than on every
+scrape, because it reads the records table.
+
+The expiry sweep reads the deadline, so it never times these out. A delegation parent can still be
+failed by its children, and an automatically gated completion is still graded, but otherwise each
+stays open until a party acts on it. A deadline is optional, and an install whose
+agents register open-ended work carries a steady count here, which is why there is no shipped
+alert. A count that only grows, or an oldest age of months, is the reading worth a look: work that
+was abandoned without being cancelled.
+
+The deadline cannot be added afterwards: it is frozen, with the criteria, once a record is
+registered or proposed. What the parties can do is finish the work, or cancel the record at
+`POST /v1/records/{id}/cancel`, which is refused once a completion is accepted: a record at
+`COMPLETION_ACCEPTED` or `PENDING_VERDICT` ends by its gate or its principal's verdict. The record's
+`allowedActions` say what is open to it. For new work, set `deadline` when the record is created.
 
 ## AGLedgerApiTargetAbsent
 
@@ -1252,7 +1796,7 @@ healthy. Check that first. Otherwise read the worker log: it exits 1 on a boot f
 staying up, so the last lines say why. Queue depth confirms the impact:
 
 ```promql
-max by (queue) (agledger_pgboss_queue_size{state="queued"})
+max by (queue) (agledger_pgboss_queue_size{state="ready"})
 ```
 
 Silence: through a planned worker outage. Expect `AGLedgerQueueBacklogGrowing` to follow.

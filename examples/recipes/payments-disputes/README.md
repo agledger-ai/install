@@ -137,15 +137,18 @@ mismatch flags it.
 - **Do not hard-code which network carries an inquiry.** Inquiries are not Amex/Discover-only; read
   the brand from the dispute.
 
-### The gate and separation of duties live in your orchestrator, not the type
+### The gate is the engine's; separation of duties is your orchestrator's
 
-`gateMode` is a record-creation parameter, not a schema field, so a contract type cannot stop a
-caller from creating a decision record with `gateMode: auto` and bypassing the human verdict, on a
-rules-less decision type that auto-settles with no human in the loop. Likewise the engine guarantees
-only that a performer who is not the principal cannot render the verdict; it does not reject a record
-where a single identity is both. So your orchestrator must own the policy: never set `gateMode: auto`
-on the decision types, route every `fraudulent` or high-value dispute through the principal gate, and
-provision distinct analyst (performer) and lead (principal) identities.
+Every decision type declares `defaultGateMode: principal` and carries no gate rules, so the engine
+refuses a create that passes `gateMode: auto` on one of them (400): nothing but the principal's
+verdict can settle a decision record. That holds only while the type has no rules; a version
+registered with `fieldMappings` would accept `gateMode: auto` and let the rules settle it.
+
+The engine guarantees only that a performer who is not the principal cannot render the verdict; it
+does not reject a record where a single identity is both. Such a record carries
+`selfPrincipal: true`, so a reader can see it, but separation is yours to enforce through the keys you
+issue: route every `fraudulent` or high-value dispute through the principal gate, and provision
+distinct analyst (performer) and lead (principal) identities.
 
 ### Keep type descriptions short if you will distribute
 
@@ -161,12 +164,13 @@ no shared signing infrastructure.
 
 ```bash
 export AGLEDGER_API_URL=https://agledger.internal.example
-export AGLEDGER_API_KEY=agl_...   # an admin/platform key with schemas:write
+export AGLEDGER_API_KEY=agl_adm_...   # an admin key with schemas:write; register.sh refuses a platform key
 ./register.sh
 ```
 
 `register.sh` POSTs each type to `POST /v1/schemas` in order and prints what landed. Re-running
-registers a new version of any type whose schema changed compatibly; an incompatible change is
+registers a new version of any type whose schema changed compatibly, and a type whose file is unchanged answers 200 with its current version
+and registers nothing; an incompatible change is
 rejected and reported. See `register.sh` for the `RECIPE_FORCE=1` reset option (destructive; scratch
 orgs only).
 

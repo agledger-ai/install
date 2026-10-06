@@ -6,7 +6,8 @@ set -euo pipefail
 # =============================================================================
 # Produces the NDJSON vault dump that the offline cryptographic verifier
 # consumes: one file per audit table (audit_vault, vault_checkpoints,
-# vault_signing_keys, org_admin_reads, org_admin_reads_checkpoints), each row
+# vault_signing_keys, vault_key_statements, org_admin_reads,
+# org_admin_reads_checkpoints), each row
 # carrying its canonical COSE_Sign1 bytes. This is the customer-runnable
 # equivalent of the API repo's dev-only dump script — it runs the dump
 # tool that already ships inside the AGLedger image (dist/scripts/dump-vault.js),
@@ -107,9 +108,13 @@ for f in "${ABS_OUT}"/*.ndjson; do
 done
 log ""
 log "Verify this dump offline:"
-log "  npx -y @agledger/verify ${ABS_OUT}"
+log "  npx -y @agledger/verify@2.0.0 ${ABS_OUT} --trust-anchor <pin>"
 log ""
-log "@agledger/verify is the verifier that reads this dump format. @agledger/cli's"
+log "<pin> is the 'Vault signing key pin' install.sh printed (sha256 of the"
+log "signing key's public half); without --trust-anchor the verdict is"
+log "VERIFIED, NOT ANCHORED. The version is the first @agledger/verify release"
+log "that reads a dump from this Server: an older one fails it once an admin"
+log "has read a record. @agledger/cli's"
 log "'verify' subcommand is a different tool: it checks one record's audit export"
 log "and cannot read a dump directory. The stock path (any RFC 9052 library against"
 log "the per-row cose_sign1 bytes) and both tools are documented under 'Offline"

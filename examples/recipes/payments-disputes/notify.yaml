@@ -1,6 +1,8 @@
 # Payments-disputes vertical recipe — Notify (webhook) subscriptions.
 # A declarative list of the webhook subscriptions this recipe expects. Create each
-# one against your Server with POST /v1/webhooks (see the Webhooks guide). The
+# one against your Server with POST /v1/webhooks (see the Webhooks guide), sending
+# each entry's fields as the body; the comment above each entry is its label for you,
+# not a field (the route refuses unknown fields). The
 # signing secret is returned ONCE at create time — capture it then; it is null on
 # every subsequent read.
 #
@@ -11,8 +13,8 @@
 subscriptions:
   # The dispute operations channel — every business-meaningful moment in the
   # chargeback lifecycle, from filing through the authorized terminal action.
-  - name: disputes-ops
-    url: https://dispute-events.example.com/agledger
+  # disputes-ops
+  - url: https://dispute-events.example.com/agledger
     signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
     eventTypes:
       - record.created               # a dispute filed, or a decision opened
@@ -25,8 +27,8 @@ subscriptions:
   # human lead works. Filter receiver-side on type and amount: send fraudulent or
   # high-value disputes (evidence-submission-decision-v1, ce3-evidence-submission-decision-v1)
   # to the principal who must authorize before the one-shot Stripe call fires.
-  - name: fraud-review
-    url: https://fraud-queue.example.com/agledger
+  # fraud-review
+  - url: https://fraud-queue.example.com/agledger
     signingAlg: hmac
     eventTypes:
       - record.created               # filter receiver-side on the decision types + amount

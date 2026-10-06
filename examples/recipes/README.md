@@ -11,6 +11,13 @@ recipe expects a notice channel) a `notify.yaml` describing the webhook
 subscriptions. You administer your own Server, so running `register.sh` against
 it *is* the install.
 
+An Org holds a capped number of Types, set by `enforcement.maxContractTypes` in the
+org config. Every Type the Org holds counts toward it: the example Types seeded at
+bootstrap, disabled Types, and each recipe's. Registering every vertical on one Org
+exceeds the default cap, and the registration past it is refused with a 403 whose
+`recoveryHint` names the cap. Raise it first with a platform key:
+`PATCH /v1/admin/orgs/{id}/config` with `{"enforcement": {"maxContractTypes": <n>}}`.
+
 | Recipe | What it covers | Directory |
 |--------|----------------|-----------|
 | Insurance: auto claims | First notice of loss through coverage, property and bodily-injury assessment, fraud and SIU review, an engine-decided authority gate, and the human settlement decision. | [`insurance/`](insurance/) |
@@ -20,7 +27,7 @@ it *is* the install.
 | Content moderation: DSA takedown / enforcement | The EU Digital Services Act enforcement lifecycle: inbound flag, a human-gated own-decision, the Art. 17 statement to the user, the Art. 24(5) submission to the DSA Transparency Database with its receipt bound on-chain, and the Art. 20 appeal. | [`content-moderation/`](content-moderation/) |
 | Software delivery: GitHub | An agent-driven code-delivery flow: the agent's stated intent and claims, the CI conclusion relayed hash-bound, the human merge or deploy authorization rendered before the sha-pinned one-shot (built against live GitHub), and the outcome as GitHub reports it. Composes AGLedger's Gate with GitHub's native gates under a one-decision-one-holder rule. | [`software-delivery/`](software-delivery/) |
 | Tax: HMRC MTD VAT filing | A UK VAT return filed to HMRC under Making Tax Digital: the open obligation, the nine-box return, an engine pre-flight arithmetic gate, the officer's statutory "true and complete" declaration held before the irreversible submission, and HMRC's form bundle number or typed rejection bound to the exact bytes filed (built against the HMRC developer sandbox). | [`hmrc-mtd-vat/`](hmrc-mtd-vat/) |
-| Employment: FCRA adverse action | Background screening where the gate is a clock: the CRA's adjudication notarized at the seam (built against the Accurate Background sandbox), an engine auto-clear vs human-review gate, the EEOC individualized assessment, the FCRA pre-adverse notice that starts the wait, an engine-enforced waiting period that refuses a too-early final action, and the 615(a) final decision with the interval provable offline from two signed timestamps. | [`employment-fcra/`](employment-fcra/) |
+| Employment: FCRA adverse action | Background screening where the gate is a clock: the CRA's adjudication notarized at the seam (built against the Accurate Background sandbox), an engine auto-clear vs human-review gate, the EEOC individualized assessment, the FCRA pre-adverse notice that starts the wait, an engine-enforced waiting period whose gate settles FAILED on a too-early attempt, and the 615(a) final decision with the interval provable offline from two signed timestamps. | [`employment-fcra/`](employment-fcra/) |
 
 ## Horizontal recipes
 
@@ -29,7 +36,7 @@ rather than WHAT the work is, and they compose with any vertical above.
 
 | Recipe | What it covers | Directory |
 |--------|----------------|-----------|
-| Agent Work Context | Durable work state for AI agents: one root record per piece of work, immutable signed checkpoints as children, first-class signed supersession so the current head is one query (`?superseded=false`) rather than a guess at the newest row, cold-start resume and handoff with tamper-evident succession, and a client-side lineage-coherence checker. Ships both a `register.sh` path and an importable manifest (`manifests/`, publisher `agledger-recipes`) for digest-matched distribution across Servers. | [`work-context/`](work-context/) |
+| Agent Work Context | Durable work state for AI agents: one root record per piece of work, immutable signed checkpoints as children, first-class signed supersession so the current head is one query (`?superseded=false`) rather than a guess at the newest row, cold-start resume and tamper-evident succession, and a client-side lineage-coherence checker. Ships both a `register.sh` path and an importable manifest (`manifests/`, publisher `agledger-recipes`) for digest-matched distribution across Servers. | [`work-context/`](work-context/) |
 | Agent drift | An ops loop over `GET /v1/agents/drift`: a standard-library script pages the fleet, selects the agents whose numbers moved in either direction, and gathers the per-type series and record history for each; a brief hands the dossier to the model or person who decides expected, watch or escalate, and each tick's decisions are notarized so the loop's own judgment is on the ledger it watches. No types to register. | [`agent-drift/`](agent-drift/) |
 
 We add and exercise new verticals over time. If you need one that is not here yet,

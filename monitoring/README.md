@@ -47,6 +47,11 @@ exporter, which is why the bundled Prometheus keeps scraping it.
 And if you point AGLedger's OTLP export at a collector of your own that re-exports into the same
 Prometheus, pick one path per series: keep the direct `/metrics` scrape and drop or filter the
 re-export, or do the reverse, but do not let both land in one Prometheus.
+The shipped alert rules assume the direct scrape. `/metrics` publishes every label combination a
+rule reads at 0 from process start, so `increase()` sees the first event of each series as a step
+from 0 to 1. The OTLP copy records real events only, so on the re-export path a rule of the form
+`increase(x[w]) > 0` misses the first event of every labelled series, and the conversion into
+Prometheus can rename series the rules select by name.
 
 ## Dashboards
 
@@ -87,13 +92,18 @@ management, and the rest). All three live on the worker's `/metrics`, not the AP
   recorded whether the sweep succeeded or threw. The `task` label is the sweep name, so a p95 per
   task separates one slow sweep from a dozen fast ones.
 - `agledger_maintenance_sweep_behind_total{task="..."}` counts the cycles that stopped with work
-  left. Only a sweep that bounds its own work by a clock can answer that, which today is
-  `oidc-jti-cleanup`: it drains the consumed-jti register in batches for up to 30 seconds a cycle,
+  left. Only a sweep that bounds its own work by a clock can answer that, and today three do.
+  `oidc-jti-cleanup` drains the consumed-jti register in batches for up to 30 seconds a cycle,
   every 5 minutes, against one row per admin or platform bearer accepted on a trusted issuer with
-  `jtiSingleUse` set. The series sits at zero on the cycles it drains, so a flat line is a real
-  reading rather than an absent one, and `AGLedgerMaintenanceSweepFallingBehind` fires on half an
-  hour of cycles ending short. Nothing is lost when it does: the rows are tokens that can no
-  longer be presented, so the cost is table size until the admission rate drops.
+  `jtiSingleUse` set; the rows are tokens that can no longer be presented, so falling behind costs
+  table size. `idempotency-cleanup` drains `idempotency_keys` on the same budget and cadence: keys
+  past their TTL, which keep replaying their cached response until reached, and claims a crashed
+  request left in flight, whose key answers 409 until reached. The series sits at zero on the
+  cycles a sweep drains, so a flat line is a real reading rather than an absent one, and
+  `AGLedgerMaintenanceSweepFallingBehind` fires on half an hour of cycles ending short. Nothing is
+  lost when it does. `vault-checkpoints` is the third, and the exception: a chain a run did not reach
+  has entries with no checkpoint or anchor yet. Each run goes on from where the last one stopped, and `AGLedgerVaultCheckpointsFallingBehind` fires when every run for thirteen hours
+  has stopped short.
 - `agledger_maintenance_unknown_task_total{task="..."}` counts ticks this worker refused because it
   carries no handler for the task. The schedules live in the database, so a job minted by a newer
   release's schedule reaches an older worker during a rollout and for as long as a rollback lasts;
@@ -111,8 +121,9 @@ rows it does not return. Compare the panel against the same window's record grow
 a number is high: a sweep that takes 90ms at 20 rows and 70ms at 2000 is doing exactly what it
 should.
 
-`idempotency-cleanup` belongs with them (it deletes a bounded batch too). The rest do not follow
-that rule and should not be read as if they did: `rate-limit-cleanup` and
+The rest do not follow that rule and should not be read as if they did: `idempotency-cleanup`
+and `oidc-jti-cleanup` delete for up to a time budget, so their duration tracks the backlog until it
+reaches that budget and `agledger_maintenance_sweep_behind_total` is their reading; `rate-limit-cleanup` and
 `webhook-secret-grace-cleanup` issue one unbounded statement over everything expired, so their
 duration tracks how much expired since the last run, and `partition-management` is DDL that returns
 no page at all. For those the useful reading is against their own history, not against the record
@@ -166,8 +177,9 @@ terminates TLS for the API.
 
 ## Alerting rules
 
-`monitoring/alerts/agledger.rules.yml` ships 43 rules in six groups: silent drops, chain integrity,
-partition maintenance, federation delivery, availability/saturation, and target liveness.
+`monitoring/alerts/agledger.rules.yml` ships 56 rules in seven groups: silent drops, chain integrity,
+partition maintenance, federation delivery, stuck work, availability/saturation, and target
+liveness.
 
 Every rule carries a `runbook_url` annotation pointing at its own section of
 `monitoring/runbooks.md`, which says what fired, what to check, what to do, and when it is safe to
@@ -189,9 +201,16 @@ failure is defined by nobody looking. A dropped chain append or a lost audit-tra
 200 to the caller, logs nothing an operator will see, and shows up only as a counter that nobody is
 watching at 3am. Those rules fire at `> 0` with no `for:` delay, deliberately.
 
-Every rule that adds several counters wraps each term as `(sum(increase(...)) or vector(0))`, and
-so does the summary tile on the silent-drops dashboard. Both halves are load-bearing. Half of those
-counters declare labels, and a labelled counter has no series at all until its first increment, so
+Every labelled counter a rule reads through `increase()` publishes each of its label combinations
+at 0 from the moment its process starts. Unseeded, a labelled series appears only at its first
+increment, already at 1, and `increase()` reads that first step as 0, so a rule firing on `> 0`
+would miss the first event of every series, which for a silent drop is often the only one. The
+exceptions are metrics a rule reads only inside a ratio, where one missed sample does not move the
+answer.
+
+Every rule that adds several counters also wraps each term as `(sum(increase(...)) or vector(0))`,
+and so does the summary tile on the silent-drops dashboard. Both halves are load-bearing. A counter
+from the other process, or one whose process is not running, has no series on that target, so
 `sum()` over it returns an empty vector rather than zero; adding an empty vector to anything is
 empty, and the rule cannot fire. `sum()` alone fixes only the narrower case where the terms exist on
 different label sets (the API and worker targets carry different `job` and `instance` values, and

@@ -1,6 +1,8 @@
 # Employment/FCRA vertical recipe: Notify (webhook) subscriptions.
 # A declarative list of the webhook subscriptions this recipe expects. Create each
-# one against your Server with POST /v1/webhooks (see the Webhooks guide). The
+# one against your Server with POST /v1/webhooks (see the Webhooks guide), sending
+# each entry's fields as the body; the comment above each entry is its label for you,
+# not a field (the route refuses unknown fields). The
 # signing secret is returned ONCE at create time; capture it then; it is null on
 # every subsequent read.
 #
@@ -9,7 +11,7 @@
 # endpoint you control (or HTTP only on an LB-terminated-TLS install with
 # SSRF_ALLOW_PLAIN_HTTP set). Replace the example.com URLs with your own.
 #
-# recordTypes (API v1.2.0+) narrows record-scoped events to the listed contract
+# recordTypes narrows record-scoped events to the listed contract
 # types, server-side and fail-closed: a typed subscription never receives a record
 # event whose type it does not list. In this recipe that scoping is load-bearing,
 # not a convenience: the FCRA notices are REQUIRED to the candidate, while the
@@ -20,8 +22,8 @@
 subscriptions:
   # Screening operations: every business-meaningful screening moment, across all
   # seven types, for the employer's own audit trail. Unscoped on purpose.
-  - name: screening-ops
-    url: https://screening-events.example.com/agledger
+  # screening-ops
+  - url: https://screening-events.example.com/agledger
     signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
     eventTypes:
       - record.created               # an order, report, assessment, notice, or gate opened
@@ -35,8 +37,8 @@ subscriptions:
   # two notice types, so the internal assessment and the CRA report record can
   # never reach this endpoint. The receiver still owns actual delivery to the
   # candidate (and the CRA or a managed service owns the physical letter).
-  - name: candidate-notices
-    url: https://candidate-notices.example.com/agledger
+  # candidate-notices
+  - url: https://candidate-notices.example.com/agledger
     signingAlg: ed25519       # durable, offline-verifiable proof the notice was issued and when
     eventTypes:
       - record.created               # pre-adverse notice issued (T0), or the final-action record opened

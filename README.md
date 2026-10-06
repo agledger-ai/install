@@ -185,7 +185,7 @@ The bundled PostgreSQL container is the default. To point at Aurora, RDS, Cloud 
 
 Requirements:
 
-- A connection pooler in front of the database is supported, with one extra setting. Set `DATABASE_URL_DIRECT` to a connection string that reaches PostgreSQL without a pooler in transaction mode, and leave `DATABASE_URL` pointing at the pooler. The transactional pool keeps running through the pooler and gets its connection multiplexing; the direct string carries only the work that needs a session that stays its own: the `LISTEN` client that keeps caches coherent across replicas, the session-level advisory locks that serialize queue-policy setup, the provisioning reconcile and the federation zero-row sweep, migrations, and the session settings that cap statement and idle-in-transaction time. Leave it unset for a direct database or a pooler in session mode, where everything runs on `DATABASE_URL` as before.
+- A connection pooler in front of the database is supported, with one extra setting. Set `DATABASE_URL_DIRECT` to a connection string that reaches PostgreSQL without a pooler in transaction mode, and leave `DATABASE_URL` pointing at the pooler. The transactional pool keeps running through the pooler and gets its connection multiplexing; the direct string carries only the work that needs a session that stays its own: the `LISTEN` client that keeps caches coherent across replicas, the session-level advisory locks that serialize the provisioning reconcile and the federation zero-row sweep, migrations, and the session settings that cap statement and idle-in-transaction time. Leave it unset for a direct database or a pooler in session mode, where everything runs on `DATABASE_URL` as before.
 - The API and Worker refuse to boot when `DATABASE_URL` is behind a transaction-mode pooler and `DATABASE_URL_DIRECT` is unset, and the refusal names the setting. What they detect is the topology itself, not the hostname: two connections that report one backend process, or one advisory lock granted to both of them. Neither is possible on a direct connection, so the check cannot refuse a topology that would have worked. A pooler in session mode passes, because it pins one backend per client for that client's whole life. `preflight` reports the same reading under its `topology` check, and the Compose installer and the chart's preflight Job both run it before anything starts.
 - What breaks without the direct string, measured through PgBouncer 1.25.2 with `pool_mode = transaction`: a `NOTIFY` sent from one connection is never delivered to a `LISTEN` on another, so every replica falls back to cache TTL expiry; `pg_try_advisory_lock` on the same key returns true to two different clients at once, so nothing that relies on one holder is serialized; and a session `SET` lands on whichever backend served it and stays there, visible to unrelated clients afterwards, because PgBouncer runs no `server_reset_query` in transaction mode unless `server_reset_query_always` is on. None of the three raises an error. `pnpm verify:pooler` in the API repo is the repeatable proof: it starts PgBouncer in transaction mode, runs migrations, records, webhook delivery, a maintenance tick, a vault scan, a provisioning reload and cross-replica cache invalidation through it, and asserts the refusal.
 - **RDS Proxy**, read from AWS's *Avoiding pinning an RDS Proxy* page and not run here: it multiplexes at transaction granularity, and where a session surface would break it pins the connection to that client for the rest of the session instead. The conditions it lists for PostgreSQL include `SET` commands, `PREPARE`/`DISCARD`/`DEALLOCATE`/`EXECUTE`, temporary sequences, tables and views, declaring cursors, listening on a notification channel, and `pg_advisory_lock` / `pg_try_advisory_lock`. It states that transaction-level advisory locks (`pg_advisory_xact_lock` and its siblings) do not pin. So the session surfaces are correct behind the proxy, and the price is that the connections carrying them stop being shared. Point `DATABASE_URL_DIRECT` at the instance or cluster endpoint and leave `DATABASE_URL` on the proxy endpoint.
@@ -200,7 +200,7 @@ Requirements:
   ALTER ROLE agledger_app LOGIN PASSWORD '<generated>';
   ```
 
-  `scripts/setup-db-roles.sh` does exactly that for both roles, generates the passwords and records the connection strings. **Upgrading an install whose `DATABASE_URL` carries the placeholder:** the first migration after upgrading closes it, and the Server then cannot connect. Run the `ALTER ROLE` above as a superuser (or the database owner), put the new password in `DATABASE_URL`, and restart.
+  Or set `AGLEDGER_APP_ROLE_PASSWORD` where the migration runs (`compose/.env`; on the chart, `migrate.extraEnv` or a key of that name in `secrets.existingSecret`), and every migration run gives `agledger_app` its login under that password, `CREATE` on the database and ownership of the pg-boss schema. The bundled-Postgres installs (Compose and the chart) work this way out of the box: the migration runs as the owner and the API and worker connect as `agledger_app`, because an owner passes every privilege check on its own tables and would leave the append-only revokes on the audit chain binding nothing. Preflight warns on any runtime role that owns those tables. `agledger_app` is cluster-wide, so on a cluster serving more than one Server, set `AGLEDGER_APP_ROLE_PASSWORD` for at most one of them. **Upgrading an install whose `DATABASE_URL` carries the placeholder:** the first migration after upgrading closes it, and the Server then cannot connect. Run the `ALTER ROLE` above as a superuser (or the database owner), put the new password in `DATABASE_URL`, and restart.
 - Set `DATABASE_POOL_MAX` to match your database's connection limits.
 
 Both installers check that runtime role after migrating and before anything starts serving, so a role that cannot serve stops the install with the missing grant named instead of leaving crash-looping workloads behind a success message. On Compose the check is a step in `install.sh`. On the chart it is a `pre-install`/`pre-upgrade` hook Job, so `helm install` exits non-zero and creates no workload; migrations have run by then, and so have the release's ConfigMap and Secret, which are hook resources and outlive a `helm uninstall`, but the API and Worker are still unmade. Read the hook's report with:
@@ -246,7 +246,7 @@ The flag is sticky on purpose. An upgrade that recreated the containers without 
 
 - **Federation is not available.** The federation transport signs with Ed25519 by design. A Server configured with both ES256 and federation keys refuses to boot, naming the conflict, rather than starting with a transport it cannot sign for.
 - **Ed25519-pinned surfaces refuse explicitly.** A webhook subscription requesting `signingAlg: "ed25519"` returns 422 naming the algorithms this Server can use (`ecdsa-p256-sha256`, `hmac`). Nothing silently downgrades.
-- **Consumers need a current verifier.** Anyone verifying your chain offline needs `@agledger/verify` 1.4.0 or later. The algorithm support lives in its `@agledger/verify-core` dependency rather than in `verify` itself; 1.4.0 is the `verify` release that resolves a core carrying ES256 under every install shape, including a consumer with an older core pinned at the top level. Quote the `verify` version, because that is the package people install. Your Server publishes the floor per key as `minVerifierVersion` at `GET /v1/verification-keys`. **Tell them before they run one**, because a verifier that cannot compute the algorithm does not reliably say so: builds from `verify-core` 1.1.0 on report `CHAIN_UNSUPPORTED_ALGORITHM` and name the fix, but older builds have no such code path and report a signature failure instead, which reads as tampering on an intact chain.
+- **Consumers need a current verifier.** Anyone verifying your chain offline needs `@agledger/verify` 2.0.0 or later, the floor for every 2.x install whatever its algorithm; that release carries ES256. Your Server publishes the floor per key as `minVerifierVersion` at `GET /v1/verification-keys`.
 
 **Licensing note.** Ed25519 is itself FIPS-approved (FIPS 186-5), and validated modules that implement it exist. The exclusion here is the vintage of the FIPS provider shipped with the runtime base image, not a property of the algorithm.
 
@@ -256,42 +256,51 @@ The flag is sticky on purpose. An upgrade that recreated the containers without 
 # 1. generate a P-256 key
 docker run --rm agledger/agledger:<version> dist/scripts/generate-signing-key.js --algorithm es256
 
-# 2. put the new VAULT_SIGNING_KEY and AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true in compose/.env
+# 2. in compose/.env, move the current VAULT_SIGNING_KEY to VAULT_SIGNING_KEY_PREVIOUS,
+#    then set the new VAULT_SIGNING_KEY and AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true
 
-# 3. restart every process. Each one registers the key it holds on boot and
-#    starts signing with it; nothing is retired.
+# 3. restart every process. The first one up registers the new key and writes a
+#    succession statement signed by both keys; nothing is retired.
 docker compose up -d --force-recreate
 
-# 4. both keys are active now. Read which ones still have a process behind them.
+# 4. both keys are active now. Read which ones still have a process behind them;
+#    the new key must report trust "anchored".
 curl -s -H "Authorization: Bearer $PLATFORM_API_KEY" \
   http://localhost:3001/v1/admin/vault/signing-keys \
-  | jq '.data[] | {keyId, algorithm, status, activatedAt, retiredAt, lastSignedAt}'
+  | jq '.data[] | {keyId, algorithm, status, trust, activatedAt, retiredAt, lastSignedAt}'
 
-# 5. once the old key has signed nothing for 300 seconds, close its window.
-#    Until you do this it stays active, which costs nothing.
+# 5. once the old key has signed nothing for 300 seconds, close its window from a
+#    process on the new key. Until you do this it stays active, which costs nothing.
 curl -s -X POST -H "Authorization: Bearer $PLATFORM_API_KEY" \
   http://localhost:3001/v1/admin/vault/signing-keys/<old-key-id>/retire | jq .
+
+# 6. remove VAULT_SIGNING_KEY_PREVIOUS from compose/.env.
 ```
 
 ## Changing the signing key
 
 A key change is two steps, and they are separate on purpose.
 
-**Staging** is a restart. A process that boots with a `VAULT_SIGNING_KEY` the registry does not carry registers it, activates it and signs with it. It retires nothing, so **more than one key is active while you roll**, and every process you have not restarted yet keeps signing inside its own key's published window. Nothing it writes fails verification. `POST /v1/admin/vault/signing-keys/rotate` performs the same registration on demand and answers `already_active` once the restart has done it; its `nextSteps` walk the rest of this procedure.
+**Trust.** A key in `vault_signing_keys` is trusted only when a signed key statement (table `vault_key_statements`) links it to a key some process holds outside the database: the key it signs with (`VAULT_SIGNING_KEY`, or the KMS key at `VAULT_SIGNING_KEY_KMS_ARN`), its predecessor signer (`VAULT_SIGNING_KEY_PREVIOUS`, or `VAULT_SIGNING_KEY_PREVIOUS_KMS_ARN`), or a pin in `VAULT_TRUST_ANCHORS` (comma list of `sha256:<64 hex>`, the SHA-256 of a key's SPKI DER). The database stores statements and vouches for none of them. A key row written with database access alone (a leaked `DATABASE_URL`, say) verifies nothing: entries it signs break as `signing_key_unanchored`, it is absent from `GET /v1/verification-keys`, `/.well-known/agledger-vault-keys.json`, `/.well-known/scitt-keys` and the audit export's `signingKeyWindows`, and an ephemeral-certificate JWS naming it gets 401. It shows only on the authenticated `GET /v1/admin/vault/signing-keys`, as `trust: "unanchored"`; every key there carries `trust` and `admittedBy`.
 
-**Retirement** closes a key's window and is an explicit call: `POST /v1/admin/vault/signing-keys/{keyId}/retire`. After it, an entry written under that key is a chain break, reported as `key_expired` by the Server and as `CHAIN_KEY_EXPIRED` by `@agledger/verify`. Entries written before it stay valid forever.
+**Pins.** The installer prints the new key's pin (`Pin: sha256:<hex>`). `node dist/scripts/signing-key-digest.js` derives the same value from `VAULT_SIGNING_KEY` or `VAULT_SIGNING_KEY_FILE`, from `--kms-arn <arn>`, or from `--public-key <base64 SPKI|->` (pipe in `aws kms get-public-key --key-id <arn> --query PublicKey --output text`). Give an auditor the pin of any one key of the install: trust runs through successions, so a pin taken at install time keeps anchoring every later key a routine retirement leads to. A forced retirement voids what the retired key admitted and the history behind it, and after one auditors take a new pin plus the pins of the history you re-anchor (the response's `nextSteps` say so). `GET /v1/verification-keys` publishes `anchoredFrom` (the serving process's key pin) and per-key `statements`; `anchoredFrom` is something to compare against the pin, never a replacement for it.
 
-Both steps are the same for a key held in AWS KMS (`VAULT_SIGNING_KEY_KMS_ARN`; `signing.kmsKeyArn` on Helm): staging is the new key's ARN and a restart, and the process registers the key under the fingerprint of the public half it fetches from KMS. There is no `VAULT_SIGNING_KEY_PREVIOUS` for the outgoing KMS key, because its public half is already in the registry; the variable is for a key that was supplied as material. Moving an install from a local key to KMS is one rotation: put the local key in `VAULT_SIGNING_KEY_PREVIOUS`, set the ARN, unset `VAULT_SIGNING_KEY` (the two together refuse to boot), restart, then retire the local key id. `deploy/SECURITY.md` describes what custody changes and what happens when KMS does not answer.
+**Staging** is a restart. Start one process on the new `VAULT_SIGNING_KEY` with `VAULT_SIGNING_KEY_PREVIOUS` set to the key the running processes sign with. On boot it registers the new key, activates it and writes a succession statement signed by both keys; the `KEY_ROTATED` chain entry names the statement digests. Once that succession exists, other processes on the new key need no `VAULT_SIGNING_KEY_PREVIOUS` (on Helm every pod receives `secrets.vaultSigningKeyPrevious`, which is harmless; remove it after the old key is retired). A process on a new key with no predecessor signer, against a registry that already holds keys, registers nothing and signs nothing: `/health` reports `signingKey.gate: "unanchored"`, `/health/ready` answers 503, a worker stops consuming jobs (`jobConsumption: "stopped_signing_key_unanchored"`), and the rotate endpoint answers 409 with a `recoveryHint`. Staging retires nothing, so **more than one key is active while you roll**, and every process you have not restarted yet keeps signing inside its own key's published window. Nothing it writes fails verification. `POST /v1/admin/vault/signing-keys/rotate` performs the same registration on demand and answers `already_active` once the restart has done it; its `nextSteps` walk the rest of this procedure.
+
+**Retirement** closes a key's window and is an explicit call: `POST /v1/admin/vault/signing-keys/{keyId}/retire`, sent to a process holding a different active, anchored key (normally one on the new key); a process on the key being retired answers 409 and says what to do. It stamps `retiredAt` and writes a closure statement, signed by the calling process's key, over that `retiredAt`. Anything the retired key admits after the closure counts for nothing, which bounds a key whose private half leaks after a routine retirement. The response carries `closureDigest` and `unanchoredKeyIds`. After it, an entry written under that key is a chain break, reported as `key_expired` by the Server and as `CHAIN_KEY_EXPIRED` by `@agledger/verify`. Entries written before it stay valid forever.
+
+Both steps are the same for a key held in AWS KMS (`VAULT_SIGNING_KEY_KMS_ARN`; `signing.kmsKeyArn` on Helm), and the process registers the key under the fingerprint of the public half it fetches from KMS. Moving from a local key to KMS: set the ARN, move the local key to `VAULT_SIGNING_KEY_PREVIOUS`, unset `VAULT_SIGNING_KEY` (the two together refuse to boot), restart, then retire the local key id. Moving from one KMS key to another: set the new ARN and `VAULT_SIGNING_KEY_PREVIOUS_KMS_ARN` (`signing.previousKmsKeyArn` on Helm) to the old one, and give the process `kms:GetPublicKey` and `kms:Sign` on both keys for the change; the old key never leaves KMS and signs only the succession. `VAULT_SIGNING_KEY_PREVIOUS` and `VAULT_SIGNING_KEY_PREVIOUS_KMS_ARN` together refuse to boot. `deploy/SECURITY.md` describes what custody changes and what happens when KMS does not answer.
 
 ### Rotating on a running install (HA order)
 
 Any install with more than one process is HA for this purpose, and **a single-replica Helm install counts**: the api and the worker are separate Deployments and both sign.
 
-1. Generate the new key and put it where every process reads it. On Helm, `vaultSigningKey` in values (or your own Secret).
+1. Generate the new key and put it where every process reads it, with the key they sign with now as `VAULT_SIGNING_KEY_PREVIOUS`. On Helm, `vaultSigningKey` and `vaultSigningKeyPrevious` in values (or your own Secret).
 2. Restart or roll every api and worker process. On Helm, a chart-managed Secret change rolls both Deployments by itself; with `existingSecret` set, nothing watches the Secret and **you restart both Deployments yourself** (`kubectl rollout restart deploy -n <ns> -l app.kubernetes.io/instance=<release>`, which restarts both without depending on the rendered names).
 3. Probe `GET /health` on every api and worker process, not through the load balancer, and check that each one reports `signingKey.keyId` as the new key. This is the check that proves no process still holds the old key: a process you missed reports the old key id here and nowhere else.
 4. Cross-check the chain: `GET /v1/admin/vault/signing-keys` reports `lastSignedAt` per key over the last 300 seconds. A recent value under the old key proves a process is still signing with it. A null does not prove the opposite: an idle install, or a process whose only use of the key is webhook deliveries, certificates or Receipts, appends nothing and leaves it null while still holding the key. That is why step 3 comes first.
-5. `POST /v1/admin/vault/signing-keys/{oldKeyId}/retire`. While the old key has appended inside the last 300 seconds it refuses with 422 and names the key, rather than let a process you forgot write entries that can never be repaired. That refusal is a backstop for the case the chain can see, not a substitute for step 3.
+5. `POST /v1/admin/vault/signing-keys/{oldKeyId}/retire`, against a process on the new key. While the old key has appended inside the last 300 seconds it refuses with 422 and names the key, rather than let a process you forgot write entries that can never be repaired. That refusal is a backstop for the case the chain can see, not a substitute for step 3.
+6. Remove `VAULT_SIGNING_KEY_PREVIOUS` (`vaultSigningKeyPrevious`) and roll again at your convenience.
 
 Skipping step 3 is the failure this order exists to prevent. Everything a process writes after its key's `retiredAt` fails offline verification permanently: the chain is append-only, so those entries cannot be re-signed or removed.
 
@@ -301,20 +310,28 @@ Leaving the old key active is not an error state. It costs nothing but an extra 
 
 Same two steps, without the wait.
 
-1. Generate the new key, put it where every process reads it, and restart them.
-2. `POST /v1/admin/vault/signing-keys/{oldKeyId}/retire` with `{"force": true}`, immediately. This is what `force` is for: a key whose private half is out must stop being honoured now.
+1. Generate the new key, put it where every process reads it with the leaked key as `VAULT_SIGNING_KEY_PREVIOUS`, and restart them.
+2. `POST /v1/admin/vault/signing-keys/{oldKeyId}/retire` with `{"force": true}`, immediately, from a process on the new key. This is what `force` is for: a key whose private half is out must stop being honoured now. It skips the quiet period and revokes the key's unexpired ephemeral certificates.
 
-Chain appends under that key stop the instant the retirement commits: the retirement and the appends in flight take the same row lock, so no entry is written carrying a time after the retirement instant. The other signers stop when the process notices the retirement: at once on an api process, which holds the LISTEN connection the retirement is broadcast on, and within 30 seconds on a worker, which re-reads the registry on that interval. Until then a worker that has not been restarted can still sign RFC 9421 webhook deliveries, ephemeral-certificate JWS and Receipts under the retired key; a receiver holding those against the published window rejects them, which is the intended outcome for a leaked key. A process that has noticed refuses `/health/ready` with `signingKey.gate: "retired"`, leaves the load balancer's rotation, and on the worker stops consuming jobs (`/health` reports `jobConsumption: "stopped_signing_key_retired"`) so queued work waits for a worker running the new key. Restart each one. Anything an attacker signs with the leaked key afterwards falls outside its published window and is reported as `key_expired` by a chain scan and as `CHAIN_KEY_EXPIRED` by an offline verifier.
+The closure a forced retirement writes is forced: it voids every edge out of the leaked key, whenever it signed it, so every key it admitted loses that path, and so does the history behind it, which was reached back through the predecessor the leaked key named. The Server walks the key registry again with the closure in place, and every key it no longer reaches is listed in `unanchoredKeyIds`: its row is retired in the same transaction, its certificates are revoked, and entries it signed break as `signing_key_unanchored`. Entries the leaked key itself signed before the retirement still verify. A key in that list that you know is honest is trusted again only from outside the database: add its pin to `VAULT_TRUST_ANCHORS` on every process and restart, then, where the scan reports `key_closure_invalid` for it, call the retire endpoint for it without `force`, which signs the retirement its row already carries; a key whose retirement a closure already signs needs only the pin. Until it is pinned, the scan reports the statements that admit it as `key_statement_invalid`. A process that signed with such a key restarts on a fresh key staged from a process on an anchored one. An auditor whose pin reached the current keys only through the leaked key no longer reaches them, and one pinned on a current key no longer reaches the history behind the leaked key; give each one the pin of the key that retired it plus every pin you added to `VAULT_TRUST_ANCHORS`.
+
+A key found leaked after it was retired on schedule is retired again with `{"force": true}`. Its `retiredAt` does not move; the call writes a forced closure, with the same effect, and revokes its certificates. On a key a forced closure already closes, it writes no second closure. `alreadyRetired` is `true` in the response.
+
+A leaked key can still sign closures of other keys, and they apply until you distrust it: a closure only takes trust away, so the worst it does is shorten a key's window or void what that key admits, and nothing it signs makes a key trusted that was not. But that worst is real, and nothing inside the database undoes it: a closure it signs after the forced retirement, dated before your current key was activated, ends that key's window at the date it names, so every entry the current key signed reads as `key_expired` and its certificates stop authenticating. The same holds for a key retired on schedule whose private half leaks later. Set `VAULT_DISTRUSTED_KEYS` to its pin on every process and restart (the retire response carries it as `retiredSpkiSha256`, and its `nextSteps` spell out the entry): what the key signs from its retirement on then counts for nothing, what it signed before keeps counting, so its honest closure of its own predecessor still holds, and the scan reports each statement it signed since as counting for nothing. Add `@<RFC 3339 instant>` to the entry when the key leaked before it was retired, so what it signed from the leak counts for nothing too; a key with no instant and no retirement is trusted for nothing. List every key that leaked: a closure the listed key signed from its instant no longer counts, honest ones included, so a key it retired after that instant is open again unless another key retired it, and the scan's finding for that closure names the key to add. A closure that counts though its signer stored it after its own retirement, or that dates a retirement before its subject's activation, is reported as `key_closure_invalid` with the entry in its detail. Give auditors the same entry and the instant with the pin: `@agledger/verify` 2.0.0 or later takes them as `--distrusted-key` and `--trust-anchor`, on an audit export and on a vault dump alike. A dump carries no distrust entry, so an auditor who leaves it out passes on a dump the entries the instant took away. A process refuses to boot when the list names its own key or its predecessor, or names a `VAULT_TRUST_ANCHORS` pin with no instant; a pin beside a dated entry vouches for what the key signed before the instant.
+
+If there is no successor you trust, or `VAULT_SIGNING_KEY_PREVIOUS` is lost: set `VAULT_TRUST_ANCHORS` to the pins of the keys whose history you vouch for and restart. A process whose key nothing links to that history then registers under a fresh genesis, and you give auditors the new key's pin. Nothing inside the database can tell your successor from an attacker's; an authority held outside it, the pin, is the only thing that does.
+
+Chain appends under that key stop the instant the retirement commits: the retirement and the appends in flight take the same row lock, so no entry is written carrying a time after the retirement instant. The other signers stop when the process notices the retirement: at once on api and worker processes alike, which both hold the LISTEN connection the retirement is broadcast on, and otherwise within 30 seconds, the interval at which each process re-reads the registry in case a broadcast was missed. Until then a process that has not been restarted can still sign RFC 9421 webhook deliveries, ephemeral-certificate JWS and Receipts under the retired key; a receiver holding those against the published window rejects them, which is the intended outcome for a leaked key. A process that has noticed refuses `/health/ready` with `signingKey.gate: "retired"`, leaves the load balancer's rotation, and on the worker stops consuming jobs (`/health` reports `jobConsumption: "stopped_signing_key_retired"`) so queued work waits for a worker running the new key. Restart each one. Anything an attacker signs with the leaked key afterwards falls outside its published window and is reported as `key_expired` by a chain scan and as `CHAIN_KEY_EXPIRED` by an offline verifier.
 
 Retiring the only active key is always refused: it would leave nothing able to sign. Stage the replacement first.
 
-Finish a key change before a version upgrade or rollback starts, and do not start one during a rollout. Two keys active at once is the normal state of a key change, and a process on release 1.7.0 booting into that state (a rollback, a lagging ReplicaSet, an autoscaler adding a pod on the old one) tries to retire whichever active key it did not boot with. The database refuses that retirement on this release's schema, so the staged key survives, but the older process logs the refusal at every boot until the key change is finished or the rollout is.
+Finish a key change before a version upgrade starts, and do not start one during a rollout.
 
 ### What retirement does not do
 
-Retirement closes a window; it does not delete a key. `GET /v1/verification-keys` keeps serving every historical public key with the exact instants it was active (`activatedAt` / `retiredAt`), which is what lets a verifier check each entry against the key that actually signed it. Entries written before a retirement keep verifying under the retired key. No re-signing, and the chain stays continuous.
+Retirement closes a window; it does not delete a key. `GET /v1/verification-keys` keeps serving every historical anchored public key with the exact instants it was active (`activatedAt` / `retiredAt`, the values the key statements sign), which is what lets a verifier check each entry against the key that actually signed it. Entries written inside a key's published window keep verifying under it after retirement. No re-signing, and the chain stays continuous.
 
-There is no `compromised` status and no revocation. A retired key keeps verifying the entries it signed, which is correct for a routine rotation and means the Server will not flag records signed while a key was out. Rotation stops future signing with that key; it says nothing about what was signed before it. External anchors are what bound that span. [Signing-key compromise](https://agledger.ai/docs/operations/key-compromise) is the runbook.
+There is no `compromised` status and no revocation of what a key signed. A retired key keeps verifying the entries it signed inside its published window (a distrust instant ends that window early, and a forced retirement's `unanchoredKeyIds` stop verifying until pinned), which is correct for a routine rotation and means the Server will not flag records signed while a key was out. Rotation stops future signing with that key; it says nothing about what was signed before it. External anchors are what bound that span. [Signing-key compromise](https://agledger.ai/docs/operations/key-compromise) is the runbook.
 
 Re-running `install.sh` with `AGLEDGER_SIGNING_ALGORITHM` set does **not** change the algorithm of an existing install. The signing key is generated only alongside the other secrets, so a run that finds an existing `.env` keeps the key it already has; the installer says so rather than reporting a success that did not happen.
 
@@ -359,7 +376,7 @@ git pull
 ./scripts/upgrade.sh <version>
 ```
 
-`upgrade.sh` never updates itself, only the image, and a release's `.env` reconcile steps ship in the new script: minting the `METRICS_AUTH_TOKEN` that the production default for `/metrics` now requires is one of them. Running an older copy skips them. If you already upgraded with one, `git pull` and re-run `upgrade.sh` against the version you are on: it reconciles `.env`, prints the `docker compose up -d` that makes the repairs live, and stops without pulling, backing up or restarting anything. `restore.sh` performs the same reconcile before it starts the stack, so a DR restore onto a host whose `compose/.env` predates those repairs does not bring up a Server missing them.
+`upgrade.sh` never updates itself, only the image, and a release's `.env` reconcile steps ship in the new script: minting the `METRICS_AUTH_TOKEN` that the production default for `/metrics` requires, when `.env` has none, is one of them. Running an older copy skips them. If you already upgraded with one, `git pull` and re-run `upgrade.sh` against the version you are on: it reconciles `.env`, prints the `docker compose up -d` that makes the repairs live, and stops without pulling, backing up or restarting anything. `restore.sh` performs the same reconcile before it starts the stack, so a DR restore onto a host whose `compose/.env` lacks those repairs does not bring up a Server missing them.
 
 "Already on that version" means the stack is serving it. If `.env` names the target and the API is not answering `/health`, the run treats it as an interrupted upgrade rather than a no-op: it re-attempts the restart and leaves the rollback marker holding the version the first attempt recorded.
 
@@ -377,13 +394,15 @@ Every upgrade path migrates the database before the new processes exist. On Kube
 
 The chart ships `strategy.type: Recreate` for both the API and the worker, which holds that window to the gap between the old pods stopping and the new ones passing their probes. Setting `api.strategy.type` or `worker.strategy.type` to `RollingUpdate`, which is what a multi-node install wants, stretches it across the whole rollout: pods of both releases answer the same Service, behind the same load balancer, at the same time. Two things follow from that, and only the second needs anything from you.
 
-**The schema is safe in both directions.** A release removes or tightens nothing the release before it reads or writes; a removal waits for the release after. The engine's own release gate runs the previous release's database suite against the new schema before a version is tagged, so the mixed window needs no ordering and no maintenance mode.
+**Within a major version, the schema is safe in both directions.** A release removes or tightens nothing the release before it in the same major reads or writes; a removal waits for the release after. The engine's own release gate runs the previous release's database suite against the new schema before a version is tagged, so the mixed window needs no ordering and no maintenance mode. A new major does not keep this: its migrations remove what the previous major reads and writes, so no process of the previous major may serve once the migration has run, and going back means restoring the backup taken before the upgrade.
 
-**A security control a release introduces is in force only once no process of the previous release remains.** Such a control is checked by the processes carrying that release and by no other, so applying a restriction mid-rollout applies it on some of the pods answering the load balancer and not the rest. `subjectAllowlist` and `jtiSingleUse` on a trusted issuer are the current examples, and the create and update responses for those say so in `nextSteps`. `GET /v1/admin/system-health` answers the question: `connectedVersions` lists every AGLedger version holding a connection on the database, each with how many connections and when the oldest of them was opened, and the control binds every request once that list holds one entry. `connectedVersions: null` means the view could not be read, which is not the same as nothing being connected.
+**A security control a release introduces is in force only once no process of the previous release remains.** Such a control is checked by the processes carrying that release and by no other, so applying a restriction mid-rollout applies it on some of the pods answering the load balancer and not the rest. `GET /v1/admin/system-health` answers the question: `connectedVersions` lists every AGLedger version holding a connection on the database, each with how many connections and when the oldest of them was opened, and the control binds every request once that list holds one entry. `connectedVersions: null` means the view could not be read, which is not the same as nothing being connected.
 
-**Entries a process wrote after its key was retired are reported from this release on.** The release before this one rotated the vault signing key by restart, and on an install with more than one process the first process to boot retired the old key while the others kept signing with it. Those entries carry a write time past the key's published `retiredAt`. An offline verifier has always reported them as `CHAIN_KEY_EXPIRED`; from this release the Server reports them too, as `key_expired` from `POST /v1/admin/vault/scan` and from `verifyChain`, and counts them on `agledger_vault_key_window_violations_total`. Nothing can repair them, because the chain and the key registry are both append-only, and the affected chains keep being checkpointed so the report does not cost an anchor. A key whose recorded `activated_at` postdated entries it signed (the previous release stamped the registration instant rather than the first entry) is repaired once by migration 008, from the chain itself, so those entries do not read as `key_not_yet_active`.
+**2.0 does not upgrade a 1.x database.** The migration refuses a database a 1.x release migrated before it changes anything, and says so: the checksum it recorded for `001_consolidated.sql` is not the one 2.0 ships. Install 2.0 against a new, empty database, and keep the 1.x database for the 1.x install that wrote it. A backup does not carry 1.x data across either: `restore.sh` returns the install to the release the backup was taken on, `--keep-version` with a 1.x archive is refused before anything is stopped or dropped, and an archive that records no version reaches the 2.0 migration, which refuses the restored database the same way. `upgrade.sh` refuses an install whose recorded or running version is 1.x at its version check, before it writes `.env`, takes a backup or stops anything. Put the checkout back on the 1.x `deploy/` tree afterwards: a `docker compose` command run from the 2.0 tree starts 2.0 against the 1.x database. When the version was not recorded and the migration is what refuses, the recovery text names that tree rather than a re-run. On Helm with the bundled PostgreSQL, a 2.0 chart refuses to render over a release a 1.x chart installed, so `helm upgrade` fails before anything is replaced; that check reads the release through `lookup`, which answers nothing under a renderer such as Argo CD.
 
-**Rolling back takes the processes back, not the schema.** `helm rollback` runs no migrate Job, because the migration is a `pre-install,pre-upgrade` hook and rollback triggers neither; the older image comes up against the newer schema, which is the same mixed case as the upgrade and is safe for the same reason. On Compose, `restore.sh` does move the schema, because a dump and the schema it came from have to agree. What does not resolve itself either way is work the newer release scheduled: a worker on the older release carries no handler for a sweep the newer one added, so it fails those jobs rather than completing them, counts them on `agledger_maintenance_unknown_task_total`, and the pg-boss cron keeps minting them from the schedule the newer release wrote. Going forward again clears it.
+**A migration can run out of lock budget under sustained writes.** A migration that cannot take a table's lock within `MIGRATION_LOCK_TIMEOUT` (default `30s`) rolls back whole with `lock_not_available`. On Compose the migrate CLI exits 75 for this failure alone and `upgrade.sh` retries it, three attempts in all, with the previous API serving throughout. On Kubernetes the migrate Job retries up to its `backoffLimit`; on an external database it is a pre-upgrade hook, so the previous release keeps serving, but on bundled PostgreSQL it is an ordinary resource and the new pods start without waiting for it, crashlooping until a migration lands. If it still fails, set `MIGRATION_LOCK_TIMEOUT=120s` (`compose/.env`, or `migrate.extraEnv` on the chart) and re-run, or upgrade in a low-traffic window. On the chart, size `helm upgrade --timeout` (default 5m) to cover every Job attempt: about four times the lock budget plus the migration's own run time, or Helm reports the hook failed while a later attempt is still running.
+
+**Rolling back within a major takes the processes back, not the schema.** `helm rollback` runs no migrate Job, because the migration is a `pre-install,pre-upgrade` hook and rollback triggers neither; the older image comes up against the newer schema, which is the same mixed case as the upgrade and is safe for the same reason. On Compose, `restore.sh` does move the schema, because a dump and the schema it came from have to agree. What does not resolve itself either way is work the newer release scheduled: a worker on the older release carries no handler for a sweep the newer one added, so it fails those jobs rather than completing them, counts them on `agledger_maintenance_unknown_task_total`, and the pg-boss cron keeps minting them from the schedule the newer release wrote. Going forward again clears it.
 
 ## Backups and point-in-time recovery
 
@@ -404,12 +423,22 @@ retention reaching another's files.
 
 Restoring is `./scripts/restore.sh <archive>`. Each archive `backup.sh` writes records the version it
 was taken from, so the restore returns the install to that version before starting it. An archive
-that carries no such record (one from an earlier release, or one the chart's backup Job wrote) leaves
+that carries no such record (one the chart's backup Job wrote) leaves
 the install where it is, and the run says so. It fetches that image before it
 drops anything, and refuses with the database untouched if it cannot. Two flags change what it does:
 `--force` restores into a database that does not carry the `public.records` table yet, and
 `--keep-version` restores the data onto the release the install is on now, which re-applies that
 release's migrations over the older dump.
+
+The migration and the checks around it run in the image of the release the install runs, which is
+`AGLEDGER_VERSION` in `compose/.env`. A host restoring into a cluster has no `compose/.env`, so it
+names the release with `--version` (or `AGLEDGER_VERSION` in the environment); with none named, or
+`latest`, the restore refuses before it stops anything rather than migrate with whatever Docker Hub
+published last. On an external database with a separate runtime role, pass `DATABASE_URL` as that
+role and `DATABASE_URL_MIGRATE` as the owner: given one URL, the restore hands the `pgboss` schema to
+that URL's role, so it refuses one URL when the database it replaces keeps `pgboss` under another.
+A migration that fails ends the run with exit 1 and nothing started. The recovery runbook carries
+the Kubernetes recipe.
 
 `--keep` is a count of archives to retain and has a floor of 1: the run keeps the backup it just
 took, so 0 is not a retention policy and is refused rather than honoured. To remove backups, delete
@@ -431,7 +460,14 @@ host keeps reaching the anchors the install already wrote, whatever the new `.en
 Setting `AGLEDGER_INSTANCE_ID` to something an operator already chose refuses boot, naming both
 values and both ways out, because the alternative is anchors silently split across two prefixes.
 Setting it on an install that never had one is adopted with a warning instead, so re-running
-`install.sh` (which mints the variable when `.env` has none) cannot stop a Server that was serving. Before the script reports success it checks that
+`install.sh` (which mints the variable when `.env` has none) cannot stop a Server that was serving.
+The chart does the same on Kubernetes: a first install generates a UUID into the release's ConfigMap,
+every upgrade reads it back, and a release whose ConfigMap carries no id keeps `default`, the prefix
+it has anchored under. The `instanceId` value pins it where the chart cannot read it back: a renderer
+(`secrets.gitops`), `secrets.existingSecret` with no ConfigMap to read (both refuse the render until
+it is set), or a release restored from another release's backup, whose post-restore Job prints the
+database's id. A Server reads only its own prefix; `vault-anchors/default/` is where an install that
+sets no id at all anchors. Before the script reports success it checks that
 `db.dump` starts with the archive header `pg_restore` expects, so a dump that something else wrote
 to is deleted and reported now rather than discovered during a restore, after `restore.sh` has
 already dropped the database.
@@ -495,11 +531,28 @@ a restore rolls those back, so a position the restore removed has no row to look
 The walk is bounded by a key cap and a time budget, whichever comes first, and a walk that stops on
 either reports `truncated: true`, because a clean report over part of a bucket is not a clean report.
 
+**Every anchor under this Server's prefix is evidence.** An anchor document that parses and agrees
+with the key it was found at counts, whatever issuer its checkpoint names and whichever key signed
+it. One that names an issuer other than this Server's current `AGLEDGER_EXTERNAL_URL` (compared as
+URLs, so a trailing slash is not a difference) still refuses writes as a `rewound`,
+`missing_locally` or `fork` finding, and the finding carries `signedForIssuer` with a message
+naming both issuers: another Server may share `AGLEDGER_INSTANCE_ID`, or the external URL changed.
+Both are worth stopping for. The way out is the acknowledgement below, or fixing the configuration.
+The per-install instance id is what keeps two Servers sharing a bucket apart.
+
 **A detected rewind stops chain writes.** Records, completions, verdicts, schema registrations and
 SCITT registrations all answer `409` with `reason: CHAIN_REWIND_DETECTED` and a `recoveryHint` naming
 `POST /v1/admin/vault/rewind/acknowledge`. `GET /v1/admin/vault/rewind` carries the evidence.
 Acknowledging resumes writes and appends a second `RESTORE_EPOCH` entry carrying that evidence and
-your note, so the two histories stay tellable apart.
+your note, so the two histories stay tellable apart. The signing-key registry's own entries are not
+refused: a key the restored registry does not hold (one staged after the backup, or the fresh key a
+compromise calls for) registers at boot, and the acknowledgement is signed under it. An
+acknowledgement counts while its `RESTORE_EPOCH` verifies under a key the Server trusts, sits on an
+intact link of the platform-ops chain, and is signed by a key no operator has retired with `force` or
+listed in `VAULT_DISTRUSTED_KEYS`, and it covers only findings recorded at or before the detection it
+signs, so a genuine acknowledgement copied back in after a later restore covers nothing found since. One that stops counting refuses writes again, and
+`GET /v1/admin/vault/rewind` lists the findings it covered with the reason, until the next
+acknowledgement covers them.
 
 **What none of this detects:**
 
@@ -578,8 +631,9 @@ helm upgrade --install agledger oci://registry-1.docker.io/agledger/agledger-cha
 `--reuse-values` is the wrong shortcut here and pins `backup.image` to whatever the old chart shipped:
 see the upgrade note under [Kubernetes (Helm)](#kubernetes-helm).
 
-It runs `pg_dump -Fc` against the same `DATABASE_URL` the workloads use, checks the archive header
-before it keeps anything, and writes a `backup-<timestamp>.tar.gz` in the shape `restore.sh` reads,
+It runs `pg_dump -Fc` against `DATABASE_URL_MIGRATE` when the release's Secret holds one (the owner
+URL the migration Job uses), and against the workloads' `DATABASE_URL` otherwise. It checks the
+archive header before it keeps anything, and writes a `backup-<timestamp>.tar.gz` in the shape `restore.sh` reads,
 onto a PersistentVolumeClaim the chart keeps when the release is uninstalled. It records no install
 version inside the archive, which the Compose script's archives do, so a restore from one names the
 release to return to as yours to decide. `backup.image`
@@ -605,7 +659,7 @@ run it against the database from a host that can reach it, with two flags the cl
 looks exactly like the bundled container and the script refuses to guess which one to drop; and
 `--no-start`, so the run does not bring up a Compose stack beside the cluster's own workloads.
 The host has to reach the database from the one-off containers the script runs as well as from
-itself (the migration, the privilege check and the post-restore steps run in the api image), so a
+itself (the revocation read, the migration and the privilege check run in the api image), so a
 `kubectl port-forward` on a laptop is not enough on its own: a container cannot reach the laptop's
 `localhost`. Run it from a bastion or a pod that reaches the database by a routable address, or
 forward with `--address 0.0.0.0` and name the host's own address in `DATABASE_URL`. Workloads are
@@ -630,17 +684,44 @@ kubectl get deploy -n "$NS" -l "$SEL" \
   -o jsonpath='{range .items[*]}{.metadata.name}={.spec.replicas}{"\n"}{end}'
 kubectl scale -n "$NS" --replicas=0 deploy -l "$SEL"
 
-# 3. copy one out and restore it with the documented script
+# 3. copy one out and restore it with the documented script, naming the
+#    release it runs and both database roles the release's Secret holds
 kubectl cp "$NS"/agl-backups:/backups/backup-<timestamp>.tar.gz ./backup-<timestamp>.tar.gz
-DATABASE_URL='<the same URL, reachable from here and from a container here>' \
-  ./scripts/restore.sh --target external --no-start ./backup-<timestamp>.tar.gz
+DATABASE_URL='<runtime-role URL, reachable from here and from a container here>' \
+DATABASE_URL_MIGRATE='<owner-role URL, the same way>' \
+  ./scripts/restore.sh --target external --no-start --version <app version> ./backup-<timestamp>.tar.gz
 
-# 4. bring each Deployment back to the count step 2 recorded (the chart can run
+# 4. run the post-restore steps in the cluster: the commands restore.sh printed
+#    last, which create the Job's input Secret from the directory it wrote,
+#    start the Job from the chart's post-restore CronJob, and wait for it
+PR=$(kubectl get cronjob -n "$NS" -l "app.kubernetes.io/instance=$REL,app.kubernetes.io/component=post-restore" \
+  -o jsonpath='{.items[0].metadata.name}')
+kubectl delete secret -n "$NS" "$PR" --ignore-not-found
+kubectl create secret generic -n "$NS" "$PR" --from-file=<the directory restore.sh named>
+kubectl create job -n "$NS" --from=cronjob/"$PR" <the Job name restore.sh named>
+kubectl wait -n "$NS" --for=jsonpath='{.status.conditions[0].status}'=True --timeout=15m job/<that name>
+kubectl logs -n "$NS" job/<that name>
+kubectl get job -n "$NS" <that name> -o jsonpath='succeeded={.status.succeeded} failed={.status.failed}{"\n"}'
+
+# 5. bring each Deployment back to the count step 2 recorded (the chart can run
 #    either under an HPA, and a count it did not choose is overridden at its
 #    next pass), and clean up
 kubectl scale -n "$NS" --replicas=<recorded count> deploy/<name>
+kubectl delete secret -n "$NS" "$PR"
 kubectl delete pod -n "$NS" agl-backups
 ```
+
+Step 4 is what `restore.sh` does itself after the migration on Compose: it re-applies the
+revocations made after the backup (read out of the database before the drop), writes the restore
+marker the next boot turns into a `RESTORE_EPOCH` chain entry, and compares the external anchors
+against the restored database. Those need the Server's whole configuration, which only the release
+holds, so on a cluster they run in a Job with the api's image, env sources, volumes and security
+context. The chart renders it as a CronJob that never fires (`postRestore.enabled`, on by default);
+without its input Secret the Job exits 2 and names what is missing. The Job succeeds whenever the
+steps ran, and its log says what they found; a rewind it finds refuses chain writes until
+acknowledged. Leave `postRestore.enabled` on: turning it back on mid-restore is a `helm upgrade`,
+which resets the Deployments' replica counts and starts the Server before these steps.
+The [recovery runbook](https://agledger.ai/docs/operations/recovery) has the full recipe.
 
 The backup PVC is `ReadWriteOnce`, so on most storage classes that pod has to land on the node the
 CronJob last ran on. If it stays `Pending`, `kubectl get pod agl-backups -o wide` and the PVC's
@@ -664,10 +745,12 @@ place. Two file sinks do not: each container's `SIEM_FILE_PATH` holds a slice an
 file says so. That is why only the worker polls, and why a file sink is the complete feed only under
 a single worker replica. Past one replica, use the HTTP sink.
 
-**A collector on a private address needs `SSRF_ALLOW_CIDRS`.** The egress guard refuses a connection
-whose DNS lookup resolves to a private, loopback or link-local address that the allowlist does not
-cover, and the SIEM sender is not exempt. It runs on resolution, so it applies to a collector named
-by hostname; an IP-literal `SIEM_HTTP_URL` resolves nothing and is not checked. A collector behind a
+**A collector on loopback or a private address needs no `SSRF_ALLOW_CIDRS`.** `SIEM_HTTP_URL` is
+operator configuration, so the egress guard on it refuses only the cloud instance-metadata service,
+whether the URL names that address or a hostname resolving to it. A sidecar collector on
+`localhost` works as it stands. `SSRF_ALLOW_CIDRS` governs the URLs API callers register (webhooks,
+federation peers, trusted-issuer JWKS), and widening it never changes what the SIEM sink may reach,
+nor the reverse. A collector behind a
 private CA needs `SIEM_HTTP_CA_FILE` (a PEM bundle, which replaces the system roots for this sender)
 or `NODE_EXTRA_CA_CERTS` (process-wide, and set before the process starts).
 

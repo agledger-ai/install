@@ -70,6 +70,15 @@ Otherwise the reference is `repository:tag` (tag defaults to Chart.AppVersion).
 {{- end }}
 
 {{/*
+The post-restore CronJob's name, which is also the name of the Secret its Job
+reads. 52 characters: the CronJob controller refuses a longer name, because the
+Jobs it would create append eleven.
+*/}}
+{{- define "agledger.postRestoreName" -}}
+{{- printf "%s-post-restore" (include "agledger.fullname" .) | trunc 52 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
 Service account name.
 */}}
 {{- define "agledger.serviceAccountName" -}}
@@ -78,6 +87,19 @@ Service account name.
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
+{{- end }}
+
+{{/*
+Whether pods running as the chart's service account mount its API token.
+False unless serviceAccount.automountToken says otherwise: nothing in the image
+calls the Kubernetes API, so a mounted token is a credential a compromised
+process could use and nothing else. IRSA and EKS Pod Identity inject their own
+projected token and do not need this one. Rendered on the pod spec, where it
+wins over whatever the ServiceAccount says, so an existing account named by
+serviceAccount.name is covered too.
+*/}}
+{{- define "agledger.automountToken" -}}
+{{- if ((.Values.serviceAccount).automountToken) }}true{{ else }}false{{ end }}
 {{- end }}
 
 {{/*
@@ -157,6 +179,34 @@ number of milliseconds.
 {{- end -}}
 
 {{/*
+A whole number from 1 to `max`, rendered as digits.
+
+`| quote` on a number prints it the way Go prints a float64, which is how YAML
+numbers reach a template: 200000 renders "2e+05", which the API refuses at
+boot, as it refuses any setting that is not a whole number. So the value is
+kind-checked as the timeout helpers above check theirs and rendered through
+`int64`. Takes a dict: `value`; `name`, the values path the error names; and
+`max`, the ceiling the API's NUMERIC_SETTINGS gives the variable.
+*/}}
+{{- define "agledger.positiveWholeNumber" -}}
+{{- $raw := .value -}}
+{{- $n := 0 -}}
+{{- if or (kindIs "int64" $raw) (kindIs "int" $raw) -}}
+{{- $n = int64 $raw -}}
+{{- else if and (kindIs "float64" $raw) (eq (float64 (int64 $raw)) $raw) -}}
+{{- $n = int64 $raw -}}
+{{- else if and (kindIs "string" $raw) (regexMatch "^[0-9]+$" $raw) -}}
+{{- $n = int64 $raw -}}
+{{- else -}}
+{{- fail (printf "%s must be a whole number, not %#v (%s)." .name $raw (kindOf $raw)) -}}
+{{- end -}}
+{{- if or (lt $n 1) (gt $n (int64 .max)) -}}
+{{- fail (printf "%s must be a whole number from 1 to %d, not %#v." .name (int64 .max) $raw) -}}
+{{- end -}}
+{{- $n -}}
+{{- end -}}
+
+{{/*
 DATABASE_STATEMENT_TIMEOUT_MS.
 
 Same presence-not-truthiness and kind-checking rules as the idle-in-tx helper
@@ -207,7 +257,7 @@ by both workloads), so the message names the block instead of surfacing as a
 nil-pointer deref from whichever template Helm happened to render first.
 */}}
 {{- define "agledger.validateValues" -}}
-{{- range $block := list "permission" "networkPolicy" "pdb" -}}
+{{- range $block := list "permission" "networkPolicy" "pdb" "postRestore" -}}
 {{- if kindIs "invalid" (index $.Values $block) -}}
 {{- fail (printf "%s is null. That block ships enabled, and a null one is indistinguishable from %s.enabled=false, so the chart would render with the feature off and say nothing about it. Set %s.enabled explicitly (true to keep the shipped default, false to drop it) rather than nulling the block." $block $block $block) -}}
 {{- end -}}
@@ -216,6 +266,42 @@ nil-pointer deref from whichever template Helm happened to render first.
 {{- if kindIs "invalid" (index $.Values $block) -}}
 {{- fail (printf "%s is null. Every workload reads settings out of that block, so there is no \"off\" for the chart to fall back to. Override the keys you need under %s rather than nulling the block." $block $block) -}}
 {{- end -}}
+{{- end -}}
+{{- range (concat ($.Values.extraEnv | default list) (($.Values.migrate).extraEnv | default list)) -}}
+{{- if eq (.name | default "") "AGLEDGER_INSTANCE_ID" -}}
+{{- fail "extraEnv sets AGLEDGER_INSTANCE_ID, which the chart already supplies through its ConfigMap from the instanceId value. Kubernetes keeps both, an explicit env entry wins over envFrom, and the pods would anchor under a prefix the ConfigMap does not name. Move the value to instanceId and drop the extraEnv entry." -}}
+{{- end -}}
+{{- end -}}
+{{- if (include "agledger.bundledPostgres" $) -}}
+{{- $running := lookup "apps/v1" "Deployment" $.Release.Namespace (printf "%s-api" (include "agledger.fullname" $)) | default dict -}}
+{{- $pgdata := lookup "v1" "PersistentVolumeClaim" $.Release.Namespace (printf "%s-pgdata" (include "agledger.fullname" $)) | default dict -}}
+{{- $labels := ($running.metadata).labels | default dict -}}
+{{- if $pgdata -}}
+{{- include "agledger.refuseReleaseLineCrossing" (dict "installed" (get $labels "app.kubernetes.io/version") "target" $.Chart.AppVersion "release" $.Release.Name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+A bundled-PostgreSQL release a 1.x chart installed is refused at render, before
+Helm touches anything. Its database lives in the release's own volume, so the
+2.x migration would refuse it, and by then the upgrade has already replaced
+the Recreate-strategy pods and rewritten the hook Secret, which `helm rollback`
+does not restore. An external database is not refused here: its migrate Job is
+a pre-upgrade hook that fails before any pod is replaced, and the operator may
+be pointing the release at a new, empty database.
+
+`installed` is the running api Deployment's app.kubernetes.io/version label,
+empty on a first install and under a renderer, where `lookup` answers nothing.
+It is asked only when the bundled data volume already exists: a 1.x release on
+an external database that turns the bundled path on gets a new, empty volume,
+which 2.x migrates.
+*/}}
+{{- define "agledger.refuseReleaseLineCrossing" -}}
+{{- $installed := .installed | default "" | trimPrefix "v" -}}
+{{- $target := .target | default "" | trimPrefix "v" -}}
+{{- if and (eq (first (splitList "." $installed)) "1") (regexMatch "^[0-9]+\\." $target) (ge (atoi (first (splitList "." $target))) 2) -}}
+{{- fail (printf "Release %s runs AGLedger %s on the bundled PostgreSQL, and chart %s does not upgrade a 1.x database in place: its migration refuses the database a 1.x release migrated. Nothing was changed, and %s keeps serving. To run %s, install it as a new release, which gets its own bundled database (helm install %s-2 ..., without this release's fullnameOverride or existingSecret), and keep this release for its data." .release $installed $target $installed $target .release) -}}
 {{- end -}}
 {{- end -}}
 
@@ -233,9 +319,9 @@ Resolution order: explicit config.externalUrl, then the first ingress host
 route.host (https when route.tls.enabled). Ingress and Route cannot both be
 on, so the last two never compete.
 
-With neither, a production render is refused rather than defaulted. The old
-fallback signed `https://localhost` into a permanent field on an install whose
-operator was never asked, and nothing in the output said so. Non-production
+With neither, a production render is refused rather than defaulted. A
+fallback would sign `https://localhost` into a permanent field on an install
+whose operator was never asked, and nothing in the output would say so. Non-production
 keeps the fallback so `helm install` on a dev cluster still boots.
 
 The refusal is worded twice, because an install and an upgrade need opposite
@@ -271,7 +357,7 @@ differ in emphasis, and neither may be unsafe on its own.
 {{- if not $extUrl -}}
 {{- if eq .Values.config.nodeEnv "production" -}}
 {{- if .Release.IsUpgrade -}}
-{{- fail (printf "config.externalUrl is not set and nothing else supplies one, and this is an UPGRADE, so this install already has an issuer.\n\nAGLEDGER_EXTERNAL_URL is the issuer (`iss`) signed into every record, receipt and certificate already written. Those rows keep the issuer they were signed with. Setting a DIFFERENT value now does not correct them, it splits the chain into two issuers, and an offline verifier reading the old rows still resolves keys against the old one. Releases before this one defaulted to https://localhost when nothing supplied a value, so that is very likely what yours is signing with today.\n\nRead what this install actually uses, and set exactly that:\n  kubectl -n %s get configmap %s -o jsonpath='{.data.AGLEDGER_EXTERNAL_URL}'\n  --set config.externalUrl=<the value that prints>\n\nGET /v1/records/{id} on any existing record answers it too: the `iss` of its signed envelope. Choose a new value only if you intend a new issuer and accept that the chain splits at this upgrade." .Release.Namespace (include "agledger.fullname" .)) -}}
+{{- fail (printf "config.externalUrl is not set and nothing else supplies one, and this is an UPGRADE, so this install already has an issuer.\n\nAGLEDGER_EXTERNAL_URL is the issuer (`iss`) signed into every record, receipt and certificate already written. Those rows keep the issuer they were signed with. Setting a DIFFERENT value now does not correct them, it splits the chain into two issuers, and an offline verifier reading the old rows still resolves keys against the old one.\n\nRead what this install actually uses, and set exactly that:\n  kubectl -n %s get configmap %s -o jsonpath='{.data.AGLEDGER_EXTERNAL_URL}'\n  --set config.externalUrl=<the value that prints>\n\nGET /v1/records/{id} on any existing record answers it too: the `iss` of its signed envelope. Choose a new value only if you intend a new issuer and accept that the chain splits at this upgrade." .Release.Namespace (include "agledger.fullname" .)) -}}
 {{- else -}}
 {{- fail (printf "config.externalUrl is not set and nothing else supplies one. It becomes AGLEDGER_EXTERNAL_URL, the issuer (`iss`) signed into every record, receipt and certificate this Server writes, and it is permanent: rows already signed keep the issuer they were signed with, so changing it later splits the chain rather than correcting it. Set the public URL this Server will be reachable at:\n  --set config.externalUrl=https://agledger.example.com\nAn ingress host or a route.host answers it too. For a single node with no domain, say so explicitly:\n  --set config.externalUrl=https://localhost\n\nIf this release ALREADY EXISTS (a GitOps renderer such as Argo CD runs `helm template`, which cannot tell an upgrade from an install), read the issuer it is already signing with and set exactly that, rather than choosing a new one here:\n  kubectl -n %s get configmap %s -o jsonpath='{.data.AGLEDGER_EXTERNAL_URL}'" .Release.Namespace (include "agledger.fullname" .)) -}}
 {{- end -}}
@@ -314,7 +400,14 @@ specified". EnvVar carries exactly name/value/valueFrom, so this covers the type
 {{- range . }}
 - name: {{ .name | quote }}
   {{- if hasKey . "value" }}
+  {{- /* A YAML number reaches a template as a float64, and `quote` prints
+  one of a million or more in exponent form ("2.097152e+06"), which the API
+  refuses for a numeric setting. A whole number renders as its digits. */}}
+  {{- if and (kindIs "float64" .value) (eq (float64 (int64 .value)) .value) }}
+  value: {{ int64 .value | quote }}
+  {{- else }}
   value: {{ .value | quote }}
+  {{- end }}
   {{- end }}
   {{- with .valueFrom }}
   valueFrom:
@@ -331,6 +424,23 @@ Call sites pipe through `trim` before `nindent`: the range above opens each
 entry with a newline, so `nindent` alone leaves a whitespace-only line under
 `env:`. Valid YAML, but it shows up in every `helm template` an operator reads.
 */}}
+{{/*
+The owner-role credentials the chart's Secret carries on the bundled path,
+cleared for the api and worker. Both load the whole Secret through envFrom, so
+without these they would hold POSTGRES_PASSWORD and DATABASE_URL_MIGRATE, the
+superuser's password and URL, though they connect as agledger_app and never
+read either. An explicit `env` entry wins over envFrom, so an empty value here
+is what the process sees. The migration Job, the backup and Postgres keep them.
+*/}}
+{{- define "agledger.ownerCredentialClears" -}}
+{{- if and (include "agledger.bundledPostgres" .) (not .Values.secrets.existingSecret) }}
+- name: POSTGRES_PASSWORD
+  value: ""
+- name: DATABASE_URL_MIGRATE
+  value: ""
+{{- end }}
+{{- end }}
+
 {{- define "agledger.extraEnv" -}}
 {{- include "agledger.envList" .Values.extraEnv -}}
 {{- end }}
@@ -496,7 +606,8 @@ Backup pod template — shared by the CronJob and the pre-upgrade hook Job.
 
 Produces the SAME archive shape deploy/scripts/restore.sh reads:
 `backup-<UTC timestamp>.tar.gz` holding `<timestamp>/db.dump` (pg_dump custom
-format) and `<timestamp>/vault-public-keys.csv`. A Kubernetes backup a customer
+format), `<timestamp>/vault-public-keys.csv` and `<timestamp>/backup-metadata`
+(its `created_at`, the instant the dump started). A Kubernetes backup a customer
 cannot hand to the documented restore path is not a backup.
 
 It also runs the same PGDMP header check the script does, for the same reason:
@@ -519,6 +630,7 @@ metadata:
 spec:
   restartPolicy: Never
   serviceAccountName: {{ include "agledger.serviceAccountName" $root }}
+  automountServiceAccountToken: {{ include "agledger.automountToken" $root }}
   {{- with $root.Values.image.pullSecrets }}
   imagePullSecrets:
     {{- toYaml . | nindent 4 }}
@@ -535,7 +647,7 @@ spec:
              carries no pg_dump. pg_dump refuses a server NEWER than itself, so
              this tracks the bundled version and an external Postgres 18 needs
              an 18 client here. */}}
-      image: {{ $backup.image | default ((($root.Values).postgres).bundled).image | default "postgres:18-alpine" }}
+      image: {{ $backup.image | default ((($root.Values).postgres).bundled).image | default "postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873" }}
       imagePullPolicy: {{ $root.Values.image.pullPolicy }}
       securityContext:
         readOnlyRootFilesystem: true
@@ -579,6 +691,27 @@ spec:
           # shell. The credential is in this container's argv only, in its own
           # PID namespace, in a pod whose single container already holds the
           # same Secret in its environment.
+          # Read from the database's clock before the dump starts: restore.sh
+          # exports the revocations stamped at or after it, and the database
+          # stamps them with its own clock, so a pod clock ahead of it, or a
+          # stamp taken after the dump, would drop some.
+          CREATED_AT=$(psql -d "$DB" -Atc "SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')" | tr -d '[:space:]')
+          case "$CREATED_AT" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
+            *) echo "ERROR: could not read the database's clock before the dump. No backup was kept."
+               rm -rf "$WORK"
+               exit 1 ;;
+          esac
+          # Which database this is: the cluster's system identifier and the
+          # database's OID. restore.sh re-applies revocations made after the
+          # backup only out of a database that answers with the same value.
+          # Empty when the server will not say; that restore lists the
+          # credentials to compare instead.
+          DATABASE_TOKEN=$(psql -d "$DB" -Atc "SELECT (pg_control_system()).system_identifier::text || ':' || oid::text FROM pg_database WHERE datname = current_database()" 2>/dev/null | tr -d '[:space:]') || DATABASE_TOKEN=""
+          case "$DATABASE_TOKEN" in
+            *[!0-9:]*|'') echo "WARN: the database did not report its system identifier and OID; this archive records no database_token."
+                          DATABASE_TOKEN="" ;;
+          esac
           echo "Dumping to ${WORK}/db.dump"
           pg_dump -Fc -d "$DB" > "${WORK}/db.dump"
 
@@ -593,6 +726,25 @@ spec:
             rm -rf "$WORK"
             exit 1
           fi
+
+          # The WAL position once the dump has finished: a physical copy of
+          # this database taken before then (a snapshot, a point-in-time
+          # restore, a clone) is behind it, and restore.sh reads no
+          # revocations out of one. Empty when the server will not say.
+          WAL_LSN=$(psql -d "$DB" -Atc "SELECT pg_current_wal_lsn()::text" 2>/dev/null | tr -d '[:space:]') || WAL_LSN=""
+          case "$WAL_LSN" in
+            *[!0-9A-F/]*|'') echo "WARN: the database did not report its WAL position; this archive records no wal_lsn."
+                             WAL_LSN="" ;;
+          esac
+
+          # The keys restore.sh reads. No version record: the Helm release, not
+          # the archive, says which release this install runs.
+          {
+            echo "# AGLedger backup metadata. Written by the chart's backup Job, read by restore.sh."
+            echo "created_at=${CREATED_AT}"
+            echo "database_token=${DATABASE_TOKEN}"
+            echo "wal_lsn=${WAL_LSN}"
+          } > "${WORK}/backup-metadata"
 
           # Public keys only. Private key material is never in the database.
           psql -d "$DB" -c "COPY (SELECT key_id, public_key, algorithm, status, activated_at, retired_at FROM vault_signing_keys ORDER BY activated_at DESC) TO STDOUT WITH CSV HEADER" \
@@ -732,44 +884,147 @@ Usage: {{- include "agledger.assertApiGracePeriodFitsDrain" . }}
 {{- end }}
 
 {{/*
-Checksum of the chart-managed Secret's operator-visible contents.
+The Secret values the chart may have to supply itself, resolved once per render
+into .Values._resolvedSecretValues: API_KEY_SECRET, the bundled-PostgreSQL
+owner password and METRICS_AUTH_TOKEN are each the operator's value, else what
+the release Secret already carries (read back with `lookup`), else generated.
+VAULT_SIGNING_KEY resolves the same way but is never generated, and is empty
+under KMS custody (signing.kmsKeyArn), where the process holds no key material.
 
-Used as a pod-template annotation so that changing a secret VALUE rolls the api
-and worker pods. Without it a Secret-only change leaves both Deployments running
-the old values: `envFrom` resolves a Secret once, at pod start.
+Once per render, because secret.yaml is rendered twice in one: as the Secret,
+and inside the api and worker checksum/secret annotations. Two calls to
+randAlphaNum would leave the annotation hashing a value the Secret never
+carries, and the next upgrade, reading the real value back, would hash a
+different one and roll both Deployments with nothing changed.
 
-It hashes the RESOLVED values (operator value, else what the release Secret
-already carries) rather than re-rendering secret.yaml, because that template
-generates API_KEY_SECRET, METRICS_AUTH_TOKEN and the bundled-PostgreSQL password
-with `randAlphaNum` when none is supplied. Re-rendering it inside a checksum
-would produce different random values on every render, so the annotation would
-change on every upgrade and roll both Deployments whether or not anything moved.
+`lookup` asks the API server, so it answers only during a real helm install or
+upgrade. Under a renderer (Argo CD, or any `helm template | kubectl apply`
+pipeline) it returns an empty dict, every sync falls through to the generator,
+and the Secret is applied carrying values nothing has seen before: every API
+key issued against the previous API_KEY_SECRET stops authenticating, the
+bundled-PostgreSQL password stops matching what initdb set, and the Prometheus
+the last sync configured starts collecting 401s. From here that is
+indistinguishable from a first install, so nothing warns.
+
+There is no in-template flag that separates the two: `.Release.IsInstall` is
+true under `helm template` as well. `secrets.gitops` is the operator saying
+which one this is, and it turns each fallback below into a render failure
+naming what to supply instead. The supported answer is `secrets.existingSecret`,
+which skips the chart's Secret entirely.
+*/}}
+{{- define "agledger.resolveSecretValues" -}}
+{{- if not (hasKey .Values "_resolvedSecretValues") -}}
+{{- $existingData := (lookup "v1" "Secret" .Release.Namespace (include "agledger.fullname" .)).data | default dict -}}
+{{- $gitops := (.Values.secrets).gitops | default false -}}
+{{- $apiKeySecret := .Values.secrets.apiKeySecret | default ($existingData.API_KEY_SECRET | default "" | b64dec) -}}
+{{- if not $apiKeySecret -}}
+  {{- if $gitops -}}
+    {{- fail "secrets.gitops is true and secrets.apiKeySecret is unset. API_KEY_SECRET is the HMAC key every API key is hashed under, and a renderer cannot read the value the last sync applied, so generating one here would silently stop every issued key from authenticating. Set secrets.existingSecret to a Secret your platform manages (External Secrets, Sealed Secrets, SOPS) and the chart writes no Secret at all, or pin secrets.apiKeySecret to a value your renderer holds." -}}
+  {{- end -}}
+  {{- $apiKeySecret = randAlphaNum 64 -}}
+{{- end -}}
+{{- /* Bundled-PG password: user-provided, then reuse existing, then generate
+       (never a static default). */ -}}
+{{- $pgPassword := ((.Values.postgres).bundled).password | default ($existingData.POSTGRES_PASSWORD | default "" | b64dec) -}}
+{{- if not $pgPassword -}}
+  {{- /* Exactly the condition secret.yaml emits POSTGRES_PASSWORD under, and
+         it has to stay exactly that: a render that writes no such key must not
+         be refused over one, and a render that writes one must not slip past
+         the guard. Both read the same helper, so they cannot drift apart. */ -}}
+  {{- if and $gitops (include "agledger.bundledPostgres" .) -}}
+    {{- fail "secrets.gitops is true and postgres.bundled.password is unset. initdb sets the bundled PostgreSQL password once, from the first Secret it sees, and a renderer cannot read that value back, so generating one here would leave DATABASE_URL carrying a password the database does not have. Set secrets.existingSecret and supply DATABASE_URL yourself, pin postgres.bundled.password, or run an external database." -}}
+  {{- end -}}
+  {{- $pgPassword = randAlphaNum 32 -}}
+{{- end -}}
+{{- /* /metrics bearer token. Preserved across upgrades the way apiKeySecret is:
+       regenerating it would 401 the Prometheus the last install configured, and
+       the scrape failing is invisible until someone looks at a dashboard.
+       `secrets.metricsAuthToken: "-"` is the documented way to say "no token"
+       for an install that gates /metrics behind the API-key chain instead. */ -}}
+{{- $metricsToken := .Values.secrets.metricsAuthToken | default ($existingData.METRICS_AUTH_TOKEN | default "" | b64dec) -}}
+{{- if not $metricsToken -}}
+  {{- if $gitops -}}
+    {{- fail "secrets.gitops is true and secrets.metricsAuthToken is unset. A renderer cannot read the token the last sync applied, so generating one here would 401 the Prometheus already scraping this install, which is invisible until someone looks at a dashboard. Pin secrets.metricsAuthToken, set it to \"-\" to mint none and leave /metrics behind the API-key chain, or set secrets.existingSecret and carry METRICS_AUTH_TOKEN in it." -}}
+  {{- end -}}
+  {{- $metricsToken = randAlphaNum 48 -}}
+{{- end -}}
+{{- $vaultSigningKey := "" -}}
+{{- if not (.Values.signing).kmsKeyArn -}}
+{{- $vaultSigningKey = .Values.secrets.vaultSigningKey | default ($existingData.VAULT_SIGNING_KEY | default "" | b64dec) -}}
+{{- end -}}
+{{- $_ := set .Values "_resolvedSecretValues" (dict "apiKeySecret" $apiKeySecret "pgPassword" $pgPassword "metricsToken" $metricsToken "vaultSigningKey" $vaultSigningKey) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Checksum of the chart-managed Secret, used as a pod-template annotation so that
+changing a secret value rolls the api and worker pods. Without it a Secret-only
+change leaves both Deployments running the old values: `envFrom` resolves a
+Secret once, at pod start.
+
+It hashes secret.yaml as rendered, the way checksum/config hashes
+configmap.yaml, so every key the Secret carries is covered. That is stable
+across a no-change upgrade only because the generated values are resolved once
+per render (agledger.resolveSecretValues): the annotation hashes the values the
+Secret is written with, and the next upgrade reads those same values back.
 
 Empty under `secrets.existingSecret`: the chart writes no Secret then, and
 nothing here can see what is in the operator's. Rolling the Deployments after a
 change to that Secret is the operator's job, and values.yaml says so.
 */}}
 {{- define "agledger.secretChecksum" -}}
-{{- if .Values.secrets.existingSecret -}}
-{{- "" -}}
+{{- if not .Values.secrets.existingSecret -}}
+{{- include (print .Template.BasePath "/secret.yaml") . | sha256sum -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+This Server's AGLEDGER_INSTANCE_ID: the prefix every external anchor key is
+written under (`vault-anchors/<id>/`) and, with federation on, the identity
+peers store. Two releases on one id and one bucket read each other's anchors.
+
+In order:
+  - `instanceId`, when set.
+  - The value the release's ConfigMap already carries, read back with `lookup`
+    so an upgrade keeps it.
+  - `default`, when that ConfigMap exists and carries no id: a release
+    installed by a chart that set none, whose Server has anchored under
+    `vault-anchors/default/` all along. Minting an id for it would move its
+    anchors out of its own reach.
+  - A fresh UUID, only when there is no ConfigMap at all: a first install. The
+    Server records the first id it boots with in its database and refuses a
+    later boot under a different one.
+
+`lookup` answers only during a real install or upgrade. A render that cannot
+see the cluster would mint a new id on every sync and the Server would refuse
+to boot on the second one, so an unset `instanceId` fails the render wherever
+the chart knows it is not in charge of the release's state: `secrets.gitops`,
+and `secrets.existingSecret` when `lookup` finds no ConfigMap (a platform that
+manages the Secret usually renders the chart too).
+*/}}
+{{- define "agledger.instanceId" -}}
+{{- $pinned := trim (toString (.Values.instanceId | default "")) -}}
+{{- if $pinned -}}
+{{- $pinned -}}
 {{- else -}}
-{{- $existing := ((lookup "v1" "Secret" .Release.Namespace (include "agledger.fullname" .)).data) | default dict -}}
-{{- $parts := list
-  (.Values.secrets.vaultSigningKey        | default ($existing.VAULT_SIGNING_KEY | default "" | b64dec))
-  (.Values.secrets.vaultSigningKeyPrevious | default "")
-  ((.Values.signing).kmsKeyArn            | default "")
-  (.Values.secrets.apiKeySecret           | default ($existing.API_KEY_SECRET | default "" | b64dec))
-  (.Values.secrets.apiKeySecretPrevious   | default "")
-  (.Values.secrets.metricsAuthToken       | default ($existing.METRICS_AUTH_TOKEN | default "" | b64dec))
-  (.Values.secrets.webhookEncryptionKey   | default "")
-  (.Values.secrets.webhookEncryptionKeyPrevious | default "")
-  (.Values.secrets.databaseUrlMigrate     | default "")
-  (.Values.secrets.databaseUrlDirect      | default "")
-  (.Values.secrets.license                | default "")
-  (.Values.secrets.licenseKey             | default "")
-  (.Values.database.externalUrl           | default "")
-  (((.Values.postgres).bundled).password  | default ($existing.POSTGRES_PASSWORD | default "" | b64dec))
--}}
-{{- join "|" $parts | sha256sum -}}
+{{- $existing := (lookup "v1" "ConfigMap" .Release.Namespace (include "agledger.fullname" .)) | default dict -}}
+{{- $stored := (get ($existing.data | default dict) "AGLEDGER_INSTANCE_ID") | default "" -}}
+{{- if $stored -}}
+{{- $stored -}}
+{{- else if $existing -}}
+{{- "default" -}}
+{{- else if (.Values.secrets).gitops -}}
+{{- fail "secrets.gitops is true and instanceId is unset. AGLEDGER_INSTANCE_ID is the prefix this Server's external anchors are written under, and the Server refuses to boot under an id other than the one its database recorded first. A renderer cannot read the value the last sync applied, so generating one here would mint a new id on every sync. Pin instanceId to a UUID (uuidgen) in the values your renderer holds." -}}
+{{- else if (.Values.secrets).existingSecret -}}
+{{- fail "secrets.existingSecret is set, instanceId is unset, and this render cannot see a ConfigMap from an earlier install. AGLEDGER_INSTANCE_ID is the prefix this Server's external anchors are written under, and the Server refuses to boot under an id other than the one its database recorded first; a render that cannot read the cluster (Argo CD, helm template) would mint a new one every time. Pin instanceId: a new UUID (uuidgen) for a new install, or, for a release that already runs, the value its ConfigMap or its database carries (the post-restore Job prints it as POST_RESTORE_INSTANCE_ID)." -}}
+{{- else -}}
+{{- /* One id per render: the ConfigMap and the checksum/config annotation
+       that hashes it both come through here, and two different ids would
+       leave the annotation hashing a ConfigMap that was never applied. */ -}}
+{{- if not (hasKey .Values "_generatedInstanceId") -}}
+{{- $_ := set .Values "_generatedInstanceId" (uuidv4) -}}
+{{- end -}}
+{{- get .Values "_generatedInstanceId" -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}

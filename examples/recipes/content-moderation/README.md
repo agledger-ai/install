@@ -22,7 +22,8 @@ Two consequential acts carry a human verdict:
 - **The enforcement decision.** Removing or disabling content, or suspending an account, is
   consequential; for account termination, illegal-content grounds, and low-confidence calls it
   should carry a human verdict, not a rubber stamp. (Routine, high-confidence, low-severity,
-  fully-automated visibility actions are a legitimate auto-decision path; see the deployment note.)
+  fully-automated visibility actions are a legitimate automated path, on a Type of their own; see
+  the deployment note.)
 - **The appeal re-determination (Art. 20).** The DSA requires complaints be handled under qualified
   human supervision and not solely by automated means; the gate holds that human verdict.
 
@@ -131,25 +132,28 @@ while the org hash-chain binds everything. Do **not** reach for `parentRecordId`
 them; delegation would put the whole lineage under a single identity, which defeats the separation
 of duties between the moderator, the lead, and the independent appeal reviewer.
 
-### The gate and separation of duties live in your orchestrator, not the type
+### The gate is the engine's; separation of duties is your orchestrator's
 
-`gateMode` is a record-creation parameter, not a schema field, so a contract type cannot stop a
-caller from creating a decision record with `gateMode: auto` and bypassing the human verdict.
-Likewise the engine only blocks a principal from rendering the verdict on a record they performed; it
-does not enforce cross-tier role separation. So your orchestrator must own the policy:
+Both decision types declare `defaultGateMode: principal` and carry no gate rules, so the engine
+refuses a create that passes `gateMode: auto` on either (400): every enforcement decision and every
+appeal waits for the principal's verdict. The engine refuses the verdict only from a performer who
+is not the principal. It accepts a record where one identity is both (the record shows
+`selfPrincipal: true`, so a reader can see it) and checks no role separation across records. So your
+orchestrator owns separation through the keys it issues: provision a moderator identity distinct
+from the lead, and both distinct from the appeal reviewer (Art. 20 independence).
 
-- route account-termination, illegal-content grounds, repeat-offender strikes, and low-confidence
-  calls through the principal gate, and never set `gateMode: auto` on those;
-- provision a moderator identity distinct from the appeal reviewer (Art. 20 independence).
-
-### The high-volume auto-decision path is legitimate: keep it scoped
+### An automated decision lane needs its own Type
 
 Content moderation at scale runs large volumes of routine, high-confidence, fully-automated
-visibility actions. Those are a legitimate `gateMode: auto` path: the classifier *is* the decider,
-and the DSA only requires the *appeal* (not the first decision) to be non-automated. Route only
-routine, low-severity, high-confidence, fully-automated visibility actions to auto; everything
-consequential goes through the human gate. The auto path is a scale lane, not a bypass of the gates
-that matter.
+visibility actions. Those are a legitimate automated path: the classifier *is* the decider, and the
+DSA only requires the *appeal* (not the first decision) to be non-automated. This recipe ships no
+Type for it, because `enforcement-decision-v1` refuses `gateMode: auto`. To run the lane, register a
+separate Type for the automated decisions: a notarize-only Type that records each decision as the
+classifier made it, or a Type with `fieldMappings` whose rules the engine evaluates under
+`gateMode: auto`. Keep it a separate Type rather than adding `fieldMappings` to
+`enforcement-decision-v1`: a version with rules accepts `gateMode: auto` on every record of that
+type, the consequential ones included. Route only routine, low-severity, high-confidence visibility
+actions to the automated Type; everything consequential goes through the human gate.
 
 ### Keep type descriptions short if you will distribute
 
@@ -164,12 +168,13 @@ no shared signing infrastructure.
 
 ```bash
 export AGLEDGER_API_URL=https://agledger.internal.example
-export AGLEDGER_API_KEY=agl_...   # an admin/platform key with schemas:write
+export AGLEDGER_API_KEY=agl_adm_...   # an admin key with schemas:write; register.sh refuses a platform key
 ./register.sh
 ```
 
 `register.sh` POSTs each type to `POST /v1/schemas` in order and prints what landed. Re-running
-registers a new version of any type whose schema changed compatibly; an incompatible change is
+registers a new version of any type whose schema changed compatibly, and a type whose file is unchanged answers 200 with its current version
+and registers nothing; an incompatible change is
 rejected and reported. See `register.sh` for the `RECIPE_FORCE=1` reset option (destructive; scratch
 orgs only).
 

@@ -20,6 +20,14 @@ Example YAML configuration files for AGLedger's provisioning directory feature. 
 
 4. Start AGLedger. The provisioning directory is read at startup. Resources with `managed_by = 'provisioning'` are reconciled on each boot.
 
+## The org
+
+A Server runs one org. When `orgs/` declares exactly one, first boot creates the org under that name (in place of `AGLEDGER_DEFAULT_ORG_NAME`) and provisioning manages it from then on. If the org file fails to load on first boot (an unset `${VAR}`, say), the org is not created until a reconcile loads it, so the name cannot be decided by a file that did not load. On a Server whose org already exists and is not yet managed, declare it under its existing name, read from `GET /v1/admin/orgs`, and the next reconcile takes it over with its config, inline agents and keys. A deactivated org is not taken over; reactivate it first.
+
+An org entry under any other name is refused rather than created as a second org. The error names the org the Server holds. An org cannot be renamed from YAML.
+
+An install that already runs two orgs (the bootstrapped one and one provisioning created beside it) keeps both, and provisioning keeps managing its own. If nothing uses the bootstrapped one, retire it with `POST /v1/admin/orgs/{id}/deactivate`.
+
 ## Hot Reload
 
 Reload without restarting by sending `SIGHUP` or calling:
@@ -127,7 +135,7 @@ response body, under `apiKeys.generated[].apiKey`, and on that one surface only:
     "skipped": 0,
     "generated": [
       {
-        "ownerName": "Acme Corp",
+        "ownerName": "Default",
         "ownerType": "org",
         "label": "primary-api-key",
         "keyId": "019603f1-6a1c-7c9a-9c1e-4f2b8a7d5e30",
@@ -305,22 +313,15 @@ The schema bodies themselves are validated at load too, by the same meta-schema 
 
 Omit `completionSchema`, or write `completionSchema: {}`, for a notarize-only type; `POST /v1/schemas` takes both and stores `{}`. A bare `completionSchema:` is YAML null and is refused, and `{"type": "object", "additionalProperties": false}` is not treated as empty: it has no root `required`, so it is refused like any other body without one.
 
-The one register-API check not run here is compatibility against existing versions, which needs a database round-trip this loader does not make. Everything else the register API validates without touching the database runs at load, including the reserved-record-field guard.
+Compatibility against existing versions needs a database round-trip, so it runs at reconcile rather than at load. Everything else the register API validates without touching the database runs at load, including the reserved-record-field guard.
 
-An edited entry replaces the live type in place, keeping its version and skipping the compatibility check, because the file is the authority. A change to anything the manifest digest covers (the schema bodies, `displayName`, `description`, `category`, `fieldMappings`, `compatibilityMode`) is still recorded: it writes a signed `SCHEMA_REGISTERED` entry carrying the new digest to the platform schema chain, and a `schema.registered` row to `system_audit_log` that also names the digest it replaced, both marked `source: provisioning`. `defaultGateMode` is outside the digest, so a change to it writes no chain entry; it writes a `schema.default_gate_mode_changed` row to `system_audit_log` instead, naming the previous and new values. Any change to the stored compatibility mode also writes a `schema.compatibility_changed` row with the previous and new values, including the file putting back its own mode over one set through `PUT /v1/schemas/{type}/versions/{version}/compatibility`. A reload that changes nothing writes nothing and reports the type as neither created nor updated.
+A change to anything the manifest digest covers (the schema bodies, `displayName`, `description`, `category`, `fieldMappings`, `compatibilityMode`) is registered as the next version, as `POST /v1/schemas` registers one, and is held to the same compatibility check under the current version's `compatibilityMode`; the version existing records and completions were validated against stays as it was, and the new version takes its status, so an edit does not re-enable a disabled type. An edit that mode refuses is reported in `errors[]` and nothing is written: reload once with the schemas unchanged and `compatibilityMode: none` (which registers the next version under that mode), then reload with the change, or use a new type name. Each version registered writes a signed `SCHEMA_REGISTERED` entry carrying the new digest to the platform schema chain, and a `schema.registered` row to `system_audit_log` that also names the digest it replaced, both marked `source: provisioning`. `defaultGateMode` is outside the digest, so a change to it writes no chain entry; it writes a `schema.default_gate_mode_changed` row to `system_audit_log` instead, naming the previous and new values. Any change to the stored compatibility mode also writes a `schema.compatibility_changed` row with the previous and new values, including the file putting back its own mode over one set through `PUT /v1/schemas/{type}/versions/{version}/compatibility`. A reload that changes nothing writes nothing and reports the type as neither created nor updated.
 
-`compatibilityMode` takes the same four values as `POST /v1/schemas` and is part of the manifest digest. Declared, it behaves exactly as it does on the API, so one body registered through either door with the same value carries one digest. Omitted, it is `none` here where the API defaults to `backward`, so that types provisioned before the key existed keep their stored mode and digest. To match a type registered through the API with the key omitted, write `compatibilityMode: backward`.
+`compatibilityMode` takes the same four values as `POST /v1/schemas` and is part of the manifest digest. Declared, it behaves exactly as it does on the API, so one body registered through either door with the same value carries one digest. Omitted, it is `backward`, the API's default, so a body registered through either door with the key omitted also carries one digest.
 
 A schema entry that fails any of this is skipped with a per-type error, and the rest of the directory still applies. The previously provisioned version of that type stays live and stays managed.
 
 The same per-entry rule holds for `orgs/`, `agents/` and `webhooks/`: an entry that fails its own validation is skipped and its siblings load. A file is skipped whole only when the document itself is unreadable: a YAML parse error (including a bare `${VAR}` with no default, above), or a missing `orgs:` / `agents:` / `webhooks:` / `schemas:` array. In every partial case prune is suppressed, because an absence in a config that did not fully load cannot be read as a deliberate removal. The one check that spans entries rather than living inside one, two agents claiming the same `oidcIss` + `oidcSub`, is reported but does not skip either entry: it is refused at apply time by the unique index, per agent.
-
-### Upgrading from 1.6.0
-
-Two pieces of 1.6.0 vocabulary are accepted and ignored, so a directory carried over from that version reconciles without an edit. Both log a WARN at load naming the file and what was dropped. Remove them from your files. The shim stays until a release names its removal: the install base is not observable from here, so there is no version at which a peer on 1.6.0 is known to be gone.
-
-- `commissionSourceField` on a `schemas:` entry is dropped. No commission is computed, stored or served, so the key changes nothing about the type that gets registered.
-- `dispute.escalated` and `record.proposal_counter_proposed` are dropped from a subscription's `eventTypes`. Neither is emitted, so the subscription delivers the same events with or without them. A subscription that names **only** removed types is the one case that fails the entry: "every event" and "no subscription" are both honest readings of what is left, and the loader will not guess. Give it the event types you want, or `['*']`, or delete it.
 
 ## Pruning
 
@@ -334,6 +335,8 @@ For an org or agent, a prune is a full offboarding in one transaction: its API k
 
 Webhook subscriptions are deactivated the same way. A pruned schema type is only un-managed, not withdrawn: it stays registered and servable, so records already written against it keep validating.
 
-A pruned name is not re-adoptable. Putting it back in the YAML does not pick the row up again, because the row is no longer managed and the reconciler will not adopt a resource it did not create; it reports the name as in use instead. Reactivate the existing row rather than re-declaring it.
+A pruned name is not re-adoptable. Putting it back in the YAML does not pick the row up again, because the row is no longer managed and the reconciler will not adopt a resource it did not create; it reports the name as in use instead. Reactivate the existing row rather than re-declaring it. The Server's org is the one exception: once reactivated, it is taken over again by the org entry that names it (see [The org](#the-org)), while it is still deactivated that entry is refused with the reactivate call to make.
+
+On a single-org Server, a run in which an org entry is refused skips the prune, so renaming the org in YAML cannot deactivate the Server's only org.
 
 Pruning is skipped entirely for any reload whose config did not load cleanly, and the run reports that it was skipped. Absence from a broken config is not evidence that the operator removed anything, so a file with a typo in it never causes the resources it declares to be un-managed. Fix the reported load errors and reconcile again to prune.

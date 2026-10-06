@@ -5,8 +5,9 @@ set -euo pipefail
 # AGLedger — Support Bundle
 # =============================================================================
 # Creates a diagnostic tarball with logs, config, schema, and stats.
-# Credential values in .env are redacted by variable name; container logs are
-# collected as written, so the archive is reviewed before it is sent.
+# Credential values in .env are redacted by the shape of the name and the value
+# (redact_env_file in lib-compose.sh); container logs are collected as written,
+# so the archive is reviewed before it is sent.
 # Works with both bundled PostgreSQL and external databases.
 #
 # Usage: ./scripts/support-bundle.sh
@@ -45,11 +46,7 @@ collect() {
 
 log "Collecting: redacted .env..."
 if [[ -f "${COMPOSE_DIR}/.env" ]]; then
-  sed -E \
-    -e '/^METRICS_TOKEN_FINGERPRINT=/b' \
-    -e 's/^([A-Za-z0-9_]*(PASSWORD|PASS|SECRET|KEY|TOKEN|SIGNING|LICENSE|AUTH_HEADER)[A-Za-z0-9_]*)=.*/\1=[REDACTED]/' \
-    -e 's/(DATABASE_URL[^=]*=.*:)([^@]*)(@.*)/\1[REDACTED]\3/' \
-    "${COMPOSE_DIR}/.env" > "${BUNDLE_DIR}/env-redacted.txt"
+  redact_env_file "${COMPOSE_DIR}/.env" > "${BUNDLE_DIR}/env-redacted.txt"
 else
   echo "[.env file not found]" > "${BUNDLE_DIR}/env-redacted.txt"
 fi
