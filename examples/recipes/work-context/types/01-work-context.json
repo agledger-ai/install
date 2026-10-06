@@ -114,11 +114,11 @@
           "awaiting-approval",
           "awaiting-dependency",
           "shutdown",
-          "handoff",
+          "succession",
           "milestone",
           "final"
         ],
-        "description": "Why this checkpoint was written. `initial` is the first checkpoint under a root and the only one that supersedes nothing; every later checkpoint sets the top-level `supersedesRecordId` on the create call (a record field, not a criteria field). `handoff` signals a different session is expected to resume; `final` marks the work complete (pendingWork must be empty)."
+        "description": "Why this checkpoint was written. `initial` is the first checkpoint under a root and the only one that supersedes nothing; every later checkpoint sets the top-level `supersedesRecordId` on the create call (a record field, not a criteria field). `succession` signals a different session of the same agent is expected to take over; `final` marks the work complete (pendingWork must be empty)."
       },
       "resumeInstructions": {
         "type": "string",

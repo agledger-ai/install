@@ -31,67 +31,23 @@ backup_root() {
   printf '%s' "${BACKUP_DIR:-${DEPLOY_DIR}/backup}"
 }
 
-# The location backups defaulted to in earlier releases.
-legacy_backup_root() {
-  printf '%s' "${REPO_ROOT}/backup"
-}
-
 # The rollback marker for THIS install: the file `upgrade.sh` writes naming the
 # version to go back to.
 #
 # Named for the compose project, like the archives beside it, so two installs
-# pointed at one BACKUP_DIR cannot overwrite each other's. The unscoped name is
-# still read (below) because an install that upgraded before this carries one.
+# pointed at one BACKUP_DIR cannot overwrite each other's.
 pre_upgrade_marker() {
   printf '%s/.pre-upgrade-version-%s' "$(backup_root)" "$(compose_project_name)"
 }
 
-# The version this install's marker names, or nothing. Reads the project-scoped
-# file first and falls back to the unscoped one an earlier release wrote.
+# The version this install's marker names, or nothing.
 read_pre_upgrade_marker() {
-  local candidate
-  # Newest naming first, then the two places an install upgraded under an
-  # earlier release could have left one. The legacy root is not optional: that
-  # release wrote the marker to the checkout's PARENT, so an install that
-  # upgraded before this one and rolls back after it finds its marker there and
-  # nowhere else. Leaving it out made the fallback dead in exactly the case it
-  # was written for, and a rollback then printed no version to return to.
-  for candidate in \
-    "$(pre_upgrade_marker)" \
-    "$(backup_root)/.pre-upgrade-version" \
-    "$(legacy_backup_root)/.pre-upgrade-version"; do
-    if [[ -f "$candidate" ]]; then
-      head -1 "$candidate"
-      return 0
-    fi
-  done
-}
-
-# Say so when the older location still holds archives or a rollback marker.
-#
-# Nothing is moved. On a host running two stacks that directory holds both
-# installs' archives under names that do not say which is which, so only the
-# operator can decide; a script that guessed would be doing the thing this
-# whole change exists to stop.
-report_legacy_backup_root() {
-  local legacy current found
-  legacy="$(legacy_backup_root)"
-  current="$(backup_root)"
-  [[ "$legacy" != "$current" ]] || return 0
-  [[ -d "$legacy" ]] || return 0
-  # `|| true` is load-bearing under `set -euo pipefail`. An install run with
-  # sudo leaves that directory root-owned, an operator who hardens it (it holds
-  # full database dumps) makes it unreadable to the cron user, and `find` then
-  # exits non-zero with its message already sent to /dev/null: the substitution
-  # carries that status out and kills the caller with nothing printed at all.
-  # `backup.sh` and `restore.sh` both call this before they do any work, so the
-  # nightly backup and the 3am restore would end on a blank screen.
-  found="$(find "$legacy" -maxdepth 1 \( -name 'backup-*.tar.gz' -o -name '.pre-upgrade-version' \) 2>/dev/null | head -1 || true)"
-  [[ -n "$found" ]] || return 0
-  warn "Older backups are in ${legacy}, the directory this defaulted to in earlier releases."
-  warn "  This install now uses ${current}. Nothing was moved: on a host running two stacks"
-  warn "  that directory holds both installs' archives, and only you know which are this one's."
-  warn "  Restore an older archive by path, or set BACKUP_DIR=${legacy} to keep writing there."
+  local marker
+  marker="$(pre_upgrade_marker)"
+  if [[ -f "$marker" ]]; then
+    head -1 "$marker"
+  fi
+  return 0
 }
 
 # --- Constants ---
@@ -359,7 +315,7 @@ pgdata_volume_state() {
 # `dist/scripts/preflight.js --only=<ids>` runs a named subset of the checks.
 # The subset a script asks for is the one this tree knows about, and the image
 # it asks is whatever version is being installed or restored, which can be
-# older: `--version 1.7.0` from a 1.8.0 tree is a documented, supported install.
+# older: `--version 2.0.0` from a 2.1.0 tree is a documented, supported install.
 #
 # preflight refuses an id it does not have, and refuses the WHOLE list rather
 # than the part it understands: exit 2, one usage line naming the unknown ids,
@@ -369,12 +325,7 @@ pgdata_volume_state() {
 # diagnosed.
 #
 # These two helpers are the hearing and the re-asking. Exit 2 is the only
-# status they interpret; 0 and 1 mean what they have always meant.
-#
-# Older still: `--only` itself landed in v1.5.0, and an image before that
-# ignores the flag and runs every check. That one is not detectable from the
-# outside (no marker, no error), and it fails on a check the install has not
-# reached yet rather than on the flag.
+# status they interpret; 0 and 1 are pass and fail.
 
 # The ids preflight named as unknown, comma-separated with no spaces, read out
 # of its own usage line. Empty when the output carries no such line, which is
@@ -385,6 +336,33 @@ preflight_unknown_only_ids() {
   tail="${text#*unknown --only id(s): }"
   tail="${tail%%.*}"
   printf '%s' "${tail//[[:space:]]/}"
+}
+
+# What kind of failure a preflight report holds, so the text printed under it
+# names the one that happened: `boot` when a `Boot configuration` check failed
+# (a value the Server refuses at config load, which no grant fixes), `role` when
+# any other check failed (privileges, connection, role passwords, topology,
+# pg-boss), both space-separated when both did, and nothing when the report
+# carries no failed check at all (preflight crashed before printing one).
+#
+# A failed check prints as `  ✗ <name>: <detail>`, the mark wrapped in colour
+# codes, so the name is read from after the mark and its trailing reset.
+preflight_failure_kinds() {
+  local line rest boot=false role=false
+  while IFS= read -r line; do
+    [[ "$line" == *"✗"* ]] || continue
+    rest="${line#*✗}"
+    rest="${rest#$'\033'\[0m}"
+    rest="${rest# }"
+    if [[ "${rest%%:*}" == "Boot configuration" ]]; then boot=true; else role=true; fi
+  done <<< "$1"
+  if [[ "$boot" == true && "$role" == true ]]; then
+    printf 'boot role'
+  elif [[ "$boot" == true ]]; then
+    printf 'boot'
+  elif [[ "$role" == true ]]; then
+    printf 'role'
+  fi
 }
 
 # One attempt: runs the gate through the runner function named in $1 over the
@@ -464,12 +442,10 @@ preflight_gate_run() {
   # the refusal that provoked it and the two callers cannot drift apart on what
   # it claims. What it must NOT claim is that the conditions are caught later:
   # an image with no check for a condition often has no boot-time refusal for
-  # it either (v1.7.0 has neither the pooler-topology refusal nor any
-  # default-role-password detection, and its baseline migration is what creates
-  # those passwords), so unchecked here can mean unchecked for the life of that
-  # install.
+  # it either, because a check and the refusal it front-runs ship in the same
+  # release, so unchecked here can mean unchecked for the life of that install.
   warn "The ${label} image has no preflight check named: ${unknown//,/, }."
-  warn "It predates them, which installing an older version is allowed to do. An image with no check"
+  warn "It is older than this tree, which installing an older version is allowed to be. An image with no check"
   warn "for a condition may have no boot-time refusal for it either, so treat those conditions as"
   warn "UNVERIFIED on this run rather than as passed. The version this tree ships checks them."
   remaining="$(drop_csv_ids "$list" "$unknown")"
@@ -577,8 +553,8 @@ install_version_decision() {
   printf '|latest'
 }
 
-# True for something shaped like a release number (`1.4.0`, `v1.4.0`,
-# `1.4.0-rc.1`), false for a floating tag (`latest`, `stable`, `main`, `edge`)
+# True for something shaped like a release number (`2.0.1`, `v2.0.1`,
+# `2.0.1-rc.1`), false for a floating tag (`latest`, `stable`, `main`, `edge`)
 # or an empty value. Deliberately a shape test rather than a deny-list: a tag
 # nobody has thought of yet is still not a version to pin an install to.
 is_concrete_version() {
@@ -694,6 +670,72 @@ dotenv_normalize_file() {
   done < "$src"
 }
 
+# Whether the decoded VALUE of KEY in a .env is a credential, judged by the
+# shape of the name and of the value rather than by a list of known keys. A
+# list goes stale the day a variable is added, and it did: SIEM_HTTP_HEADERS
+# carries whatever header a SIEM wants, an Authorization header included, and
+# no list had it. So a value is a credential when:
+#
+#   - the NAME says so: a fragment such as PASSWORD, SECRET, KEY, TOKEN,
+#     HEADER, CREDENTIAL, COOKIE or USERINFO (SIEM_HTTP_HEADERS, OTEL_*_HEADERS and every
+#     *_KEY and *_TOKEN fall here);
+#   - the VALUE says so: it carries an HTTP auth scheme or a PEM block, under
+#     whatever name an operator gave it;
+#   - the VALUE looks generated: one unbroken run of 24 or more base64 or hex
+#     characters holding both letters and digits. That is the shape of every
+#     secret install.sh mints, so a secret added under a name none of the
+#     above expects is still caught. A UUID is exempt: it is an identifier
+#     (AGLEDGER_INSTANCE_ID), and support needs it.
+#
+# METRICS_TOKEN_FINGERPRINT is a digest of the token, not the token, and says
+# whether Prometheus holds the current one, so it is kept.
+env_value_is_secret() {
+  local key="$1" value="$2" upper_key lower_value
+  [[ "$key" == "METRICS_TOKEN_FINGERPRINT" ]] && return 1
+  upper_key="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
+  [[ "$upper_key" =~ (PASSWORD|PASSWD|PASS|PWD|SECRET|KEY|TOKEN|SIGNING|LICENSE|HEADER|CREDENTIAL|COOKIE|PRIVATE|SALT|USERINFO) ]] && return 0
+  lower_value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  [[ "$lower_value" =~ (authorization|bearer[[:space:]]|basic[[:space:]]|splunk[[:space:]]|-----begin) ]] && return 0
+  if [[ "$value" =~ ^[A-Za-z0-9+/=_-]{24,}$ && "$value" =~ [0-9] && "$value" =~ [A-Za-z] ]] \
+    && ! [[ "$value" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+    return 0
+  fi
+  return 1
+}
+
+# VALUE with the credentials a URL can carry masked: the userinfo of every
+# `scheme://user:pass@` (DATABASE_URL, HTTPS_PROXY, a SIEM or OTLP endpoint),
+# and query parameters whose name reads as a credential (`?token=`,
+# `&api_key=`, `&sig=`). Everything else in the URL is what support reads it
+# for, so it stays.
+redact_url_credentials() {
+  printf '%s' "$1" | sed -E \
+    -e 's%://[^/[:space:]]*@%://[REDACTED]@%g' \
+    -e 's%([?&][A-Za-z_-]*([Tt][Oo][Kk][Ee][Nn]|[Kk][Ee][Yy]|[Ss][Ii][Gg]|[Ss][Ii][Gg][Nn][Aa][Tt][Uu][Rr][Ee]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Aa][Uu][Tt][Hh])=)[^&#[:space:]]*%\1[REDACTED]%g'
+}
+
+# FILE (a compose .env) on stdout with every credential masked, for a support
+# bundle. Assignments come out decoded, one per line; a commented-out
+# assignment is redacted the same way and stays commented, since operators
+# park old values there. Other comments and blank lines are dropped: they are
+# .env.example's prose, and free text is where a redactor keyed on shapes
+# cannot promise anything.
+redact_env_file() {
+  local file="$1" line prefix key value
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^([[:space:]]*#[[:space:]]*)?(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]] || continue
+    prefix="${BASH_REMATCH[1]:+# }"
+    key="${BASH_REMATCH[3]}"
+    value="$(dotenv_decode_value "${BASH_REMATCH[4]}")"
+    # Empty is not a credential, and "is it set at all" is often the question.
+    if [[ -n "$value" ]] && env_value_is_secret "$key" "$value"; then
+      printf '%s%s=[REDACTED]\n' "$prefix" "$key"
+    else
+      printf '%s%s=%s\n' "$prefix" "$key" "$(redact_url_credentials "$value")"
+    fi
+  done < "$file"
+}
+
 # True when FILE puts CONTENT on the right of `DATABASE_URL=`. The question
 # `detect_db_mode` needs is "does this install declare a database", which is
 # not the same as "can this reader make a value out of it" -- that difference
@@ -711,27 +753,45 @@ env_file_declares_database_url() {
   [[ -n "$raw" ]]
 }
 
-# The bundled-Postgres connection string, built from an env file the way the
-# compose files build it, defaults included.
+# The bundled-Postgres runtime connection string, built from an env file the
+# way docker-compose.yml builds the API's, defaults included: agledger_app,
+# under AGLEDGER_APP_ROLE_PASSWORD or else POSTGRES_PASSWORD, on POSTGRES_DB.
 #
-# The defaults are the whole point. `POSTGRES_USER` and `POSTGRES_DB` reach a
-# fresh `.env` only because the installer copies `.env.example`; a `.env` the
-# operator wrote by hand carries neither, and every container still connects
-# because docker-compose.yml spells them `${POSTGRES_USER:-agledger}`. Anything
-# run OUTSIDE compose (`docker run --env-file`) does not get that substitution,
-# so reading the keys raw yields `postgresql://:pw@postgres:5432/`, which
-# Postgres rejects with "no PostgreSQL user name specified in startup packet".
+# The defaults are the whole point. `POSTGRES_DB` reaches a fresh `.env` only
+# because the installer copies `.env.example`; a `.env` the operator wrote by
+# hand may not carry it, and every container still connects because
+# docker-compose.yml spells it `${POSTGRES_DB:-agledger}`. Anything run OUTSIDE
+# compose (`docker run --env-file`) does not get that substitution, so reading
+# the keys raw yields a URL naming no database.
 #
-# Returns 1 with nothing on stdout when the password is absent, which is the
+# Returns 1 with nothing on stdout when no password is present, which is the
 # other way this URL goes silently wrong.
 # Usage: URL=$(bundled_database_url FILE)
 bundled_database_url() {
-  local file="$1" user pass db
-  user=$(get_env_value POSTGRES_USER "$file")
-  pass=$(get_env_value POSTGRES_PASSWORD "$file")
+  local file="$1" pass db
   db=$(get_env_value POSTGRES_DB "$file")
+  pass=$(get_env_value AGLEDGER_APP_ROLE_PASSWORD "$file")
+  [[ -n "$pass" ]] || pass=$(get_env_value POSTGRES_PASSWORD "$file")
   [[ -n "$pass" ]] || return 1
-  echo "postgresql://${user:-agledger}:${pass}@postgres:5432/${db:-agledger}"
+  echo "postgresql://agledger_app:${pass}@postgres:5432/${db:-agledger}"
+}
+
+# What this run should do about AGLEDGER_APP_ROLE_PASSWORD. Echoes `generate`,
+# or nothing when there is nothing to do.
+#
+# $2 = "true" when this install runs the bundled Postgres. Only there is the
+# password this install's to mint: the bundled overlay hands it to the
+# migration, which gives agledger_app a login under it on every run, and to the
+# API and worker, which connect as agledger_app. An external database's roles
+# are its operator's.
+#
+# Unlike POSTGRES_PASSWORD nothing pins it: the migration sets it again on
+# every run, so an absent one can always be generated.
+app_role_password_action() {
+  local file="$1" bundled="${2:-false}"
+  [[ "$bundled" == "true" ]] || return 0
+  [[ -z "$(get_env_value AGLEDGER_APP_ROLE_PASSWORD "$file")" ]] || return 0
+  echo generate
 }
 
 # What value, if any, this run should record for POSTGRES_USER / POSTGRES_DB.
@@ -793,39 +853,19 @@ is_uuid() {
 #
 # Echoes one of:
 #
-#   (nothing)                     AGLEDGER_INSTANCE_ID already holds a UUID.
-#   generate                      no usable id anywhere in the file, mint one.
-#   adopt-legacy-org-id:<uuid>    AGLEDGER_INSTANCE_ID is unset or empty, but
-#                                 the retired AGLEDGER_ORGANIZATION_ID fallback
-#                                 is itself a UUID. Earlier releases read that
-#                                 value as the hub id when no instance id was
-#                                 set, so any federating Server provisioned
-#                                 that way has peers who stored it. Carry it
-#                                 into AGLEDGER_INSTANCE_ID
-#                                 verbatim rather than minting a new one.
+#   (nothing)   AGLEDGER_INSTANCE_ID already holds a UUID.
+#   generate    AGLEDGER_INSTANCE_ID is absent or not a UUID, mint one.
 #
 # The "already a UUID" case is the important half. Writing a fresh id over a
 # Server that already has a usable one would change the identity its peers
 # have stored and 401 every message after the next restart. There is no such
-# hazard in the other direction: a Server whose id is absent or is the old
-# literal "default" cannot have completed a handshake, because the peer's
-# schema declares `peerHubId` as `format: uuid` and refuses it.
-#
-# The adopt case only fires when AGLEDGER_INSTANCE_ID is unset or empty, not
-# when it holds other non-UUID junk (a stale "default" or hand-typed label):
-# that value was written by this installer or an operator, not inherited from
-# the retired fallback, so it carries no hint that a peer stored the org id.
+# hazard in the other direction: a Server whose id is absent or not a UUID
+# cannot have completed a handshake, because the peer's schema declares
+# `peerHubId` as `format: uuid` and refuses it.
 federation_hub_id_action() {
-  local file="$1" instance_id org_id
+  local file="$1" instance_id
   instance_id="$(get_env_value AGLEDGER_INSTANCE_ID "$file")"
   is_uuid "$instance_id" && return 0
-  if [[ -z "$instance_id" ]]; then
-    org_id="$(get_env_value AGLEDGER_ORGANIZATION_ID "$file")"
-    if is_uuid "$org_id"; then
-      echo "adopt-legacy-org-id:${org_id}"
-      return 0
-    fi
-  fi
   echo generate
 }
 
@@ -839,16 +879,15 @@ federation_hub_id_action() {
 #             would lock the operator out of their own database; the caller
 #             prints the three-way remedy instead.
 #
-# Set means chosen, with one exception: a password that appeared in a released
-# `.env.example` is readable by anyone and was never chosen by the operator.
-# `.env.example` ships the key empty, so a new file cannot reach that state, but
-# a `.env` copied from an older example can carry a published value.
+# Set means chosen, with one exception: a password this repo publishes is
+# readable by anyone and was never chosen by the operator. `.env.example` ships
+# the key empty, but the development docker-compose.yml at the repo root
+# publishes `agledger`, and a `.env` assembled from it carries that value.
 #
 # The question here is NOT "is this the placeholder". It is "are we about to
 # hand initdb a password anyone can read", which matters only on the path where
 # no database exists yet, and it is answered by the fixed list below of values
-# this repo has published. The list is historical by design and does not track
-# the shipped file.
+# this repo publishes.
 PUBLISHED_PG_PASSWORDS=('agledger')
 
 pg_password_is_published() {
@@ -909,8 +948,8 @@ pg_password_action() {
 #   generate  no password, and no Grafana volume, so the value this run writes
 #             is the one the first boot will apply.
 #   stale     no password, but a volume exists. Whatever it was initialized
-#             with is the live login (before this change compose defaulted it to
-#             `admin`, so on an install that predates it, that is what it is).
+#             with is the live login: a volume first started with the variable
+#             empty took Grafana's built-in `admin`.
 #             Writing a fresh password here would record a credential that does
 #             not work, which is worse than the weak one it replaces.
 #
@@ -969,6 +1008,25 @@ missing_prod_config() {
     echo "    set it to where this instance is reachable, e.g. https://agledger.example.com"
     echo "    no public domain? AGLEDGER_EXTERNAL_URL=https://localhost opts into a placeholder issuer."
   fi
+
+  # The strength floor the Server holds its symmetric secrets to in production:
+  # at least 32 characters, and never the development fallback published in the
+  # repository. An unset API_KEY_SECRET is generated earlier in install.sh, and
+  # WEBHOOK_ENCRYPTION_KEY is optional, so only a value that is present is judged.
+  local secret_name secret_value
+  for secret_name in API_KEY_SECRET WEBHOOK_ENCRYPTION_KEY; do
+    secret_value="$(get_env_value "$secret_name" "$file")"
+    [[ -n "$secret_value" ]] || continue
+    if [[ "$secret_value" == "dev-secret-do-not-use-in-production" ]]; then
+      echo "${secret_name} is the development fallback published in the repository, so it protects nothing."
+    elif (( ${#secret_value} < 32 )); then
+      echo "${secret_name} is ${#secret_value} characters; production requires at least 32."
+    else
+      continue
+    fi
+    echo "    generate one with: openssl rand -hex 32"
+    echo "    already running on the current value? move it to ${secret_name}_PREVIOUS first (if that is empty) so existing data stays readable."
+  done
 
   # Only meaningful once a DATABASE_URL exists: the bundled path composes one
   # from POSTGRES_* at container start, and the config loader skips the check when the
@@ -1053,6 +1111,14 @@ sort_semver() {
 # and a mention of the name in the NOTE below it must not match.
 parse_signing_key() {
   sed -n 's/^VAULT_SIGNING_KEY=\([^[:space:]][^[:space:]]*\).*/\1/p' | head -1
+}
+
+# Read the pin (sha256:<hex> of the public key's SPKI) out of the same output.
+# It is what an auditor holds out of band to verify this install's key
+# statements from; printed at install time because this is when the key is
+# minted.
+parse_signing_key_pin() {
+  sed -n 's/^Pin: \(sha256:[0-9a-f]\{64\}\).*/\1/p' | head -1
 }
 
 # --- External database: credentials, and a client old enough to refuse ---
@@ -1141,7 +1207,7 @@ pg_server_major() {
     case "${PGHOST:-}" in localhost|127.0.0.1|::1|"") net=(--network host) ;; esac
     num="$(docker run --rm \
       -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE \
-      "${net[@]}" "$PG_QUERY_IMAGE" psql -tAc 'SHOW server_version_num' 2>/dev/null | tr -d '[:space:]')"
+      ${net[@]+"${net[@]}"} "$PG_QUERY_IMAGE" psql -tAc 'SHOW server_version_num' 2>/dev/null | tr -d '[:space:]')"
   fi
   [[ "$num" =~ ^[0-9]+$ ]] || return 1
   echo $(( num / 10000 ))
@@ -1219,7 +1285,7 @@ pg_client_run() {
 
   docker run --rm -i \
     -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE \
-    "${net[@]}" "${PG_CLIENT_IMAGE_REPO:-postgres}:${server_major}-alpine" "$tool" "$@"
+    ${net[@]+"${net[@]}"} "${PG_CLIENT_IMAGE_REPO:-postgres}:${server_major}-alpine" "$tool" "$@"
 }
 
 # Do two connection endpoints name the same PostgreSQL server?
@@ -1261,6 +1327,41 @@ pg_dump_magic_ok() {
   local file="$1"
   [[ -s "$file" ]] || return 1
   [[ "$(head -c 5 "$file" 2>/dev/null)" == "PGDMP" ]]
+}
+
+# Which physical database a backup is taken from: the cluster's system
+# identifier (written once by initdb) and the database's OID in that cluster,
+# as `<sysid>:<oid>`. backup.sh records it as database_token in
+# backup-metadata, and restore.sh carries revocations across only out of a
+# database that answers with the same value. A database restore.sh created is a
+# new database with a new OID, and another host's cluster has its own system
+# identifier, so a fresh host, a standby restored from an earlier backup and a
+# re-run after a restore that failed partway all answer differently, although
+# their rows descend from the same install. A physical copy (a storage
+# snapshot, a provider point-in-time restore, a clone, a copied data volume)
+# keeps both values, so the archive also records wal_lsn (wal_position_sql),
+# and a database whose WAL position is still before it is a copy taken before
+# the backup. The same SQL is in the chart's backup Job and in
+# post-restore.js --export-revocations, character for character.
+database_token_sql() {
+  printf '%s\n' "SELECT (pg_control_system()).system_identifier::text || ':' || oid::text FROM pg_database WHERE datname = current_database()"
+}
+
+# The cluster's WAL position, taken once the dump has finished. It only moves
+# forward on one cluster, so the database the backup was dumped from is at or
+# past it from then on, and a physical copy taken before it is still behind.
+wal_position_sql() {
+  printf '%s\n' "SELECT pg_current_wal_lsn()::text"
+}
+
+# Whether $1 has the shape wal_position_sql answers with.
+is_wal_lsn() {
+  [[ "${1:-}" =~ ^[0-9A-F]+/[0-9A-F]+$ ]]
+}
+
+# Whether $1 has the shape database_token_sql answers with.
+is_database_token() {
+  [[ "${1:-}" =~ ^[0-9]+:[0-9]+$ ]]
 }
 
 # What is in front of the archive, for an operator who has to act on it.
@@ -1322,8 +1423,7 @@ audit_event_trigger_probe_sql() {
 # Usage: verdict=$(audit_event_trigger_verdict "$probe_output")   # ok|refuse|unknown
 audit_event_trigger_verdict() {
   local out="$1"
-  # Anchored to line start, which is what install.sh's grep did before this was
-  # a function. Unanchored, a probe that failed while echoing its own query back
+  # Anchored to line start. Unanchored, a probe that failed while echoing its own query back
   # ("... WHERE PRIV=true ...") would read as a granted privilege, and on
   # restore.sh that answer drops a database.
   # A here-string, NOT `printf ... | grep -q`. Both callers run with
@@ -1592,7 +1692,7 @@ sync_metrics_token_fingerprint() {
     # so beats failing the install over a label.
     warn "Could not fingerprint METRICS_AUTH_TOKEN (no sha256 tool found)."
     warn "If the bundled Prometheus reports the agledger targets down, recreate it:"
-    warn "  docker compose --profile monitoring up -d --force-recreate prometheus"
+    warn "  cd ${COMPOSE_DIR} && docker compose --profile monitoring up -d --force-recreate prometheus"
     return 0
   elif [[ -z "$want" ]]; then
     # A digest tool that exits 0 and prints nothing. Writing the empty string
@@ -1601,7 +1701,7 @@ sync_metrics_token_fingerprint() {
     # on both sides of the comparison and sees no mismatch to repair.
     warn "METRICS_AUTH_TOKEN fingerprint came back empty; leaving METRICS_TOKEN_FINGERPRINT alone."
     warn "If the bundled Prometheus reports the agledger targets down, recreate it:"
-    warn "  docker compose --profile monitoring up -d --force-recreate prometheus"
+    warn "  cd ${COMPOSE_DIR} && docker compose --profile monitoring up -d --force-recreate prometheus"
     return 0
   else
     # Truncated because this is a change detector, not a commitment: the whole
@@ -1652,8 +1752,9 @@ prometheus_metrics_token_stale() {
   have="$(docker inspect --format \
     '{{index .Config.Labels "com.agledger.metrics-token-fingerprint"}}' \
     "$cid" 2>/dev/null || true)"
-  # A container created before this label existed reports empty. That IS the
-  # stale case: it was created from a definition that could not carry the token.
+  # A container created while .env held no fingerprint reports empty. That IS
+  # the stale case: it was created from a definition that could not carry the
+  # token.
   [[ "$have" != "$want" ]]
 }
 
@@ -1666,15 +1767,12 @@ prometheus_metrics_token_stale() {
 # missing or stale COMPOSE_FILE line, an absent federation identity, an absent metrics
 # scrape token and an unselected monitoring profile are properties of the .env,
 # so an install already on the target version needs each repair as much as one
-# that is behind, and a DR restore onto a host whose .env predates them needs
+# that is behind, and a DR restore onto a host whose .env lacks them needs
 # them before anything comes up rather than after.
 #
-# That case is routine rather than theoretical, because these scripts never
-# update themselves. Only the image is pulled, so a machine that upgraded ran
-# whatever upgrade.sh its checkout held, which may carry none of these; the
-# operator's remedy is to refresh the install scripts and re-run. All of them
-# are idempotent: each writes only when the value is absent, so a re-run on a
-# reconciled .env changes nothing and leaves ENV_RECONCILED false.
+# All of them are idempotent: each writes only when the value is absent or
+# stale, so a re-run on a reconciled .env changes nothing and leaves
+# ENV_RECONCILED false.
 #
 # build_overlay_list reads USES_BUNDLED_PG, so detect_db_mode runs before the
 # comparison rather than being assumed; it is idempotent, and callers that run
@@ -1703,6 +1801,7 @@ reconcile_env_file() {
   local current_compose_file
   current_compose_file="$(get_env_value COMPOSE_FILE "$env_file")"
   detect_db_mode
+  ensure_compose_override_file
   build_overlay_list
   if [[ "$current_compose_file" != "$OVERLAY_LIST" ]]; then
     if [[ -z "$current_compose_file" ]]; then
@@ -1715,11 +1814,11 @@ reconcile_env_file() {
   fi
 
   # --- Federation Identity ---
-  # An install stood up before install.sh generated one has no
-  # AGLEDGER_INSTANCE_ID, so its operator is told the Server's id is the literal
-  # "default" and the peer's handshake refuses it. `federation_hub_id_action`
-  # will not touch a Server that already has a usable id, so this can never move
-  # an identity peers have stored: it only fills in the absent case.
+  # A .env install.sh did not write can carry no AGLEDGER_INSTANCE_ID, and a
+  # Server without one has no identity a peer's handshake accepts.
+  # `federation_hub_id_action` will not touch a Server that already has a usable
+  # id, so this can never move an identity peers have stored: it only fills in
+  # the absent case.
   local hub_id_action hub_id_value
   hub_id_action="$(federation_hub_id_action "$env_file")"
   case "$hub_id_action" in
@@ -1733,19 +1832,11 @@ reconcile_env_file() {
         warn "GET /federation/v1/admin/instance names the variable and how to generate a value."
       fi
       ;;
-    adopt-legacy-org-id:*)
-      # The retired AGLEDGER_ORGANIZATION_ID fallback was this Server's identity
-      # and peers hold it. Carry it forward rather than mint a new one, which
-      # would 401 every message after restart.
-      upsert_env_var AGLEDGER_INSTANCE_ID "${hub_id_action#adopt-legacy-org-id:}" "$env_file"
-      ENV_RECONCILED=true
-      info "Adopted AGLEDGER_ORGANIZATION_ID as AGLEDGER_INSTANCE_ID (the identity peers already hold); AGLEDGER_ORGANIZATION_ID can be deleted from .env"
-      ;;
   esac
 
   # --- Metrics scrape token ---
-  # An install stood up before /metrics was gated has no METRICS_AUTH_TOKEN, and
-  # .env sets NODE_ENV=production, so the endpoint answers the API-key chain and
+  # A .env with no METRICS_AUTH_TOKEN still sets NODE_ENV=production, so the
+  # endpoint answers the API-key chain and
   # a Prometheus that holds no credential simply stops collecting, silently.
   # Never regenerated: a token already in .env is the one the running Prometheus
   # was configured with.
@@ -1766,10 +1857,28 @@ reconcile_env_file() {
   # reconcile against the current value repairs it.
   sync_metrics_token_fingerprint "$env_file"
 
+  # --- Runtime role password ---
+  # A bundled .env can carry none (one written by hand), and then its
+  # API and worker fall back to POSTGRES_PASSWORD for agledger_app (see
+  # docker-compose.postgres.yml). That already keeps them off the owner role;
+  # a password of their own keeps the runtime credential from also being the
+  # owner's.
+  if [[ "$(app_role_password_action "$env_file" "${USES_BUNDLED_PG:-false}")" == "generate" ]]; then
+    local app_role_password
+    if app_role_password=$(openssl rand -hex 24); then
+      upsert_env_var AGLEDGER_APP_ROLE_PASSWORD "${app_role_password}" "$env_file"
+      ENV_RECONCILED=true
+      info "Generated AGLEDGER_APP_ROLE_PASSWORD (the API and worker connect as agledger_app under it)"
+    else
+      warn "Could not generate AGLEDGER_APP_ROLE_PASSWORD. The API and worker keep connecting as"
+      warn "agledger_app under POSTGRES_PASSWORD, which then opens both roles."
+    fi
+  fi
+
   # --- Monitoring Profile ---
-  # An install stood up with --with-monitoring before COMPOSE_PROFILES was
-  # persisted has monitoring containers running and nothing in .env that selects
-  # them. Every later compose command, `up -d` included, then skips the profile:
+  # Monitoring containers started by hand (`docker compose --profile monitoring
+  # up`) run with nothing in .env that selects them. Every later compose
+  # command, `up -d` included, then skips the profile:
   # the containers keep running on the OLD image with the OLD port bindings
   # while the run reports success. Repair the .env before anything else reads
   # it, so the profile also sticks for the operator's own later commands.
@@ -2002,7 +2111,7 @@ report_failed_compose_services() {
   done <<< "$failures"
 
   echo ""
-  error "Full logs: docker compose logs <service>"
+  error "Full logs: cd ${COMPOSE_DIR} && docker compose logs <service>"
   return 1
 }
 
@@ -2054,8 +2163,8 @@ restart_mounted_config_services() {
     svc="${entry%%:*}"
     file="${COMPOSE_DIR}/${entry#*:}"
     [[ -f "$file" ]] || continue
-    # `|| true` for the same reason the legacy-backup probe carries one: a
-    # docker that answers non-zero here would otherwise take the whole install
+    # `|| true` because a docker that answers non-zero here would otherwise
+    # take the whole install
     # down through `pipefail`, with its message already sent to /dev/null.
     # `oneoff=False` for the same reason failed_compose_services carries it.
     cid="$(docker ps -q \
@@ -2067,7 +2176,7 @@ restart_mounted_config_services() {
     [[ -n "$cid" ]] || continue
     info "Restarting ${svc} so it reads the ${entry#*:} in this checkout."
     "${COMPOSE[@]}" restart "$svc" >/dev/null 2>&1 \
-      || warn "  ${svc} did not restart. Apply its configuration with: docker compose restart ${svc}"
+      || warn "  ${svc} did not restart. Apply its configuration with: cd ${COMPOSE_DIR} && docker compose restart ${svc}"
   done
 }
 
@@ -2143,7 +2252,10 @@ next_free_host_port() {
 #                answer, CONFLICTING_PORTS_LIST, and it deliberately excludes
 #                ports held by this run's own compose project: re-running the
 #                installer against a live stack must not read its own published
-#                ports as a collision. Prints only the variables that move.
+#                ports as a collision. Prints the variables that move, and any
+#                other the operator set in the environment, which the line run
+#                literally would otherwise drop (.env, not the environment, is
+#                what a re-run reads back).
 #
 #   all          What has to be free for a SECOND stack, in a fresh directory,
 #                under a different project name? Every port it publishes, and
@@ -2172,7 +2284,7 @@ suggest_port_assignments() {
       suggested="$(next_free_host_port "$port" "$reserved")"
       reserved="${reserved} ${suggested}"
     else
-      [[ "$scope" == "conflicting" ]] && continue
+      [[ "$scope" == "conflicting" && -z "${!port_var:-}" ]] && continue
       suggested="$port"
     fi
     out="${out}${port_var}=${suggested} "
@@ -2735,7 +2847,7 @@ verify_image() {
 # Same policy as verify_image. The chart ref is the OCI image form
 # (registry-1.docker.io/agledger/agledger-chart:<version>).
 verify_chart() {
-  local chart_ref="$1"   # e.g. registry-1.docker.io/agledger/agledger-chart:1.0.3
+  local chart_ref="$1"   # e.g. registry-1.docker.io/agledger/agledger-chart:2.0.1
 
   # Reset the same pair verify_image sets. A caller that verified an image and
   # then a chart would otherwise report the chart under the image's verdict,
@@ -3162,6 +3274,52 @@ compose_override_file() {
       return 0
     fi
   done
+}
+
+# The body of the override file the scripts create when there is none. Compose
+# refuses an empty file, so it carries an empty `services` map.
+# shellcheck disable=SC2016  # the backticks are text written into the YAML comment
+COMPOSE_OVERRIDE_STUB='# Your changes to the AGLedger stack: extra mounts, port mappings, resource
+# limits, environment. COMPOSE_FILE in .env names this file, so a plain
+# `docker compose up -d` from this directory applies an edit here. Keep the file
+# even when it holds nothing: Compose refuses a COMPOSE_FILE entry that is missing.
+services: {}'
+
+# Make sure an override file exists, so COMPOSE_FILE always names one.
+#
+# COMPOSE_FILE turns Compose's own override discovery off, and it is rewritten
+# only when install.sh, upgrade.sh or restore.sh runs. An override written after
+# the last of those sat beside the stack while `docker compose up -d` ignored
+# it. With a file listed from the start, adding a mount is an edit to a listed
+# file, which a plain `up -d` applies. An operator's own file, under any of the
+# four names, is never touched.
+#
+# Two or more of the names at once: Compose's own discovery would take the
+# first and warn about the rest, and the pin skips that warning, so it is said
+# here, naming the one that applies.
+ensure_compose_override_file() {
+  local present=() name
+  for name in compose.override.yml compose.override.yaml \
+              docker-compose.override.yml docker-compose.override.yaml; do
+    [[ -f "${COMPOSE_DIR}/${name}" ]] && present+=("$name")
+  done
+  if [[ ${#present[@]} -eq 0 ]]; then
+    # Unwritable compose/ is said, not fatal: the stack runs as it did, and
+    # COMPOSE_FILE then names no override, as before this file existed.
+    if ! printf '%s\n' "$COMPOSE_OVERRIDE_STUB" 2>/dev/null > "${COMPOSE_DIR}/docker-compose.override.yml"; then
+      warn "Could not create ${COMPOSE_DIR}/docker-compose.override.yml. Create it (holding 'services: {}') so COMPOSE_FILE names it and a later edit reaches 'docker compose up -d'."
+    fi
+    return 0
+  fi
+  if [[ ${#present[@]} -gt 1 ]]; then
+    warn "Found ${present[*]} in ${COMPOSE_DIR}. Only ${present[0]} is applied; merge the others into it and delete them."
+  fi
+}
+
+# True when the override file is still the one the scripts wrote.
+compose_override_is_stub() {
+  local file="${COMPOSE_DIR}/$1"
+  [[ -f "$file" ]] && [[ "$(cat "$file")" == "$COMPOSE_OVERRIDE_STUB" ]]
 }
 
 # Build the colon-separated overlay list for the COMPOSE_FILE .env line, in

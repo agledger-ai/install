@@ -208,7 +208,7 @@ remote_run() {
   # that's how the script body is injected. Their values aren't rescanned, and
   # all data flows in as base64 positional args, so nothing else interpolates.
   # shellcheck disable=SC2087
-  ssh -o BatchMode=yes "${SSH_OPTS[@]}" "$AGL_SSH_TARGET" bash -s -- "${args[@]}" <<AGLR
+  ssh -o BatchMode=yes "${SSH_OPTS[@]}" "$AGL_SSH_TARGET" bash -s -- ${args[@]+"${args[@]}"} <<AGLR
 ${REMOTE_PREAMBLE}
 ${script}
 AGLR
@@ -371,7 +371,7 @@ AGLR
 cmd_upgrade() {
   require_target
   local version="${COMMAND_ARGS[0]:-}"
-  [[ -n "$version" ]] || fatal "upgrade needs a version: agl-deploy.sh ... upgrade 1.0.3"
+  [[ -n "$version" ]] || fatal "upgrade needs a version: agl-deploy.sh ... upgrade 2.0.1"
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]] || fatal "Invalid version '${version}'"
   confirm "Upgrade ${AGL_SSH_TARGET} to ${version} (a backup is taken first)?" || { warn "Aborted."; return 1; }
   step "Upgrading ${AGL_SSH_TARGET} to ${version}"

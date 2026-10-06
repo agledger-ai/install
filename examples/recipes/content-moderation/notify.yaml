@@ -1,6 +1,8 @@
 # Content-moderation vertical recipe: Notify (webhook) subscriptions.
 # A declarative list of the webhook subscriptions this recipe expects. Create each
-# one against your Server with POST /v1/webhooks (see the Webhooks guide). The
+# one against your Server with POST /v1/webhooks (see the Webhooks guide), sending
+# each entry's fields as the body; the comment above each entry is its label for you,
+# not a field (the route refuses unknown fields). The
 # signing secret is returned ONCE at create time, so capture it then; it is null on
 # every subsequent read. The same subscriptions can be provisioned as config-as-code
 # instead: deploy/examples/provisioning/webhooks/example.yaml carries eventTypes and
@@ -22,8 +24,8 @@ subscriptions:
   # The moderation operations channel: the enforcement lifecycle, covering the
   # inbound flag, the gated enforcement decision, and the statement issued to the
   # user. No recordTypes, so it receives every type in the recipe.
-  - name: moderation-ops
-    url: https://moderation-events.example.com/agledger
+  # moderation-ops
+  - url: https://moderation-events.example.com/agledger
     signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
     eventTypes:
       - record.created               # a flag received, or an enforcement decision opened
@@ -37,8 +39,8 @@ subscriptions:
   # Art.24(5) submission and receipt) and appeal-redetermination-decision-v1 (the
   # Art.20 verdict, decided independently). Nothing else on the chain is delivered
   # here.
-  - name: transparency-and-appeals
-    url: https://compliance-queue.example.com/agledger
+  # transparency-and-appeals
+  - url: https://compliance-queue.example.com/agledger
     signingAlg: ed25519       # vault-signed, offline-verifiable, for a regulator-facing audit trail
     eventTypes:
       - record.created

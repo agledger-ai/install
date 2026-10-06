@@ -20,9 +20,11 @@
 #   principal the AGLedger-On-Behalf-Of delegation header
 #   any       all three; this is the default when the key is omitted
 #
-# The issuer URLs here are placeholders that authenticate nobody. Replace them,
-# and the `sub` values under `subjectAllowlist`, with your own before this file
-# does anything. `jwksUri` is spelled out on every entry so a copy of this
+# The issuer URLs here are placeholders that authenticate nobody, and every
+# entry ships `enabled: false`, so a verbatim copy writes disabled rows that
+# trust no issuer. Replace the URLs and the `sub` values under
+# `subjectAllowlist` with your own, then set `enabled: true` on the entries you
+# use. `jwksUri` is spelled out on every entry so a copy of this
 # directory loads with no network call; omit it and the loader runs OIDC
 # discovery against the issuer on every pass, so a moved jwks_uri is picked up
 # on reload. An IdP this Server cannot reach refuses a new entry for that pass,
@@ -38,6 +40,7 @@ trusted_issuers:
   # too. Register a second entry with an explicit orgId when you want admin
   # bearers bound to one named Org.
   - issuerUrl: https://idp.example.com/
+    enabled: false
     expectedAudience: agledger
     appliesTo: admin
     orgId: null
@@ -107,6 +110,7 @@ trusted_issuers:
   # `act.sub`. Delegation tokens are never deduplicated, so jtiSingleUse has no
   # effect on this door.
   - issuerUrl: https://idp.example.com/
+    enabled: false
     expectedAudience: agledger
     appliesTo: principal
     orgId: null

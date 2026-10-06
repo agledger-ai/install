@@ -5,8 +5,8 @@ set -euo pipefail
 # AGLedger — Upgrade Script
 # =============================================================================
 # Usage:
-#   ./scripts/upgrade.sh 1.3.0
-#   ./scripts/upgrade.sh 1.3.0 --skip-backup
+#   ./scripts/upgrade.sh 2.0.1
+#   ./scripts/upgrade.sh 2.0.1 --skip-backup
 # =============================================================================
 
 # --- Shared Helpers ---
@@ -118,6 +118,32 @@ worker_state_now() {
   printf '%s\n' "${answer:-unknown}"
 }
 
+# Set when the migration refused the database as another release line's (a 1.x
+# install whose version this run could not read). No re-run of this tree can
+# migrate it, and a `compose up` from this tree starts the new image against
+# it, so the only way back is the tree of the release that wrote it. Read by
+# the trap ahead of the worker's state: the refusal is the same whether or not
+# there was a worker to stop.
+FOREIGN_DATABASE=false
+
+foreign_database_hint() {
+  # A version is named only when it is 1.x. A known 1.x install never gets
+  # here (the version gate refuses it), so the recorded version is usually
+  # unknown or 2.x: .env still naming this release line over a 1.x dump a
+  # restore brought back, and that tree is not the one that wrote it.
+  local cur="${CURRENT_VERSION:-unknown}" wrote="that release"
+  cur="${cur#v}"
+  [[ "${cur%%.*}" == "1" ]] && wrote="v${cur}"
+  error "Upgrade stopped: the migration refused this database, because another build migrated it (a 1.x"
+  error "release, or a pre-release build of this line; the migration's own text above says which)."
+  error "Nothing was migrated, and re-running this script cannot finish it. Bring the install back on"
+  error "the deploy/ tree of the release that wrote the database:"
+  error "  check out the deploy/ tree of ${wrote} over this one, keeping compose/.env and backup/"
+  error "  (cd ${COMPOSE_DIR} && docker compose up -d)"
+  error "Running docker compose from THIS tree starts ${TARGET_VERSION} against that database instead."
+  error "To run ${TARGET_VERSION}, install it on a new, empty database from its own checkout."
+}
+
 worker_restart_hint() {
   error "Finish or abandon the upgrade, then bring it back with either:"
   error "  ./scripts/upgrade.sh ${TARGET_VERSION}          # re-run; applied migrations are skipped"
@@ -129,6 +155,15 @@ cleanup() {
   local worker_now=untouched
   if [[ $exit_code -ne 0 ]]; then
     echo ""
+    if [[ "$FOREIGN_DATABASE" == true ]]; then
+      foreign_database_hint
+      if [[ "$WORKER_STOPPED" == true ]]; then
+        error "The worker was stopped for the migration and is DOWN: no jobs, no webhook deliveries,"
+        error "no deadline sweeps until the compose command above brings the install back."
+      fi
+      error "Check: docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps"
+      return 0
+    fi
     if [[ "$WORKER_STOPPED" == true ]]; then
       worker_now="$(worker_state_now)"
     fi
@@ -169,7 +204,7 @@ trap cleanup EXIT
 handle_sigint() {
   echo ""
   warn "Upgrade interrupted by user."
-  warn "Your services may be in a mixed state. Check: docker compose ps"
+  warn "Your services may be in a mixed state. Check: cd ${COMPOSE_DIR} && docker compose ps"
   exit 130
 }
 trap handle_sigint INT
@@ -193,7 +228,7 @@ while [[ $# -gt 0 ]]; do
       echo "Usage: $0 <TARGET_VERSION> [OPTIONS]"
       echo ""
       echo "Arguments:"
-      echo "  TARGET_VERSION       Version to upgrade to (required, e.g., 1.3.0)"
+      echo "  TARGET_VERSION       Version to upgrade to (required, e.g., 2.0.1)"
       echo ""
       echo "Options:"
       echo "  --skip-backup        Skip pre-upgrade backup (not recommended)"
@@ -286,29 +321,23 @@ CURRENT_VERSION="${CURRENT_VERSION:-unknown}"
 info "Current version: ${CURRENT_VERSION}"
 info "Target version:  ${TARGET_VERSION}"
 
-# --- Detect removed env vars (v0.15.0+) ---
-
-# POSIX BRE intervals (`\{0,1\}`, `[[:space:]][[:space:]]*`), not the GNU
-# extensions `\?` and `\+`: BSD sed and BSD grep read those as a literal `?`
-# and `+`, so on macOS both the detection and the rewrite below silently match
-# nothing, so the line would survive an upgrade that reported success.
+# --- 1.x is not upgraded in place ---
 #
-# The Server ignores the variable rather than rejecting it: the config loader reads
-# AGLEDGER_LICENSE / AGLEDGER_LICENSE_KEY / AGLEDGER_LICENSE_KEY_FILE and
-# nothing else. Commenting it out keeps .env honest about what is actually
-# live; it is tidying, not a boot prerequisite.
-if grep -q '^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}AGLEDGER_LICENSE_MODE[[:space:]]*=' "$ENV_FILE" 2>/dev/null; then
-  warn "AGLEDGER_LICENSE_MODE was removed in v0.15.0 and is ignored by the Server."
-  warn "Commenting it out in ${ENV_FILE}."
-  sedi 's/^\([[:space:]]*\)\(export[[:space:]][[:space:]]*\)\{0,1\}\(AGLEDGER_LICENSE_MODE[[:space:]]*=\)/#REMOVED_v0.15# \1\2\3/' "$ENV_FILE"
-  info "AGLEDGER_LICENSE_MODE commented out. Licensing is now automatic when a license key is present."
-fi
-
-# --- Clean up stale AGLEDGER_RELEASE_DATE from .env ---
-# AGLEDGER_RELEASE_DATE is baked into the Docker image at build time.
-if grep -q '^AGLEDGER_RELEASE_DATE=' "$ENV_FILE" 2>/dev/null; then
-  sedi 's/^AGLEDGER_RELEASE_DATE=/#REMOVED# AGLEDGER_RELEASE_DATE=/' "$ENV_FILE"
-  info "Commented out AGLEDGER_RELEASE_DATE in .env (image-baked value takes precedence)"
+# Refused here, before the first write: every step below changes the install
+# (.env repairs, the backup, the worker stop, a Postgres the new compose file
+# recreates), and the migration would refuse the database at the end of them
+# anyway. What is running is still 1.x's containers, so the one thing to undo
+# is the tree a later `docker compose` would read.
+CURRENT_MAJOR="${CURRENT_VERSION#v}"; CURRENT_MAJOR="${CURRENT_MAJOR%%.*}"
+TARGET_MAJOR="${TARGET_VERSION#v}"; TARGET_MAJOR="${TARGET_MAJOR%%.*}"
+if [[ "$CURRENT_MAJOR" == "1" && "$TARGET_MAJOR" =~ ^[0-9]+$ ]] && (( 10#$TARGET_MAJOR >= 2 )); then
+  error "${TARGET_VERSION} does not upgrade a ${CURRENT_VERSION} install in place: the migration refuses a database"
+  error "a 1.x release migrated. Nothing was changed: .env, the database and every container are as they were."
+  error "To run ${TARGET_VERSION}, install it on a new, empty database from its own checkout (a new directory,"
+  error "so a new compose project and a new data volume), and keep this install for its data."
+  error "Put this checkout back on the v${CURRENT_VERSION#v} deploy/ tree before running any docker compose"
+  error "command in it: from this tree, compose starts ${TARGET_VERSION} against the 1.x database."
+  exit 1
 fi
 
 # --- Configuration State Check ---
@@ -325,12 +354,12 @@ reconcile_env_file "$ENV_FILE"
 
 # --- Grafana Credential State ---
 # The installer generates GRAFANA_ADMIN_PASSWORD on a fresh monitoring install,
-# and warns when a Grafana volume already exists because the password is applied
-# only when the admin user is created and ignored on every later boot. Neither
-# ran on the upgrade path, so an install that predates the change came out the
-# far side still answering to admin/admin with nothing in the output saying so.
-# The generate branch cannot apply here for the same reason it does not apply in
-# the installer: the volume already pinned it.
+# and warns when a Grafana volume already exists with none recorded, because the
+# password is applied only when the admin user is created and ignored on every
+# later boot. A monitoring profile enabled by hand with the variable empty
+# initializes Grafana with its built-in admin/admin, and this is the one place
+# an upgrade says so. The generate branch cannot apply here for the same reason
+# it does not apply in the installer: the volume already pinned it.
 #
 # Above the exit for the same reason the reconciles are: the password is stale
 # whether or not there is a version to move to, and this is the only path that
@@ -339,11 +368,11 @@ if [[ "$MONITORING_ACTIVE" == true ]] \
   && [[ "$(grafana_password_action "$ENV_FILE")" == "stale" ]]; then
   echo ""
   warn "Grafana is running from an existing volume, so its admin password is whatever it was first started with."
-  warn "  Releases before 1.4.0 defaulted it to 'admin', which is very likely what it still is. To set a new one:"
-  warn "    docker compose exec grafana grafana cli admin reset-admin-password <new-password>"
+  warn "  If it was first started with GRAFANA_ADMIN_PASSWORD empty, that is Grafana's built-in 'admin'. To set a new one:"
+  warn "    cd ${COMPOSE_DIR} && docker compose exec grafana grafana cli admin reset-admin-password <new-password>"
   warn "  then record it as GRAFANA_ADMIN_PASSWORD in ${ENV_FILE}."
   warn "  The shipped compose file binds Grafana to loopback; the container currently running keeps"
-  warn "  whatever binding it was created with until it is recreated. Check: docker compose ps grafana"
+  warn "  whatever binding it was created with until it is recreated. Check: cd ${COMPOSE_DIR} && docker compose ps grafana"
 fi
 
 # --- Already on the target version? ---
@@ -463,7 +492,12 @@ VERIFY_STATUS=0
 verify_image "$AGLEDGER_IMAGE" "$TARGET_VERSION" || VERIFY_STATUS=$?
 case $VERIFY_STATUS in
   0) ;;
-  2) fatal "Could not pull ${AGLEDGER_IMAGE}:${TARGET_VERSION} — see the authentication guidance above. The running install is untouched." ;;
+  2)
+    if [[ "$ENV_RECONCILED" == true ]]; then
+      fatal "Could not pull ${AGLEDGER_IMAGE}:${TARGET_VERSION}; the output above says why. Nothing was stopped, and the running containers are untouched; the .env repairs above are on disk."
+    fi
+    fatal "Could not pull ${AGLEDGER_IMAGE}:${TARGET_VERSION}; the output above says why. The running install is untouched."
+    ;;
   *) fatal "Image signature verification failed — aborting upgrade before running an unverified image." ;;
 esac
 # The verified digest for the rest of this upgrade, carried in a variable and
@@ -502,34 +536,45 @@ fi
 # So it runs here, twice: once before the backup, where the answer is still
 # "nothing has happened yet", and again after migrations, because a migration
 # that adds tables grants them to agledger_app and a role holding a one-time
-# blanket GRANT rather than membership does not receive them.
+# blanket GRANT rather than membership does not receive them. The queue schema
+# waits for the second time when the migration repairs it.
 #
-# The image is the TARGET version, not the running one: `--only` reaches back
-# only as far as the release that added it, so asking the old image would run
-# every check instead of these two and fail the upgrade on something unrelated.
+# The image is the TARGET version, not the running one: the check ids are the
+# ones this tree knows, and the target is the image this tree was written
+# against, so it is the one that has them.
 # The pull and signature verification above are what make running those bytes
 # here safe. How that call is made is on `upgrade_image_preflight` below.
 #
-# $3 is the preflight check list, defaulting to the two that decide whether the
-# role can serve. `role-passwords` is added only AFTER migrations, never before:
-# the migration run is what closes a placeholder role password, so asking ahead
-# of it would refuse an upgrade for a condition the upgrade itself repairs.
+# $3 is the preflight check list, defaulting to the runtime role and, unless
+# the migration repairs it, the queue schema. `role-passwords` is asked only
+# AFTER migrations, never before: the migration run is what closes a
+# placeholder role password, so asking ahead of it would refuse an upgrade for
+# a condition the upgrade itself repairs. `pgboss` is the same when the
+# migration runs with AGLEDGER_APP_ROLE_PASSWORD, which gives agledger_app the
+# pgboss schema back; without it nothing repairs the schema, so it is asked
+# while nothing has changed yet.
+MIGRATE_REPAIRS_QUEUE_SCHEMA=false
+if [[ -n "${AGLEDGER_APP_ROLE_PASSWORD:-$(get_env_value AGLEDGER_APP_ROLE_PASSWORD "$ENV_FILE")}" ]]; then
+  MIGRATE_REPAIRS_QUEUE_SCHEMA=true
+fi
+PRE_MIGRATE_ROLE_CHECKS="runtime-role,pgboss"
+[[ "$MIGRATE_REPAIRS_QUEUE_SCHEMA" == true ]] && PRE_MIGRATE_ROLE_CHECKS="runtime-role"
 runtime_role_gate() {
-  local when="$1" recovery="$2" checks="${3:-runtime-role,pgboss}"
-  # External database only. The bundled path runs one role that owns and serves
-  # everything, which carries every privilege by ownership, so there is nothing
-  # here to catch. It is also the path where this could refuse a good upgrade:
-  # its database is a container, `--no-deps` will not start one, and an operator
+  local when="$1" recovery="$2" checks="${3:-$PRE_MIGRATE_ROLE_CHECKS}"
+  # External database only. On the bundled path the migration provisions the
+  # runtime role itself (agledger_app, from AGLEDGER_APP_ROLE_PASSWORD), so
+  # there is no operator grant here to catch. It is also the path where this
+  # could refuse a good upgrade: its database is a container, `--no-deps` will not start one, and an operator
   # upgrading a stopped stack would be told the role cannot connect.
   if [[ "${USES_BUNDLED_PG}" == "true" ]]; then
     return 0
   fi
   step "Checking runtime role privileges (${when})"
   # Through preflight_gate_run for the reason install.sh uses it: the target
-  # image can be OLDER than this tree (`upgrade.sh 1.7.0` from a 1.8.0
+  # image can be OLDER than this tree (`upgrade.sh 2.0.0` from a 2.1.0
   # checkout is how an operator rolls back), and preflight refuses the whole
-  # `--only` list over an id that release did not have. Left bare, that exit 2
-  # reached the diagnosis text below and sent the operator hunting a role
+  # `--only` list over an id that release does not have. Left bare, that exit 2
+  # would reach the diagnosis text below and send the operator hunting a role
   # problem no check had looked at.
   local rc=0
   preflight_gate_run upgrade_image_preflight "$checks" "$TARGET_VERSION" || rc=$?
@@ -610,7 +655,18 @@ if [[ "$SKIP_BACKUP" == true ]]; then
 else
   if [[ -x "$BACKUP_SCRIPT" ]]; then
     info "Running backup..."
-    "$BACKUP_SCRIPT" || fatal "Backup failed. Fix the issue or use --skip-backup to proceed without a backup (not recommended)."
+    if ! "$BACKUP_SCRIPT"; then
+      # The pgboss check waits until after the migration, which repairs the
+      # schema; pg_dump reads it through DATABASE_URL first, so a role that
+      # cannot use it stops here instead, and the refusal above names it.
+      if [[ "${USES_BUNDLED_PG}" != "true" && "$MIGRATE_REPAIRS_QUEUE_SCHEMA" == true ]]; then
+        error "If pg_dump above was refused on schema pgboss: this upgrade's migration, run with"
+        error "AGLEDGER_APP_ROLE_PASSWORD set, gives agledger_app that schema back, but the backup reads it first"
+        error "through DATABASE_URL. Back up as the schema's owner (DATABASE_URL_MIGRATE) yourself and re-run with"
+        error "--skip-backup, or grant the role what the refusal names."
+      fi
+      fatal "Backup failed. Fix the issue or use --skip-backup to proceed without a backup (not recommended)."
+    fi
     info "Backup complete"
   else
     warn "Backup script not found at ${BACKUP_SCRIPT}."
@@ -629,10 +685,6 @@ fi
 # writing it would overwrite the real previous version with the one being
 # upgraded to and leave nothing to roll back to.
 BACKUP_ROOT="$(backup_root)"
-# An install upgraded from an older checkout has a marker in the old shared
-# location too, naming an older version. Left unsaid, the operator reads that
-# one at rollback time.
-report_legacy_backup_root
 if [[ "$RESUMING_FAILED_UPGRADE" == true ]]; then
   # Defaulted here rather than with `|| echo`: the reader prints nothing and
   # SUCCEEDS when no marker exists, so a `||` fallback never fires and the line
@@ -687,8 +739,37 @@ step "Running database migrations with new image"
 # since the install that did check.
 verify_sibling_reachability
 
-AGLEDGER_VERSION="${TARGET_VERSION}" AGLEDGER_IMAGE_PIN="${TARGET_IMAGE_PIN}" \
-  "${COMPOSE[@]}" run --rm agledger-migrate
+# Exit 75 is the one failure worth repeating as it stands: a migration that
+# could not take its table locks within MIGRATION_LOCK_TIMEOUT while the API
+# kept writing. It rolled back whole, so a later attempt can land in a quieter
+# moment. Every other failure repeats until something changes, so it stops here.
+MIGRATE_ATTEMPTS=3
+MIGRATE_ATTEMPT=1
+while :; do
+  MIGRATE_STATUS=0
+  AGLEDGER_VERSION="${TARGET_VERSION}" AGLEDGER_IMAGE_PIN="${TARGET_IMAGE_PIN}" \
+    "${COMPOSE[@]}" run --rm agledger-migrate || MIGRATE_STATUS=$?
+  [[ $MIGRATE_STATUS -eq 0 ]] && break
+  if [[ $MIGRATE_STATUS -eq 65 ]]; then
+    FOREIGN_DATABASE=true
+    exit "$MIGRATE_STATUS"
+  fi
+  if [[ $MIGRATE_STATUS -ne 75 ]]; then
+    exit "$MIGRATE_STATUS"
+  fi
+  if (( MIGRATE_ATTEMPT >= MIGRATE_ATTEMPTS )); then
+    error "A migration could not take its table locks on any of ${MIGRATE_ATTEMPTS} attempts: the API's"
+    error "writes held one of its tables every time it asked. That file rolled back; any migration"
+    error "applied before it stays applied and is skipped on the next run."
+    error "Set MIGRATION_LOCK_TIMEOUT=120s (or longer) in ${ENV_FILE}, or wait for a low-traffic"
+    error "window, and re-run: ./scripts/upgrade.sh ${TARGET_VERSION}"
+    exit "$MIGRATE_STATUS"
+  fi
+  MIGRATE_ATTEMPT=$(( MIGRATE_ATTEMPT + 1 ))
+  warn "A migration could not take its table locks within MIGRATION_LOCK_TIMEOUT and rolled back"
+  warn "(any applied before it stay applied). Retrying in 10s (attempt ${MIGRATE_ATTEMPT} of ${MIGRATE_ATTEMPTS})."
+  sleep 10
+done
 info "Migrations complete"
 
 # Again, because the migration that just ran may have added tables. The schema
@@ -783,7 +864,7 @@ if ! "${COMPOSE[@]}" up -d --wait || ! all_compose_services_up "${UPGRADE_SERVIC
   # tail, and when every one reports up it is the wait that timed out and the
   # reporter has nothing to name.
   report_failed_compose_services "${UPGRADE_SERVICES[@]}" || true
-  fatal "Services failed to become healthy after upgrade. Check: docker compose logs agledger-api"
+  fatal "Services failed to become healthy after upgrade. Check: cd ${COMPOSE_DIR} && docker compose logs agledger-api"
 fi
 info "All services restarted"
 

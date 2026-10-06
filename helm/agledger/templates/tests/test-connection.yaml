@@ -8,6 +8,7 @@ metadata:
     "helm.sh/hook": test
 spec:
   restartPolicy: Never
+  automountServiceAccountToken: false
   containers:
     - name: curl
       image: {{ dig "image" "curlimages/curl:8.18.0" (.Values.tests | default dict) | quote }}

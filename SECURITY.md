@@ -218,6 +218,11 @@ can obtain a certificate for that identity. It is not a defence against a runner
 that job is running, which holds the OIDC token the job was issued: the isolated SLSA Build L3
 builder and the public transparency log are what address build-machine compromise. The separate audit-chain (vault) signing keys, the ones your own Server holds, are
 published live at `GET /.well-known/agledger-vault-keys.json` and `GET /v1/verification-keys`.
+Those surfaces publish only keys a signed key statement links to a key held outside the database;
+a key row written with database access alone is not published and verifies nothing. The pin the
+installer prints (`Pin: sha256:<hex>`, the SHA-256 of the key's SPKI DER) is the value to hand an
+auditor, and the high-assurance input for offline verification once the verifier walks key
+statements; `node dist/scripts/signing-key-digest.js` derives it again.
 
 ## Mirrored registries (AWS Marketplace / ECR)
 
@@ -273,10 +278,14 @@ Two custody options, chosen per install:
 
 What KMS custody changes operationally, and what it does not:
 
-- Rotation and retirement are the same two steps. Staging a new KMS key is a new ARN and a
-  restart; retirement is `POST /v1/admin/vault/signing-keys/{keyId}/retire`. A key this install
-  signed with from a file before the move goes in `VAULT_SIGNING_KEY_PREVIOUS` so its history stays
-  verifiable; `VAULT_SIGNING_KEY` and the ARN together refuse to boot.
+- Rotation and retirement are the same two steps, and the new key needs its predecessor to sign
+  a succession. Moving from a local key: set the ARN, move the local key to
+  `VAULT_SIGNING_KEY_PREVIOUS` and unset `VAULT_SIGNING_KEY` (it and the ARN together refuse to
+  boot). Moving from one KMS key to another: set the new ARN and
+  `VAULT_SIGNING_KEY_PREVIOUS_KMS_ARN` (`signing.previousKmsKeyArn` on Helm) to the old one, with
+  `kms:GetPublicKey` and `kms:Sign` on both keys for the change; the old key never leaves KMS and
+  signs only the succession. The two `PREVIOUS` variables together refuse to boot. Retirement is
+  `POST /v1/admin/vault/signing-keys/{keyId}/retire`, sent to a process on the new key.
 - When KMS does not answer, the Server fails closed. A write whose `Sign` call fails is rolled back
   and answered 503 (`/problems/signing-key-unusable`) with a `recoveryHint` naming what to check.
   After consecutive failures the process stops trying: `/health/ready` answers 503 with
@@ -285,7 +294,8 @@ What KMS custody changes operationally, and what it does not:
   one probe `Sign`, and the first answered one resumes writing; nothing needs restarting. The
   shipped alert rules (`AGLedgerVaultSignerUnreachable`, `AGLedgerVaultRemoteSignFailing`) and the
   `agledger_vault_remote_sign_seconds` histogram are the operator's view of it.
-- Rate: one `Sign` per signature, and KMS `Sign` quotas are per account and region, shared with every
+- Rate: one `Sign` per signature, plus one probe `Sign` per api and worker process each signing-key
+  watch interval, and KMS `Sign` quotas are per account and region, shared with every
   other caller of that key type. `VAULT_SIGNING_REMOTE_MAX_PER_SECOND` caps each process; the sum
   across api and worker replicas has to sit under the quota.
 - The federation identity key and the license key are separate signing domains and stay where they
@@ -299,13 +309,35 @@ What KMS custody changes operationally, and what it does not:
 The full runbook is [Signing-key compromise](https://agledger.ai/docs/operations/key-compromise).
 The semantics it turns on, so you can plan against them before you need it:
 
-- **Containment is two steps: restart, then retire.** A process that boots with a
-  `VAULT_SIGNING_KEY` the registry does not carry registers it and starts signing with it,
-  retiring nothing, so more than one key is active while you roll.
+- **A key is trusted only through a statement signed by a key held outside the database.** A
+  new key is admitted by a succession statement signed by it and its predecessor, so the process
+  that stages it runs with `VAULT_SIGNING_KEY_PREVIOUS` set to the key in use; a new key with no
+  predecessor signer registers nothing and signs nothing (`signingKey.gate: "unanchored"`). A key
+  row planted with database access alone verifies nothing: entries it signs break as
+  `signing_key_unanchored` and no public key surface lists it.
+- **Containment is two steps: restart, then retire.** A process that boots with a new
+  `VAULT_SIGNING_KEY` and the current key as `VAULT_SIGNING_KEY_PREVIOUS` registers it and starts
+  signing with it, retiring nothing, so more than one key is active while you roll.
   `POST /v1/admin/vault/signing-keys/rotate` performs the same registration on demand and answers
   `already_active` against a process that has already restarted. Closing the leaked key's window is
-  `POST /v1/admin/vault/signing-keys/{keyId}/retire`, and on a compromise you send
-  `{"force": true}` rather than waiting for processes to roll. Chain appends under that key stop
+  `POST /v1/admin/vault/signing-keys/{keyId}/retire` from a process on the new key, and on a
+  compromise you send `{"force": true}` rather than waiting for processes to roll. The retirement
+  writes a closure statement, signed by the new key; a forced one voids every edge out of the leaked
+  key, to the keys it admitted and back to its predecessor, and the keys that leaves unanchored are listed in `unanchoredKeyIds` (retired,
+  certificates revoked, their entries reported as `signing_key_unanchored`). An honest key among
+  them is re-anchored through `VAULT_TRUST_ANCHORS`, followed by an unforced retire call where the
+  scan reports `key_closure_invalid` for it, a process on one restarts on a fresh key, and auditors take
+  the pin of the key that ran the retirement plus every pin added to `VAULT_TRUST_ANCHORS`: a pin on
+  the current key no longer reaches the history behind the leaked key.
+  Closures the leaked key signs still apply, and only take trust away: at worst they shorten a
+  key's window, which is a denial of service, never a key trusted, but one nothing in the database
+  undoes (a closure dated before the current key's activation expires all it signed). Its pin in
+  `VAULT_DISTRUSTED_KEYS` on every process, optionally `@<instant>` for when it leaked, makes what
+  it signs from that instant, or from its retirement, count for nothing; the forced retirement's
+  response names the entry. The same applies to a key retired on schedule that leaks later. With no successor you trust, set
+  `VAULT_TRUST_ANCHORS` to the pins of the keys whose history you vouch for and restart; the new
+  key registers under a fresh genesis and auditors take its pin. Nothing inside the database can
+  tell your successor from an attacker's. Chain appends under that key stop
   the instant the retirement commits, because an append and the retirement take the same row lock.
   The other signers (RFC 9421 webhook deliveries, ephemeral-certificate JWS, Receipts) stop when
   the process notices: at once on an api process, within 30 seconds on a worker, which re-reads the
@@ -317,8 +349,9 @@ The semantics it turns on, so you can plan against them before you need it:
   answers while the old key has appended inside the last 300 seconds is a backstop for the case
   the chain can see, and an idle process passes it while still holding the key. Both orders are in
   `deploy/README.md` under "Changing the signing key".
-- **There is no revocation, by design.** A key is `active` or `retired`; there is no `compromised`
-  status, and a retired key keeps verifying the entries it signed inside its published window
+- **There is no revocation of what a key signed, by design.** A key is `active` or `retired`;
+  there is no `compromised` status, and a retired key keeps verifying the entries it signed inside
+  its published window
   (`activatedAt` to `retiredAt`), both on this Server and in `@agledger/verify`. That is what makes routine
   rotation non-destructive, and it means the product will not mark records signed inside your
   compromise window. Rotation stops future signing with that key; it says nothing about what was

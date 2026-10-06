@@ -1,6 +1,8 @@
 # Software-delivery vertical recipe: Notify (webhook) subscriptions.
 # A declarative list of the webhook subscriptions this recipe expects. Create each
-# one against your Server with POST /v1/webhooks (see the Webhooks guide). The
+# one against your Server with POST /v1/webhooks (see the Webhooks guide), sending
+# each entry's fields as the body; the comment above each entry is its label for you,
+# not a field (the route refuses unknown fields). The
 # signing secret is returned ONCE at create time; capture it then; it is null on
 # every subsequent read.
 #
@@ -9,15 +11,15 @@
 # endpoint you control (or HTTP only on an LB-terminated-TLS install with
 # SSRF_ALLOW_PLAIN_HTTP set). Replace the example.com URLs with your own.
 #
-# recordTypes (API v1.2.0+) narrows record-scoped events to the listed contract
+# recordTypes narrows record-scoped events to the listed contract
 # types, server-side and fail-closed: a typed subscription never receives a record
 # event whose type it does not list. Omit it, or use ['*'], to receive every type.
 subscriptions:
   # The delivery operations channel: every business-meaningful moment in the
   # delivery lifecycle, across all seven types, from the agent's authored change
   # through CI, authorization, and the outcome that landed.
-  - name: delivery-ops
-    url: https://delivery-events.example.com/agledger
+  # delivery-ops
+  - url: https://delivery-events.example.com/agledger
     signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
     eventTypes:
       - record.created               # a change authored, a CI conclusion relayed, or a gate opened
@@ -30,8 +32,8 @@ subscriptions:
   # server-side via recordTypes to the two AGLedger-held gates, so this channel
   # only ever sees merge and deploy authorizations; the notarize-only relays
   # never reach it.
-  - name: release-authorization
-    url: https://release-queue.example.com/agledger
+  # release-authorization
+  - url: https://release-queue.example.com/agledger
     signingAlg: ed25519       # vault-signed, offline-verifiable: the authorization trail
     eventTypes:
       - record.created               # a gate opened; the principal's queue entry

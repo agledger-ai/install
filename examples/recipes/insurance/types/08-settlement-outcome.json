@@ -50,7 +50,7 @@
       },
       "subrogationPotential": {
         "type": "boolean",
-        "description": "Optional. true flags this outcome for downstream subrogation (recovery from the at-fault third party). The recovery workflow itself is out of scope for this recipe; this only marks the hand-off on-chain."
+        "description": "Optional. true flags this outcome for downstream subrogation (recovery from the at-fault third party). The recovery workflow itself is out of scope for this recipe; this only marks the referral on-chain."
       },
       "adverseActionNoticeRef": {
         "type": "string",

@@ -23,9 +23,10 @@ metadata:
   # Bundled Postgres has no ordered pre-start phase to hook into (see
   # migration-job.yaml: its migration is a normal resource, because Helm
   # creates the bundled database only after every pre-install hook has
-  # finished) and one role owns and serves everything there, which carries
-  # every privilege by ownership. So this gate is external-database only,
-  # which is also the only path that can misprovision the role.
+  # finished), and there the chart provisions the runtime role itself: the
+  # migration Job gives agledger_app its login and grants from the Secret it
+  # renders. So this gate is external-database only, which is also the only
+  # path where someone else provisions the role.
   name: {{ include "agledger.fullname" . }}-preflight
   labels:
     {{- include "agledger.labels" . | nindent 4 }}
@@ -54,6 +55,7 @@ spec:
         app.kubernetes.io/component: preflight
     spec:
       serviceAccountName: {{ include "agledger.serviceAccountName" . }}
+      automountServiceAccountToken: {{ include "agledger.automountToken" . }}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -71,16 +73,19 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # The two checks that decide whether the runtime role can serve, plus
           # the one that refuses to let a Server start over a database where the
-          # baseline migration's placeholder role password is still live. The
+          # baseline migration's placeholder role password is still live, and
+          # boot-config, the refusals config load makes over plain settings
+          # (NODE_ENV, AGLEDGER_EXTERNAL_URL, database TLS, TRUST_PROXY and the
+          # parsed knobs), each of which would crash-loop the api and worker. The
           # rest of preflight's report is about a running Server (migration
           # state, connection headroom, the federation keys) and belongs to a
           # started stack, not to a gate that has to answer before one exists.
           #
           # role-passwords is safe to fail a release on because the migration
           # Job, at hook weight -5, has already run and closes that password on
-          # every run, including one with no migrations to apply. So an upgrade
-          # of an install that predates that behaviour repairs itself here
-          # rather than aborting; what reaches this gate is a database where the
+          # every run, including one with no migrations to apply. So a live
+          # placeholder password is closed there rather than aborting the
+          # release here; what reaches this gate is a database where the
           # repair could not be made, which is a credential to the whole chain
           # standing open and is worth a refusal.
           #
@@ -91,7 +96,7 @@ spec:
           # `--allow-fs-write` from a process not started with `--permission`.
           # Without the prefix the gate would fail at pre-execution and read as
           # a refused upgrade with no check named. preflight.js only reads.
-          command: ["/nodejs/bin/node", {{ include "agledger.permissionArgs" . }}"dist/scripts/preflight.js", "--only=runtime-role,role-passwords,topology,pgboss"]
+          command: ["/nodejs/bin/node", {{ include "agledger.permissionArgs" . }}"dist/scripts/preflight.js", "--only=boot-config,runtime-role,role-passwords,topology,pgboss"]
           # Deliberately the API's env, not the migration's: this pod has to
           # connect as the role the API will connect as, so it reads
           # DATABASE_URL from the same Secret and never the DATABASE_URL_MIGRATE
@@ -123,9 +128,15 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with (.Values.migrate.nodeSelector | default .Values.api.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

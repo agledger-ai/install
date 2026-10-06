@@ -58,6 +58,9 @@ spec:
         {{- include "agledger.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: postgres
     spec:
+      # Runs as the namespace's default account, and PostgreSQL never calls
+      # the Kubernetes API.
+      automountServiceAccountToken: false
       {{- if not (.Values.openshift).enabled }}
       {{- with ((.Values.postgres).bundled).podSecurityContext }}
       securityContext:

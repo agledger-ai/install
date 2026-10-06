@@ -14,10 +14,8 @@ data:
   HOST: "0.0.0.0"
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
   AGLEDGER_EXTERNAL_URL: {{ include "agledger.externalUrl" . | quote }}
-  # Post-v1.0 the migration baseline is frozen — the migrate job refuses to
-  # rebase an applied migration's checksum. Shipped migrations are immutable;
-  # every schema delta is a new numbered migration.
-  AGLEDGER_LAUNCH_FROZEN: "true"
+  {{- /* Generated once and read back on every upgrade: see agledger.instanceId. */}}
+  AGLEDGER_INSTANCE_ID: {{ include "agledger.instanceId" . | quote }}
   TRUST_PROXY: {{ .Values.config.trustProxy | quote }}
   OTEL_PROVIDER: {{ .Values.config.otelProvider | quote }}
   {{- /* Absent by default, and absent is the off switch: the Server starts its
@@ -51,7 +49,7 @@ data:
   {{- if .Values.config.allowNonDefaultSigningAlg }}
   AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG: "true"
   {{- end }}
-  DATABASE_POOL_MAX: {{ .Values.database.poolMax | quote }}
+  DATABASE_POOL_MAX: {{ include "agledger.positiveWholeNumber" (dict "value" .Values.database.poolMax "name" "database.poolMax" "max" 262143) | quote }}
   DATABASE_IDLE_IN_TX_TIMEOUT_MS: {{ include "agledger.idleInTxTimeoutMs" . | quote }}
   DATABASE_STATEMENT_TIMEOUT_MS: {{ include "agledger.statementTimeoutMs" . | quote }}
   WORKER_HEALTH_PORT: {{ .Values.worker.healthPort | quote }}
@@ -80,13 +78,22 @@ data:
   {{- if (.Values.marketplace).productId }}
   AWS_MARKETPLACE_PRODUCT_ID: {{ (.Values.marketplace).productId | quote }}
   {{- end }}
+  {{- if (.Values.signing).previousKmsKeyArn }}
+  VAULT_SIGNING_KEY_PREVIOUS_KMS_ARN: {{ .Values.signing.previousKmsKeyArn | quote }}
+  {{- end }}
+  {{- if (.Values.signing).trustAnchors }}
+  VAULT_TRUST_ANCHORS: {{ .Values.signing.trustAnchors | quote }}
+  {{- end }}
+  {{- if (.Values.signing).distrustedKeys }}
+  VAULT_DISTRUSTED_KEYS: {{ .Values.signing.distrustedKeys | quote }}
+  {{- end }}
   {{- if (.Values.signing).kmsKeyArn }}
   VAULT_SIGNING_KEY_KMS_ARN: {{ .Values.signing.kmsKeyArn | quote }}
   {{- if .Values.signing.kmsEndpoint }}
   VAULT_SIGNING_KEY_KMS_ENDPOINT: {{ .Values.signing.kmsEndpoint | quote }}
   {{- end }}
   {{- if .Values.signing.remoteMaxPerSecond }}
-  VAULT_SIGNING_REMOTE_MAX_PER_SECOND: {{ .Values.signing.remoteMaxPerSecond | quote }}
+  VAULT_SIGNING_REMOTE_MAX_PER_SECOND: {{ include "agledger.positiveWholeNumber" (dict "value" .Values.signing.remoteMaxPerSecond "name" "signing.remoteMaxPerSecond" "max" 100000) | quote }}
   {{- end }}
   {{- end }}
   {{- if (.Values.marketplace).publicKeyVersion }}

@@ -128,10 +128,11 @@ api:
   # a pre-upgrade hook Job, so it finishes while the pods you are leaving are
   # still serving. Recreate holds that window to the pod swap; RollingUpdate
   # stretches it across the whole rollout, with pods of both releases answering
-  # this Service at once. Migrations are written to serve the previous release,
-  # so nothing has to be ordered around it, but a security control a release
-  # introduces binds only the pods carrying that release. Read connectedVersions
-  # on GET /v1/admin/system-health to see which versions are still attached.
+  # this Service at once. Within a major, migrations are written to serve the
+  # previous release, so nothing has to be ordered around it, but a security
+  # control a release introduces binds only the pods carrying that release.
+  # Read connectedVersions on GET /v1/admin/system-health to see which versions
+  # are still attached.
   # deploy/README.md, "Two releases against one schema".
   strategy:
     type: Recreate
@@ -460,7 +461,9 @@ postgres:
     # writes no Secret and reads no key out of yours: naming database.externalUrl
     # there still means this release runs no bundled PostgreSQL.
     enabled: false
-    image: postgres:18-alpine
+    # Pinned by digest, the same reference the Compose bundled overlay pins.
+    # A mirrored registry replaces the whole reference, digest included.
+    image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
     # Server-side guards for the bundled instance, matched to what the Compose
     # bundled-PG overlay (deploy/compose/docker-compose.postgres.yml) already
     # sets, so the two bundled paths behave the same way. Without these the
@@ -469,8 +472,8 @@ postgres:
     #
     # `statement_timeout` is the cap every app session inherits when
     # database.statementTimeoutMs is left at 0. The few engine statements that
-    # cannot survive any cap (the boot-time queue-policy advisory lock, the
-    # partition-creation DDL, and pg-boss's CONCURRENTLY index builds) lift it
+    # cannot survive any cap (the partition-creation DDL and pg-boss's
+    # CONCURRENTLY index builds) lift it
     # for themselves, so this bounds ordinary queries only. Rendered as
     # `postgres -c key=value`, sorted by key.
     parameters:
@@ -478,7 +481,13 @@ postgres:
       log_statement: ddl
       shared_buffers: 256MB
       statement_timeout: 30s
-    password: ""  # Empty = auto-generated 32-char random, preserved across upgrades (like apiKeySecret). Set to pin a specific password; also used in DATABASE_URL.
+    password: ""  # Empty = auto-generated 32-char random, preserved across upgrades (like apiKeySecret). Set to pin a specific password.
+                  # This is the owner role's password, used by the migration Job (DATABASE_URL_MIGRATE)
+                  # and backups. The API and worker connect as agledger_app under a password derived
+                  # from it (AGLEDGER_APP_ROLE_PASSWORD), which the migration Job sets on every run, so
+                  # the process serving requests does not own the audit chain's tables. The api and
+                  # worker containers have POSTGRES_PASSWORD and DATABASE_URL_MIGRATE cleared, so they
+                  # do not hold the owner credential either.
                   # Preservation reads the release Secret, which needs a real helm install: under a
                   # renderer it regenerates and stops matching what initdb set. See secrets.gitops.
     storage: 10Gi
@@ -522,6 +531,39 @@ postgres:
           - ALL
 
 # ---
+# Instance id
+# ---
+# AGLEDGER_INSTANCE_ID: this Server's identity. Every external anchor key is
+# written under `vault-anchors/<instanceId>/`, and with federation on it is the
+# identity peers store (`peerHubId`, a UUID). Two releases on one id and one
+# anchor bucket read each other's anchors.
+#
+# Empty generates a UUID on first install and keeps it: the chart writes it into
+# its ConfigMap and reads it back with `lookup` on every upgrade, the way it
+# keeps the generated values under `secrets`. A release whose ConfigMap exists
+# but carries no id (installed by a chart that set none) keeps `default`, the
+# prefix it has anchored under. The Server records the id it first boots with
+# in its database and refuses a boot under a different one, naming both, so set
+# this when the value cannot come from `lookup`:
+#   - under a renderer (Argo CD, `helm template | kubectl apply`): secrets.gitops
+#     refuses the render until this is pinned;
+#   - with secrets.existingSecret and no ConfigMap to read back (a first install,
+#     or any render that cannot see the cluster): the render refuses until this
+#     is pinned. helm-install.sh mints one on such a first install, passes it,
+#     and prints it to pin;
+#   - a release restored from another release's backup: the post-restore Job
+#     prints the database's id (POST_RESTORE_INSTANCE_ID), and this takes it;
+#   - a release installed over a database whose ConfigMap is gone.
+# Read the current value off the ConfigMap the api Deployment names:
+#   kubectl get configmap -n <ns> "$(kubectl get deploy -n <ns> \
+#     -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=api \
+#     -o jsonpath='{.items[0].spec.template.spec.containers[0].envFrom[0].configMapRef.name}')" \
+#     -o jsonpath='{.data.AGLEDGER_INSTANCE_ID}'
+# A secrets.existingSecret carrying AGLEDGER_INSTANCE_ID overrides the
+# ConfigMap's, because envFrom takes the later source.
+instanceId: ""
+
+# ---
 # Extra environment (API + worker)
 # ---
 # Inject additional env vars into both workloads. The primary use is secrets
@@ -532,19 +574,11 @@ postgres:
 # ideally by reference to an operator-managed (or External-Secrets-synced) Secret
 # rather than inline plaintext.
 #
-# FEDERATION is configured here too, and one of its variables has no working
-# default: AGLEDGER_INSTANCE_ID is this Server's identity, the value peers store
-# and look it up by. Unset, the Server has no usable identity and a peer's
-# handshake refuses what it can offer, because `peerHubId` is declared
-# `format: uuid`. The Compose installer generates one; a chart install has to
-# supply it, and it must be a stable UUID (survives restarts, distinct per
-# Server) rather than a value templated per release.
-#
-#   - name: AGLEDGER_INSTANCE_ID
-#     value: "<uuidgen output, pinned in your values file>"
-#
-# `GET /federation/v1/admin/instance` reports `configured: false` and names
-# every missing piece until this and both federation keys are set.
+# FEDERATION keys are configured here too. The Server's federation identity
+# is not: it is AGLEDGER_INSTANCE_ID, which `instanceId` below supplies, and the
+# render refuses an extraEnv entry of that name. `GET
+# /federation/v1/admin/instance` reports `configured: false` and names every
+# missing piece until both federation keys are set.
 #
 # DATABASE_URL is not settable here on the managed paths: the chart's own
 # Secret already supplies it to every workload through envFrom, and a second
@@ -559,7 +593,7 @@ extraEnv: []
   #       key: acme
 
 # ---
-# Extra volumes on the API and worker pods
+# Extra volumes on the API, worker, migration and preflight pods
 # ---
 # For settings that take a FILE PATH rather than a value. `extraEnv` sets the
 # variable; these put the file where it points. Without them, three of the four
@@ -570,7 +604,12 @@ extraEnv: []
 # says "mount the files into the container" and could; this one could not.
 #
 # Rendered on both workloads, so a file the API reads is also present for the
-# worker rather than being half-configured.
+# worker rather than being half-configured. Also rendered on the migration and
+# preflight Jobs, which connect to the database with the same config: a private
+# CA bundle mounted here for `config.nodeExtraCaCerts` has to reach them too, or
+# an `sslmode=verify-full` database refuses the migration. Those Jobs are
+# pre-install hooks on an external database, so anything a volume names (a
+# ConfigMap, a Secret) must exist before `helm install`, not be created by it.
 #
 # Serving a customized /llms.txt, end to end:
 #
@@ -648,6 +687,8 @@ secrets:
   apiKeySecret: ""          # Auto-generated if empty (64-char random). Preserved across upgrades
                              # by reading the release Secret, which needs a real install: see
                              # secrets.gitops above before syncing this chart from a renderer.
+                             # A pinned value must be 32 characters or more: the Server refuses
+                             # to boot in production on anything shorter.
   vaultSigningKey: ""       # Ed25519 key for audit vault signatures. Generate with:
                              #   kubectl run keygen --rm -it --restart=Never \
                              #     --image=agledger/agledger:<same tag this chart deploys> \
@@ -658,7 +699,7 @@ secrets:
                              # prints the same command with the image already
                              # filled in. Add --algorithm es256 for FIPS hosts.
                              # Preserved across upgrades once set.
-  webhookEncryptionKey: ""
+  webhookEncryptionKey: ""  # optional. When set, held to the same 32-character floor as apiKeySecret
   webhookEncryptionKeyPrevious: ""  # optional. The previous WEBHOOK_ENCRYPTION_KEY after a rotation; stored secrets are re-encrypted under the current key on their next delivery
   # Bearer token for GET /metrics. Auto-generated (48 chars) if empty and
   # preserved across upgrades, so the ServiceMonitor and the Prometheus you
@@ -676,7 +717,11 @@ secrets:
                              # a SUPERUSER for DDL (migrations — see the event-trigger
                              # note on database.externalUrl: rds_superuser on RDS/Aurora,
                              # superuser on self-managed PG), agledger_app for DML
-                             # (API/Worker). scripts/setup-db-roles.sh wires this split.
+                             # (API/Worker). AGLEDGER_APP_ROLE_PASSWORD on the migrate
+                             # Job (migrate.extraEnv, or the existingSecret key below)
+                             # gives agledger_app its login under that password on
+                             # every migration, so this URL names the owner and
+                             # database.externalUrl names agledger_app with it.
   databaseUrlDirect: ""     # optional — a connection string that bypasses a
                              # connection pooler running in transaction mode
                              # (PgBouncer pool_mode=transaction, RDS Proxy).
@@ -726,13 +771,20 @@ secrets:
                              #   API_KEY_SECRET        (required) — HMAC key for API key hashing
                              #   VAULT_SIGNING_KEY     (required unless signing.kmsKeyArn is set) — Ed25519 key
                              #     for audit vault signatures
-                             #   VAULT_SIGNING_KEY_PREVIOUS (optional) — a key this install
-                             #     has stopped signing with, registered as retired so its
-                             #     history stays verifiable
+                             #   VAULT_SIGNING_KEY_PREVIOUS (optional): during a key change,
+                             #     the key the running pods sign with. The first pod on the
+                             #     new key signs the succession that admits it with both
+                             #     keys; remove it once the old key is retired
                              #   WEBHOOK_ENCRYPTION_KEY (optional) — AES key for webhook payloads
                              #   DATABASE_URL_MIGRATE  (optional) — Owner-role URL for migrations
                              #   DATABASE_URL_DIRECT   (optional) — pooler-bypassing URL for
                              #     LISTEN, session advisory locks and migrations
+                             #   AGLEDGER_APP_ROLE_PASSWORD (optional): the migration Job
+                             #     gives agledger_app a login under it, CREATE on the
+                             #     database and the pg-boss schema, on every run. Set it
+                             #     with DATABASE_URL naming agledger_app and
+                             #     DATABASE_URL_MIGRATE naming the owner, so the API does
+                             #     not serve as the role that owns the audit chain.
                              #   AGLEDGER_LICENSE      (optional): compact key, agl_<tier>_v1_...
                              #   AGLEDGER_LICENSE_KEY  (optional) — PEM license string
                              #   METRICS_AUTH_TOKEN    (optional) — bearer token for GET /metrics.
@@ -786,12 +838,21 @@ marketplace:
 # chain entry, checkpoint, Receipt, signed webhook delivery and certificate.
 # With kmsKeyArn set the chart writes no VAULT_SIGNING_KEY and does not
 # require secrets.vaultSigningKey; a key this install has signed with before
-# goes in secrets.vaultSigningKeyPrevious so its history stays verifiable.
+# goes in secrets.vaultSigningKeyPrevious for the upgrade that moves to KMS, so
+# the first pod on the KMS key signs the succession that admits it.
+#
+# A vault key is trusted only when a signed statement links it to a key a pod
+# holds. The database stores those statements and vouches for none of them,
+# so a key changes by succession: set the new key with the old one as its
+# predecessor (secrets.vaultSigningKeyPrevious, or previousKmsKeyArn for a
+# KMS-held one), roll, then retire the old key from a pod on the new one. A pod
+# whose key nothing links to the history signs nothing and reports
+# signingKey.gate "unanchored".
 #
 # The key must be asymmetric, key spec ECC_NIST_P256, usage SIGN_VERIFY. KMS
 # signs no Ed25519, so this is an ES256 chain: set
 # config.allowNonDefaultSigningAlg: true and upgrade every consumer that
-# verifies this chain first (@agledger/verify 1.4.0 or newer). The pods reach
+# verifies this chain (@agledger/verify 2.0.0 or newer). The pods reach
 # KMS through IRSA: grant kms:GetPublicKey and kms:Sign on the key to a role
 # and name it in serviceAccount.annotations.
 #
@@ -804,12 +865,27 @@ signing:
   remoteMaxPerSecond: null  # Per-process ceiling on Sign calls (default 100). KMS Sign quotas are
                             # per account and region and shared with every caller, so the sum
                             # across api and worker replicas has to sit under the quota.
+  previousKmsKeyArn: ""     # KMS-to-KMS key change: the KMS key the running pods sign with. It signs the
+                            # succession admitting kmsKeyArn and nothing else; remove it once retired.
+                            # The pods need kms:GetPublicKey and kms:Sign on it for the change.
+  trustAnchors: ""          # Comma list of sha256:<hex> vault key pins the pods also trust. Recovery only:
+                            # re-joins history no key in hand links to (a lost previous key, recovery
+                            # after a leak). dist/scripts/signing-key-digest.js prints a pin.
+  distrustedKeys: ""        # Comma list of sha256:<hex> pins of vault keys that leaked, each optionally
+                            # @<RFC 3339 instant> for when: what the key signs from then (default: its
+                            # retirement) counts for nothing, so a closure it signs stops cutting off the
+                            # keys the pods hold. A forced retirement's response names the entry.
 
 # ---
 # Application Config
 # ---
 config:
   logLevel: info
+  # Behind an ingress or load balancer, the addresses or CIDR blocks it connects
+  # from ("10.0.0.0/8", or a comma list), so X-Forwarded-For is read only when a
+  # proxy you run wrote it. Not true: that trusts every hop, the client writes
+  # the first one, and API key allowedIps, rate-limit buckets and audit-row
+  # addresses then read whatever the client sent. The Server warns at boot on it.
   trustProxy: false
   nodeEnv: production
   externalUrl: ""  # Public URL where this instance is reachable (e.g., https://agledger.example.com).
@@ -890,8 +966,8 @@ config:
   corsEnabled: true
   helmetEnabled: true
   # Opt-in acknowledgment for a non-default vault signing algorithm (e.g. an
-  # ES256 key on a FIPS-mode cluster). Chain consumers need @agledger/verify
-  # 1.4.0+. Maps to AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG.
+  # ES256 key on a FIPS-mode cluster). Chain consumers need
+  # @agledger/verify 2.0.0 or newer. Maps to AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG.
   allowNonDefaultSigningAlg: false
   nodeExtraCaCerts: ""  # Path to CA bundle inside the container.
                          # For Aurora/RDS: /etc/ssl/certs/rds-global-bundle.pem (bundled in image)
@@ -1070,6 +1146,27 @@ backup:
   tolerations: []
 
 # ---
+# Post-restore Job
+# ---
+# The steps restore.sh runs after the migration on a Compose install: re-apply
+# the revocations made after the backup, write the restore marker the next boot
+# turns into a RESTORE_EPOCH chain entry, and compare the external anchors
+# against the restored database. They need the Server's whole configuration, so
+# on a cluster they run here, in the api's image with the api's env, volumes and
+# security context, rather than on the host that ran the restore.
+#
+# A CronJob that never fires (suspended, on a schedule that names February 31),
+# so it runs only when started by hand: `kubectl create job --from=cronjob/...`.
+# Its input is a Secret of the same name, which the runbook creates from the
+# directory restore.sh writes; without it the Job exits 2 and names what is
+# missing. restore.sh prints every command. Renders nothing that runs on its
+# own, which is why it is on by default: an install that turns it off has to
+# turn it back on before a restore, and a `helm upgrade` resets the Deployments'
+# replica counts, which would start the Server before these steps.
+postRestore:
+  enabled: true
+
+# ---
 # Monitoring (Prometheus Operator)
 # ---
 # All three render the SAME files the Compose stack mounts: the chart's
@@ -1108,10 +1205,15 @@ monitoring:
     # without this the `health` endpoint scrapes (the worker policy admits any
     # pod on that port) and the `http` one is dropped at the network layer with
     # a correct bearer token: half a ServiceMonitor, and nothing says why.
-    # Same entry shape as networkPolicy.ingressFrom. Set to [] if your cluster
-    # has its own policy for the monitoring namespace.
+    # Same entry shape as networkPolicy.ingressFrom, namespaceSelector required
+    # for the same reason. The default names the namespace kube-prometheus-stack
+    # is most often installed into; point it at yours. Set to [] if your
+    # cluster has its own policy for the monitoring namespace.
     scrapeFrom:
-      - podSelector:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+        podSelector:
           matchLabels:
             app.kubernetes.io/name: prometheus
   prometheusRule:
@@ -1170,11 +1272,27 @@ monitoring:
 # ---
 networkPolicy:
   enabled: true
+  # Who may reach the API on port 3000. Each entry is a namespaceSelector AND a
+  # podSelector, and the namespaceSelector is required: a pod label alone is not
+  # an identity, since any workload can label its pod `ingress-nginx`, so a
+  # label matched in every namespace admits whoever claims it. The defaults name
+  # the namespaces each controller's own install uses (k3s runs Traefik in
+  # kube-system). Point them at yours if it differs, or the controller's
+  # traffic is dropped and the API answers nothing through the ingress.
+  # `namespaceSelector: {}` admits every namespace, when that is what you mean.
   ingressFrom:
-    - podSelector:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+      podSelector:
         matchLabels:
           app.kubernetes.io/name: ingress-nginx
-    - podSelector:
+    - namespaceSelector:
+        matchExpressions:
+          - key: kubernetes.io/metadata.name
+            operator: In
+            values: [traefik, kube-system]
+      podSelector:
         matchLabels:
           app.kubernetes.io/name: traefik
   # Source CIDRs allowed to reach the API on port 3000, in addition to the
@@ -1184,6 +1302,31 @@ networkPolicy:
   # Set this to your VPC or subnet CIDR(s) instead of disabling the policy.
   ingressCIDRs: []
   #  - 10.0.0.0/16
+  # Egress rules appended to the api and worker policies, in NetworkPolicy
+  # `egress` shape. The shipped rules admit DNS, the database, the OTLP
+  # collector, and 443 to public addresses only, so anything else the Server
+  # connects to needs an entry here. The common one is an anchor store that is
+  # not public S3 on 443: an in-cluster object store (MinIO on 9000, for an
+  # air-gapped install), or a store on a private address (an S3 interface
+  # endpoint, an on-premises appliance). Name the store's pods and namespace,
+  # or its CIDR, and its port:
+  #  - to:
+  #      - namespaceSelector:
+  #          matchLabels:
+  #            kubernetes.io/metadata.name: minio
+  #        podSelector:
+  #          matchLabels:
+  #            app.kubernetes.io/name: minio
+  #    ports:
+  #      - port: 9000
+  #        protocol: TCP
+  #  - to:
+  #      - ipBlock:
+  #          cidr: 10.20.0.0/16
+  #    ports:
+  #      - port: 443
+  #        protocol: TCP
+  extraEgress: []
 
 # ---
 # Pod Disruption Budget
@@ -1199,6 +1342,11 @@ serviceAccount:
   create: true
   name: ""
   annotations: {}           # e.g. eks.amazonaws.com/role-arn for IRSA (KMS custody, anchoring)
+  # Mount the account's Kubernetes API token into the api, worker, migration,
+  # preflight and backup pods. Off: the Server never calls the Kubernetes API,
+  # and IRSA and EKS Pod Identity inject their own token. Turn it on only for a
+  # sidecar that authenticates with it (a Vault Agent on Kubernetes auth).
+  automountToken: false
 
 # ---
 # Provisioning (YAML config-as-code)

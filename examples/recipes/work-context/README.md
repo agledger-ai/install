@@ -1,7 +1,7 @@
 # Agent Work Context: AGLedger horizontal recipe
 
 Durable work state for AI agents, checkpointed as immutable signed records, so
-a fresh session with no prior conversation resumes or takes handoff of
+a fresh session with no prior conversation resumes or takes over
 in-progress work. One contract type and a small convention set. Unlike the
 vertical recipes in this directory, this one is domain-neutral: it scaffolds
 HOW agents carry work state, not WHAT the work is.
@@ -26,7 +26,7 @@ agent. "A fresh agent resumes the work" means a new session of the SAME
 agent:
 
 - **Resume**: the new session presents the agent's existing key.
-- **Handoff with visible succession**: mint an additional key bound to the
+- **Visible succession**: mint an additional key bound to the
   same agent for the successor session (`POST /v1/admin/api-keys`,
   admin-mediated). The vault's signed attribution is two-level,
   `actorOwnerId` (agent) and `actorId` (key), both inside the signature, so
@@ -234,10 +234,11 @@ both dialects:
   envelope (detail, validationErrors, schemaUrl). So does the create-time
   resolution of `supersedesRecordId`: a target outside your org is a refusal,
   not a dangling claim on the chain.
-- **What A2A still does not carry** is `references`, `metadata`, `dependsOn`
-  and `riskClassification`, so a fleet that wants A2A task ids checkable from
-  the chain writes those checkpoints over REST. Nothing else about the recipe
-  changes with the door.
+- **`create_record` takes the REST create body** except `orgId`, which the
+  key supplies: `references`, `metadata`, `dependsOn` and
+  `riskClassification` included, under the same limits. A fleet that wants A2A
+  task ids checkable from the chain writes them as `references` from either
+  door. Nothing else about the recipe changes with the door.
 
 ## Limits
 

@@ -19,7 +19,7 @@ engine and not the compliance officer.
 
 This recipe was built and exercised against OpenSanctions, a production OFAC / EU /
 UN / PEP screening engine (yente), driving real screening matches, so the gate
-hand-off matches real sanctions dispositions and the no-tip-off notice obligations.
+decision matches real sanctions dispositions and the no-tip-off notice obligations.
 
 ## What you get
 
@@ -103,11 +103,12 @@ The screening orchestrator, the Level-1 analyst (04), and the Level-2 / MLRO off
 (05) are distinct principals. Provision distinct agent keys, ideally
 `AGLedger-On-Behalf-Of`-bound to the named humans via your org IdP. AGLedger records
 who rendered each verdict, so a single identity that both dispositions an alert and
-decides the onboarding is attributable on-chain and catchable in audit. The structural
-guard prevents one identity from being both principal and performer within a single
-record; cross-tier separation (L1 distinct from L2 across records) is wired by the
-deployment through key assignment, and the notary attributes every verdict so the chain
-shows who decided what.
+decides the onboarding is attributable on-chain and catchable in audit. The engine
+refuses the verdict from a performer who is not the principal, but it accepts a record
+where one identity is both principal and performer: that record carries
+`selfPrincipal: true`, so a reader can see it. Separation within a record and across
+tiers (L1 distinct from L2 across records) is wired by the deployment through key
+assignment, and the notary attributes every verdict so the chain shows who decided what.
 
 ## The inverted notice (no tipping off)
 
@@ -155,12 +156,13 @@ external registry, no shared signing infrastructure.
 
 ```bash
 export AGLEDGER_API_URL=https://agledger.internal.example
-export AGLEDGER_API_KEY=agl_...   # an admin/platform key with schemas:write
+export AGLEDGER_API_KEY=agl_adm_...   # an admin key with schemas:write; register.sh refuses a platform key
 ./register.sh
 ```
 
 `register.sh` POSTs each type to `POST /v1/schemas` in order and prints what landed.
-Re-running registers a new version of any type whose schema changed compatibly; an
+Re-running registers a new version of any type whose schema changed compatibly, and a type whose file is unchanged answers 200 with its current version
+and registers nothing; an
 incompatible change is rejected and reported. See `register.sh` for the
 `RECIPE_FORCE=1` reset option (destructive; scratch orgs only).
 
