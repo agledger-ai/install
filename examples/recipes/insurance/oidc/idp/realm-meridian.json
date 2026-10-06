@@ -13,7 +13,7 @@
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "fullScopeAllowed": false,
-      "secret": "adjuster-secret-1",
+      "secret": "${ADJUSTER_SECRET}",
       "protocolMappers": [
         {
           "name": "aud-agledger",
@@ -31,7 +31,7 @@
           "protocolMapper": "oidc-hardcoded-claim-mapper",
           "config": {
             "claim.name": "agledger_scopes",
-            "claim.value": "[\"records:read\", \"records:write\", \"completions:read\", \"completions:write\", \"agents:read\", \"disputes:read\", \"events:read\", \"schemas:read\", \"audit:read\", \"compliance:read\", \"drift:read\"]",
+            "claim.value": "[\"records:read\", \"records:write\", \"completions:read\", \"completions:write\", \"agents:read\", \"disputes:read\", \"disputes:write\", \"events:read\", \"schemas:read\", \"audit:read\", \"compliance:read\", \"drift:read\"]",
             "jsonType.label": "JSON",
             "access.token.claim": "true",
             "id.token.claim": "false"
@@ -49,7 +49,7 @@
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "fullScopeAllowed": false,
-      "secret": "supervisor-secret-1",
+      "secret": "${SUPERVISOR_SECRET}",
       "protocolMappers": [
         {
           "name": "aud-agledger",
@@ -67,7 +67,7 @@
           "protocolMapper": "oidc-hardcoded-claim-mapper",
           "config": {
             "claim.name": "agledger_scopes",
-            "claim.value": "[\"records:read\", \"records:write\", \"completions:read\", \"completions:write\", \"agents:read\", \"disputes:read\", \"events:read\", \"schemas:read\", \"audit:read\", \"compliance:read\", \"drift:read\"]",
+            "claim.value": "[\"records:read\", \"records:write\", \"completions:read\", \"completions:write\", \"agents:read\", \"disputes:read\", \"disputes:write\", \"events:read\", \"schemas:read\", \"audit:read\", \"compliance:read\", \"drift:read\"]",
             "jsonType.label": "JSON",
             "access.token.claim": "true",
             "id.token.claim": "false"
@@ -85,7 +85,7 @@
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "fullScopeAllowed": false,
-      "secret": "auditor-secret-1",
+      "secret": "${AUDITOR_SECRET}",
       "protocolMappers": [
         {
           "name": "aud-agledger",
@@ -121,7 +121,7 @@
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "fullScopeAllowed": false,
-      "secret": "unbound-secret-1",
+      "secret": "${UNBOUND_SECRET}",
       "protocolMappers": [
         {
           "name": "aud-agledger",

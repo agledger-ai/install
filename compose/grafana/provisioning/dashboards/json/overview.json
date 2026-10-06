@@ -1164,7 +1164,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Pending jobs per queue. A backlog that grows without the worker's processed rate rising means the worker is down or stuck.",
+      "description": "Jobs per queue ready to run and not yet taken, at most a minute old. Retries waiting out a backoff are deferred and not counted, since no added worker runs them sooner. A backlog that grows without the worker's processed rate rising means the worker is down or stuck.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1241,7 +1241,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (queue) (agledger_pgboss_queue_size{job=~\"$job\", state=\"queued\"})",
+          "expr": "max by (queue) (agledger_pgboss_queue_size{job=~\"$job\", state=\"ready\"})",
           "legendFormat": "{{queue}}",
           "refId": "A"
         }

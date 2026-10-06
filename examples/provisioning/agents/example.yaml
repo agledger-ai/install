@@ -3,7 +3,7 @@
 # an earlier run). The natural key is (orgName, displayName).
 agents:
   - displayName: External Monitor Agent
-    orgName: Acme Corp
+    orgName: Default
     agentClass: system
     # The external identity this agent answers to. Declared here, on our side,
     # so POST /v1/auth/oidc/cert can resolve the agent from an IdP token that

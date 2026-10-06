@@ -157,18 +157,16 @@ The records link through explicit reference fields (`obligationRef` → `prepare
 for `parentRecordId` delegation to chain them; delegation would put the whole filing under a single
 identity, which defeats the separation of duties between the preparer and the declaring officer.
 
-### The gate and separation of duties live in your orchestrator, not the type
+### The gate is the engine's; separation of duties is your orchestrator's
 
-`gateMode` is a record-creation parameter, not a schema field, so a contract type cannot stop a
-caller from creating the declaration with `gateMode: auto` and bypassing the human verdict.
-Likewise the engine only blocks a performer from rendering the verdict on a record they performed;
-it does not reject a record where a single identity is both principal and performer, so a
-self-declaration is not refused. So your orchestrator must own the policy:
-
-- route every filing's declaration through the principal gate, and never set `gateMode: auto` on
-  `vat-return-declaration-v1`;
-- provision the declaring officer as an identity distinct from the preparer (and, for an
-  agent-firm filing, the authorising client officer distinct from the agent).
+`vat-return-declaration-v1` declares `defaultGateMode: principal` and carries no gate rules, so the
+engine refuses a create that passes `gateMode: auto` (400): only the principal's verdict settles a
+declaration. The engine refuses the verdict from a performer who is not the principal, but it does
+not reject a record where a single identity is both principal and performer, so a self-declaration
+is not refused; the record carries `selfPrincipal: true`, so a reader can see it. Separation is
+yours to enforce through the keys you issue: provision the declaring officer as an identity
+distinct from the preparer (and, for an agent-firm filing, the authorising client officer distinct
+from the agent).
 
 ### Keep type descriptions short if you will distribute
 
@@ -183,12 +181,13 @@ no shared signing infrastructure.
 
 ```bash
 export AGLEDGER_API_URL=https://agledger.internal.example
-export AGLEDGER_API_KEY=agl_...   # an admin/platform key with schemas:write
+export AGLEDGER_API_KEY=agl_adm_...   # an admin key with schemas:write; register.sh refuses a platform key
 ./register.sh
 ```
 
 `register.sh` POSTs each type to `POST /v1/schemas` in order and prints what landed. Re-running
-registers a new version of any type whose schema changed compatibly; an incompatible change is
+registers a new version of any type whose schema changed compatibly, and a type whose file is unchanged answers 200 with its current version
+and registers nothing; an incompatible change is
 rejected and reported. See `register.sh` for the `RECIPE_FORCE=1` reset option (destructive;
 scratch orgs only).
 

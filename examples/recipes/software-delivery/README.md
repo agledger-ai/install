@@ -93,9 +93,10 @@ A rejected environment gate concludes the run `failure` (not `cancelled`); key t
   GitHub 409s if the head moved after authorization.
 - **Separation of duties (deployment configuration, not type-enforced).** Provision the
   authoring agent, the release agent, and the release-manager principal as distinct
-  identities with their own keys. AGLedger permits self-principal on create, and
-  `gateMode: auto` on create can override a `principal` default; the orchestrator must not
-  do either on the gated types. GitHub's native SoD
+  identities with their own keys. AGLedger permits self-principal on create, and because
+  the gated types carry echo rules, `gateMode: auto` on create overrides their `principal`
+  default (the engine refuses that override only on a type with no gate rules); the
+  orchestrator must not do either on the gated types. GitHub's native SoD
   (author-cannot-self-approve 422; environment `prevent_self_review`) is an independent
   second line: this is the one vertical where the SoR is stricter than the notary, and both
   lines are worth keeping on.
@@ -200,12 +201,13 @@ registry, no shared signing infrastructure.
 
 ```bash
 export AGLEDGER_API_URL=https://agledger.internal.example
-export AGLEDGER_API_KEY=agl_...   # an admin/platform key with schemas:write
+export AGLEDGER_API_KEY=agl_adm_...   # an admin key with schemas:write; register.sh refuses a platform key
 ./register.sh
 ```
 
 `register.sh` POSTs each type to `POST /v1/schemas` in order and prints what landed.
-Re-running registers a new version of any type whose schema changed compatibly; an
+Re-running registers a new version of any type whose schema changed compatibly, and a type whose file is unchanged answers 200 with its current version
+and registers nothing; an
 incompatible change is rejected and reported. See `register.sh` for the `RECIPE_FORCE=1`
 reset option (destructive; scratch orgs only).
 

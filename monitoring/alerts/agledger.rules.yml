@@ -105,10 +105,13 @@ groups:
           summary: "Gate-worker jobs gave up after exhausting their retries"
           description: >-
             A cascade rollup that exhausts its retries on the last child's job leaves the
-            parent ACTIVE with every child terminal. The consistency sweep settles it five
-            to ten minutes after the tree goes quiet, so watch
+            parent ACTIVE with every child terminal. If a child failed, the consistency
+            sweep fails the parent (or expires it, past its own deadline) five to ten
+            minutes after the tree goes quiet, so watch
             agledger_auto_rollup_repaired_parents_total keep pace with
             agledger_auto_rollup_stuck_parents_total and only intervene if it does not.
+            If none failed, nothing was lost: the parent waits for its performer's own
+            completion and is counted by agledger_delegation_parents_awaiting_own_completion.
             A lost advisory pass leaves the record correctly awaiting its principal, minus
             the advisory annotation, permanently.
 
@@ -174,10 +177,12 @@ groups:
             limit against SIEM_BATCH_SIZE and SIEM_MAX_EVENT_BYTES.
 
       - alert: AGLedgerSiemPollerFallingBehind
-        # Age of the oldest system_audit_log row the poller has not forwarded,
-        # measured each cycle rather than inferred from how the cycle ended, so
-        # it reads the same whether the poller is saturated, blocked behind a
-        # long write transaction it must not page over, or simply stopped.
+        # Age of the oldest events or system_audit_log row the poller's cursor
+        # has not passed, measured each cycle rather than inferred from how the
+        # cycle ended, so it reads the same whether the poller is saturated or
+        # blocked behind a long write transaction it must not page over. A
+        # poller that stops measuring drops out through the freshness gate
+        # below instead, and a cycle that throws is AGLedgerSiemExportDegraded's.
         #
         # `max_over_time`, not the bare gauge: the worker is the process that
         # drains, only one of its replicas holds the cursor row per cycle, and a
@@ -446,6 +451,7 @@ groups:
           (sum(increase(agledger_provisioning_reload_failures_total[15m])) or vector(0))
           + (sum(increase(agledger_llms_txt_customization_load_failures_total[15m])) or vector(0))
           + (sum(increase(agledger_schema_warmcache_refresh_failures_total[15m])) or vector(0))
+          + (sum(increase(agledger_rate_limit_exemption_rebuild_failures_total[15m])) or vector(0))
           + (sum(increase(agledger_cache_invalidation_drops_total[15m])) or vector(0)) > 0
         for: 5m
         labels:
@@ -456,6 +462,45 @@ groups:
           description: >-
             The running configuration may not match what is on disk, and replicas may be
             serving stale schemas.
+
+      - alert: AGLedgerCacheInvalidationListenerDown
+        # The rule above counts invalidations that arrived and could not be
+        # applied. A process whose LISTEN session is down receives none, so
+        # nothing there moves, and the reconnect-failure counter moves only on
+        # an attempt that fails: this gauge is the one reading that holds for
+        # the whole outage. Per instance, because each process holds its own
+        # session and one down is one replica serving stale caches.
+        expr: min by (instance, channel) (agledger_pg_listener_connected) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgercacheinvalidationlistenerdown"
+          summary: "{{ $labels.instance }} is not hearing cache invalidations"
+          description: >-
+            The {{ $labels.channel }} LISTEN session on {{ $labels.instance }} has been down for
+            5 minutes. Key revocations, signing-key retirements, rewind detections and
+            rate-limit exemption changes made on another replica reach it only when each
+            cache expires or is re-read, or when the session reconnects.
+
+      - alert: AGLedgerProvisioningErrors
+        # A partial provision: some files or entries did not load or apply,
+        # everything else did, and the Server runs healthy without them. The
+        # rule above sees only a reload that threw. Each API process reports
+        # its own last run, and a run that lost the lock to another replica
+        # leaves its readings alone, so `max` is the replica that last found
+        # the directory broken.
+        expr: max by (stage) (agledger_provisioning_errors) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerprovisioningerrors"
+          summary: "The provisioning directory did not fully {{ if eq $labels.stage \"load\" }}load{{ else }}apply{{ end }}"
+          description: >-
+            {{ $value | printf "%.0f" }} provisioning error(s) at the {{ $labels.stage }} stage
+            on the last run. The resources they name are missing from the running install,
+            and while any are at the load stage, prune is suppressed.
 
       - alert: AGLedgerOidcJtiReplayBurst
         # A verified token presented twice. Every other refusal in this file is
@@ -557,8 +602,71 @@ groups:
           runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgervaultintegritycheckfailed"
           summary: "Vault integrity check reported a broken chain"
           description: >-
-            The hash chain did not verify. Do not restart into this: capture the state
-            first, then GET /v1/admin/vault/scan for the affected range.
+            The hash chain or the key registry did not verify (a standing registry finding,
+            whose remedy is already carried out, does not count). Do not restart into this:
+            capture the state first, then GET /v1/admin/vault/scan for the affected range.
+
+      - alert: AGLedgerVaultKeyWindowViolation
+        # An entry signed outside its key's published window does not stop the
+        # chain being checkpointed, so the integrity check above can stay
+        # clean while an offline verifier fails every export carrying it with
+        # CHAIN_KEY_EXPIRED or CHAIN_KEY_NOT_YET_ACTIVE.
+        expr: sum by (reason) (increase(agledger_vault_key_window_violations_total[1h])) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgervaultkeywindowviolation"
+          summary: "A chain carries an entry signed outside its key's published window"
+          description: >-
+            Offline verification of the affected records fails with CHAIN_KEY_EXPIRED or
+            CHAIN_KEY_NOT_YET_ACTIVE. Run POST /v1/admin/vault/scan and read the reason on
+            each broken chain; reason signing_key_distrusted counts chains carrying an
+            entry a VAULT_DISTRUSTED_KEYS key signed after its distrust instant and before
+            its retirement, listed under distrustedEntries.
+
+      - alert: AGLedgerChainWritesRefused
+        # A detected rewind refuses every chain write with a 409 until an
+        # operator acknowledges it. A 409 is a client error to every other rule
+        # here, so AGLedgerHighErrorRate never sees it, and the refusal counter
+        # moves only when something tries to write. The gauge is each process's
+        # own flag, re-read from the database every 30 seconds, so it reads 1 on
+        # a Server nobody is writing to. max, not per instance: every process
+        # reads the same row, and one page is the answer.
+        expr: max(agledger_chain_writes_refused) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerchainwritesrefused"
+          summary: "This Server refuses every chain write until a detected rewind is acknowledged"
+          description: >-
+            External anchors hold a chain position past the one this database is on, which
+            is what a restore to an earlier backup leaves behind. Records, completions,
+            verdicts and every other chain write answer 409 until an operator reads GET
+            /v1/admin/vault/rewind and acknowledges at POST /v1/admin/vault/rewind/acknowledge.
+
+      - alert: AGLedgerVaultAnchorsNotLanding
+        # A checkpoint whose S3 anchor did not upload stays queued, and every
+        # checkpoint run retries it. Past two intervals plus an hour, at least
+        # two retries have failed: the store is unreachable, or refusing this
+        # Server's writes. Every API replica reads the same table on the same
+        # refresh, so `max` is the install. The interval is read from its own
+        # gauge because it is configurable. Both read 0 while anchoring is off,
+        # when nothing retries the queue.
+        expr: |
+          max(agledger_vault_anchor_pending_oldest_age_seconds)
+            > 2 * max(agledger_vault_anchor_interval_seconds) + 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgervaultanchorsnotlanding"
+          summary: "Vault checkpoints are not reaching the anchor store"
+          description: >-
+            The oldest checkpoint waiting for its S3 anchor was written over two checkpoint
+            intervals ago, so retries are failing. Its entries have no evidence outside the
+            database until one lands.
 
       - alert: AGLedgerCheckpointSkippedBrokenChain
         expr: increase(agledger_vault_checkpoint_skipped_broken_total[1h]) > 0
@@ -594,8 +702,10 @@ groups:
 
       - alert: AGLedgerVaultRemoteSignFailing
         # Individual Sign failures below the gate's threshold: each one is a
-        # refused write, and a steady trickle (throttling at the quota, an
-        # intermittent path) never trips the gate.
+        # refused write or a failed probe of the signing-key watch (which signs
+        # once a pass on every api and worker process, writes or not), and a
+        # steady trickle (throttling at the quota, an intermittent path) never
+        # trips the gate.
         expr: sum(rate(agledger_vault_remote_sign_seconds_count{outcome="error"}[10m])) > 0
         for: 10m
         labels:
@@ -695,9 +805,10 @@ groups:
 
       - alert: AGLedgerPartitionMaintenanceNotRunning
         # The other half: the job is not failing, it is not running. Covers a
-        # dead scheduler and a worker that has never completed a run. `for: 26h`
-        # clears the window after a restart, when the gauges are legitimately
-        # absent until the next 02:00.
+        # dead scheduler and a worker that has never completed a run. Every
+        # worker boot queues one run, so on a healthy install the gauges are
+        # absent for minutes after a restart, not until the next 02:00; `for: 26h`
+        # holds both halves to about one missed daily cycle.
         #
         # `max()` over the stamp, not the bare gauge. It is unlabelled, so
         # @prometheus-io/client materializes it at 0 on every worker process at
@@ -718,8 +829,10 @@ groups:
           summary: "Partition-management has not reported in over a day"
           description: >-
             The runway gauges have not been refreshed. Whatever they currently read is
-            stale, and on a restarted worker they are absent entirely. Confirm the worker
-            is up and its pg-boss schedule still holds the partition-management entry.
+            stale; if they are absent entirely, no worker has completed a run since it
+            started, though each worker queues one at boot. Confirm the worker is up, its
+            log shows the partition-management run, and its pg-boss schedule still holds
+            the partition-management entry.
 
       - alert: AGLedgerPartitionRunwayLow
         # 31 days is the number the gauge's own help text names. A healthy
@@ -730,13 +843,10 @@ groups:
         # ships an Alertmanager inhibit rule, so without this the same table
         # pages twice.
         #
-        # `min by (table)`, and the `min` is the load-bearing half at
-        # `worker.replicaCount: 2`. Every worker that has run the job holds its
-        # own copy of the reading and holds it for the life of the process, so
-        # a replica that ran it last month and has taken no tick since keeps
-        # serving the healthy 92 it saw then. `max` would let that stale copy
-        # hide the fresh one. `min` takes the worst reading any worker holds,
-        # so the rule errs toward firing rather than toward silence.
+        # `min by (table)`: every worker re-reads the runway every 10 minutes,
+        # so replicas agree within that, and where they briefly differ the
+        # worst reading wins, so the rule errs toward firing rather than
+        # toward silence. A hand refill shows within the same 10 minutes.
         expr: |
           (min by (table) (agledger_partition_runway_days) < 31)
           unless (min by (table) (agledger_partition_runway_days) < 7)
@@ -785,15 +895,16 @@ groups:
         #   - A row backdated before the earliest monthly partition, or dated
         #     further ahead than the job creates. Nothing is blocked, because
         #     ensure_future_partitions() only covers CURRENT_DATE through three
-        #     months out and would never have created that month. Migration 006
-        #     gave system_audit_log the MINVALUE partition its siblings already
-        #     had, so the backdated half is only reachable on an install whose
-        #     default already held such a row at upgrade time.
+        #     months out and would never have created that month.
+        #     system_audit_log has a MINVALUE partition below its earliest
+        #     month, as its siblings do, so a backdated row lands there rather
+        #     than in the default.
         #
         # `max by (table)`, the opposite of the runway rules above and for the
-        # same reason: here the unsafe direction is silence, so the rule takes
-        # the highest count any worker holds rather than letting a replica that
-        # last read zero speak for the table.
+        # same reason: here the unsafe direction is silence, so where replicas
+        # briefly differ the highest count wins. Every worker re-reads the
+        # count every 10 minutes, so a drained DEFAULT partition clears on all
+        # of them within that.
         expr: max by (table) (agledger_partition_default_rows) > 0
         for: 15m
         labels:
@@ -816,6 +927,47 @@ groups:
   # ---------------------------------------------------------------------------
   - name: agledger-federation
     rules:
+      - alert: AGLedgerFederationZeroRowNearHorizon
+        # A terminal record that should have federated and has no outbound row
+        # at all is re-driven by the zero-row sweep, oldest first, for as long
+        # as it is younger than the horizon. One older than that leaves the
+        # window and never reaches the peer. The oldest candidate's age is the
+        # only reading that sees the pool refilling faster than a batch drains.
+        #
+        # The age comes from the worker that refreshed last: the sweep runs on
+        # one replica per tick and the others keep what they read on their last
+        # one. And only while that refresh is under 15 minutes old (the sweep
+        # runs every 2), so a stopped sweep is AGLedgerMaintenanceSweepFailing's
+        # to report and not a frozen age paging here. The horizon is read from
+        # its own gauge because it is configurable.
+        expr: |
+          (
+            max by (kind) (
+              agledger_federation_zero_row_oldest_candidate_age_seconds
+              and on (instance, kind)
+              (
+                agledger_federation_zero_row_updated_timestamp_seconds
+                == on (kind) group_left ()
+                max by (kind) (agledger_federation_zero_row_updated_timestamp_seconds)
+              )
+            )
+            / on () group_left () max (agledger_federation_zero_row_horizon_seconds)
+          ) > 0.5
+          and on (kind)
+          (time() - max by (kind) (agledger_federation_zero_row_updated_timestamp_seconds) < 900)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerfederationzerorownearhorizon"
+          summary: "Federation zero-row recovery for {{ $labels.kind }} is past half its horizon"
+          description: >-
+            The oldest {{ $labels.kind }} record waiting for zero-row recovery is
+            {{ $value | humanizePercentage }} of the way to the horizon. Past it, the record
+            leaves the sweep's window and never reaches its peers. Raise
+            AGLEDGER_FEDERATION_ZERO_ROW_BATCH_SIZE, or find why the live publish path is
+            leaving records without an outbound row.
+
       - alert: AGLedgerFederationDeadLettered
         expr: increase(agledger_federation_outbound_retry_exhausted_total[1h]) > 0
         for: 0m
@@ -829,6 +981,26 @@ groups:
             never reach the peer without an operator redrive. Triage at
             GET /federation/v1/admin/dlq.
 
+      - alert: AGLedgerFederationDeliveriesGivenUp
+        # AGLedgerFederationDeadLettered fires once, when a leg exhausts its
+        # retries; the recovery sweep then re-enqueues it until a day after it
+        # first failed and stops. Past that the leg waits for a manual recover
+        # and pg-boss deletes it 14 days after it dead-lettered, so this
+        # reads the standing count rather than an event. Every API replica
+        # reads the same table, so `max` is the install.
+        expr: max(agledger_federation_dlq_jobs{sweep="given_up"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerfederationdeliveriesgivenup"
+          summary: "Federation deliveries the recovery sweep has stopped retrying"
+          description: >-
+            {{ $value | printf "%.0f" }} dead-lettered federation leg(s) first failed over a
+            day ago, so the recovery sweep no longer retries them. Each waits for
+            POST /federation/v1/admin/dlq/recover, and is lost to its peer when pg-boss
+            deletes it.
+
       - alert: AGLedgerFederationSchemaDigestMismatch
         expr: increase(agledger_federation_schema_digest_mismatch_total[1h]) > 0
         for: 0m
@@ -841,6 +1013,97 @@ groups:
             Operation "{{ $labels.operation }}". The two Servers registered the same
             (publisher, type, version) from different bytes. Re-import the manifest on one
             side so the digests agree.
+
+  # ---------------------------------------------------------------------------
+  # Stuck work. Rows that have stopped moving and wait on an operator: nothing
+  # in the engine retries them, so a counter reports them once, at the moment
+  # they stopped, and the gauges beside these rules report what is still there.
+  # ---------------------------------------------------------------------------
+  - name: agledger-stuck-work
+    rules:
+      - alert: AGLedgerWebhooksDeadLettered
+        # A dead-lettered delivery stays in webhook_delivery_dlq until an
+        # operator retries or discards it; nothing drains it. `paused` and
+        # `subscription_inactive` are left out: a pause is the operator's
+        # choice, and a subscription goes inactive by delete, provisioning
+        # prune, or the engine after the `gone` or `circuit_open` dead letters
+        # this rule has already fired on. The standing backlog is
+        # agledger_webhook_dlq_entries, the count system-health degrades on.
+        expr: |
+          sum by (reason) (
+            increase(agledger_webhooks_dead_lettered_total{reason!~"paused|subscription_inactive"}[1h])
+          ) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerwebhooksdeadlettered"
+          summary: "Webhook deliveries dead-lettered ({{ $labels.reason }})"
+          description: >-
+            {{ $value | printf "%.0f" }} webhook event(s) dead-lettered with reason
+            "{{ $labels.reason }}" in the last hour. The receiver never got them and nothing
+            retries them. Fix the endpoint, then retry from GET /v1/admin/webhook-dlq.
+
+      - alert: AGLedgerWebhookSubscriptionsNotDelivering
+        # An open breaker is skipped at dispatch, so the events it misses are
+        # dropped rather than dead-lettered and AGLedgerWebhooksDeadLettered
+        # does not see them. breaker_open counts a subscription still failing
+        # its probes; disabled counts one the engine deactivated, and holds
+        # until an operator closes its breaker, which is the dismissal the
+        # health listing offers. `paused` is the owner's choice and is left out.
+        # Every API replica reads the same table, so `max` is the install.
+        expr: max by (state) (agledger_webhook_subscriptions_not_delivering{state=~"breaker_open|disabled"}) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerwebhooksubscriptionsnotdelivering"
+          summary: "Webhook subscriptions are not taking deliveries ({{ $labels.state }})"
+          description: >-
+            {{ $value | printf "%.0f" }} webhook subscription(s) in state {{ $labels.state }}.
+            Events for them are dropped at dispatch, not dead-lettered, so a receiver recovers
+            them only by replaying GET /v1/events. GET /v1/admin/webhooks/health lists them.
+
+      - alert: AGLedgerTrustedIssuerJwksFailing
+        # A trusted issuer that cannot fetch its JWKS refuses the tokens it
+        # would validate, and the callers see 401s that name the reason while
+        # nothing here fired. The gauge counts only a recent failure (its help
+        # says how recent): a row that keeps failing is re-recorded while
+        # tokens keep arriving, and one no token reaches drops out rather than
+        # paging for an IdP that may have recovered. Every API replica reads the same
+        # table, so `max` is the install.
+        expr: max by (outcome) (agledger_trusted_issuers_jwks_failing) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgertrustedissuerjwksfailing"
+          summary: "Trusted issuers cannot fetch their signing keys ({{ $labels.outcome }})"
+          description: >-
+            {{ $value | printf "%.0f" }} enabled trusted issuer(s) are failing to fetch their
+            JWKS with {{ $labels.outcome }}, so tokens they would validate are refused.
+            GET /v1/admin/trusted-issuers names them.
+
+      - alert: AGLedgerDisputesStuck
+        # A dispute at EVIDENCE_WINDOW is moved on by the evidence-window-expiry
+        # sweep once its window closes. window_overdue is one that sweep has
+        # not reached past its grace; no_window_close is one with no close
+        # instant, which it never will. The dispute-stale-recovery sweep logs
+        # both and nothing else reported them. Disputes waiting on the
+        # principal (PENDING_RESOLUTION) are agledger_disputes_open, which has
+        # no rule: no elapsed time is a fault there. Every API replica reads
+        # the same table, so `max` is the install.
+        expr: max by (reason) (agledger_disputes_stuck) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerdisputesstuck"
+          summary: "Disputes stuck at EVIDENCE_WINDOW ({{ $labels.reason }})"
+          description: >-
+            {{ $value | printf "%.0f" }} dispute(s) at EVIDENCE_WINDOW the engine should have
+            moved to PENDING_RESOLUTION ({{ $labels.reason }}). Their principals are not
+            asked to resolve them until they move.
 
   # ---------------------------------------------------------------------------
   # Availability and saturation. Ordinary service health, included because
@@ -947,7 +1210,11 @@ groups:
         # backlog rather than a share of it. Summing multiplies it by
         # `api.replicaCount`: two replicas watching a healthy 600-job queue
         # would report 1200 and page.
-        expr: max by (queue) (agledger_pgboss_queue_size{state="queued"}) > 1000
+        #
+        # `ready`, not `queued`: queued also counts jobs deferred on a retry
+        # backoff, which a dead webhook receiver parks by the thousand and no
+        # added worker can run any sooner.
+        expr: max by (queue) (agledger_pgboss_queue_size{state="ready"}) > 1000
         for: 15m
         labels:
           severity: warning
@@ -955,8 +1222,8 @@ groups:
           runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerqueuebackloggrowing"
           summary: "Queue {{ $labels.queue }} has a growing backlog"
           description: >-
-            {{ $value | printf "%.0f" }} jobs pending for 15m. Either the worker is down or
-            it cannot keep up.
+            {{ $value | printf "%.0f" }} jobs ready to run and not taken for 15m. Either the
+            worker is down or it cannot keep up.
 
       - alert: AGLedgerWorkerJobsFailing
         expr: |
@@ -1004,6 +1271,26 @@ groups:
             throw, then agledger_maintenance_sweep_rows_total for the same task to see
             whether any cycle is getting through.
 
+      - alert: AGLedgerExpiryRollupFailing
+        # The expiry sweep rolls each FAILED child past its deadline up onto its
+        # ACTIVE parent (failing it, or expiring it past its own deadline), and
+        # catches each parent's failure so one parent cannot hold back the rest:
+        # the sweep completes, so the rule above never sees it. Two in three
+        # hours, as there: a parent that threw once on a transient error and was
+        # rolled up on the next cycle is not an operator's problem.
+        expr: increase(agledger_expiry_lapsed_failed_child_rollup_failures_total[3h]) >= 2
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerexpiryrollupfailing"
+          summary: "The expiry sweep cannot roll lapsed FAILED children up onto their parents"
+          description: >-
+            {{ $value | printf "%.0f" }} failed attempt(s) in the last 3h to roll a FAILED child
+            past its deadline up onto its ACTIVE parent. Those parents stay ACTIVE. The worker
+            log names each record id ("Expiry sweep: rolling a FAILED child past its deadline
+            up onto its parent threw").
+
       - alert: AGLedgerMaintenanceSweepFallingBehind
         # The failure rule above cannot see this, and neither can the row
         # counter. A sweep that bounds its own work by a clock can finish every
@@ -1015,7 +1302,8 @@ groups:
         # a healthy install and `increase` over it reads as a real zero.
         #
         # Six in an hour, against the twelve cycles the 5-minute
-        # oidc-jti-cleanup schedule gives: half the hour spent behind. A burst
+        # oidc-jti-cleanup schedule gives (idempotency-cleanup runs on the
+        # same one): half the hour spent behind. A burst
         # that takes two or three cycles to drain is the mechanism working, and
         # paging on it would page on every spike of admin authentication. The
         # threshold counts cycles, so a sweep added later on a different
@@ -1030,7 +1318,10 @@ groups:
         # six. A pod rescheduled onto a new IP mid-window splits the count the
         # same way. This is also the query the runbook tells a responder to
         # run, and the two have to agree.
-        expr: sum by (task) (increase(agledger_maintenance_sweep_behind_total[1h])) >= 6
+        #
+        # vault-checkpoints is excluded: a chain it did not reach has entries
+        # with no checkpoint, not dead rows, so it has its own rule below.
+        expr: sum by (task) (increase(agledger_maintenance_sweep_behind_total{task!="vault-checkpoints"}[1h])) >= 6
         for: 0m
         labels:
           severity: warning
@@ -1045,6 +1336,44 @@ groups:
             feeds it drops. Check agledger_maintenance_sweep_rows_total and
             agledger_maintenance_sweep_duration_seconds for the same task to see whether the
             cycles are hitting their time budget or the database has slowed down.
+
+      - alert: AGLedgerVaultCheckpointsFallingBehind
+        # A checkpoint run stops on its time budget before the end of `records`
+        # and the next run on that worker goes on from there, so a backlog is
+        # worked through across runs. One run ending short is that mechanism
+        # working. Every run for thirteen hours ending short is a Server writing
+        # chains faster than it checkpoints them: at the default six-hour
+        # cadence that is two or three runs in a row, and at a five-minute one
+        # over a hundred and fifty. At a cadence over thirteen hours
+        # (VAULT_ANCHOR_INTERVAL_MINUTES above 780) the window can hold no run
+        # at all and the rule cannot see it.
+        #
+        # Every run, not any run: the behind counter is compared with the runs
+        # the duration histogram counted for the same task, since `increase` on
+        # the behind counter alone stays up for the whole window after the last
+        # short run. Both are summed over replicas for the reason the rule
+        # above gives, and a run that threw counts as a run that did not fall
+        # behind (AGLedgerMaintenanceSweepFailing reports it). The 0.99 absorbs
+        # `increase` not extrapolating a counter back past zero, which parts the
+        # two sums by about one scrape interval over thirteen hours when the
+        # behind counter starts the window at zero.
+        expr: |
+          sum(increase(agledger_maintenance_sweep_behind_total{task="vault-checkpoints"}[13h])) >= 1
+          and
+          sum(increase(agledger_maintenance_sweep_behind_total{task="vault-checkpoints"}[13h]))
+            >= 0.99 * sum(increase(agledger_maintenance_sweep_duration_seconds_count{task="vault-checkpoints"}[13h]))
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgervaultcheckpointsfallingbehind"
+          summary: "Every vault checkpoint run for thirteen hours stopped before reaching every chain"
+          description: >-
+            Every vault-checkpoints run in the last thirteen hours spent its time budget
+            before reaching the end of the records table. Chains past where each run
+            stopped have entries with no signed checkpoint and, with anchoring on, no
+            external anchor yet, so the tamper-exposure window is longer than
+            VAULT_ANCHOR_INTERVAL_MINUTES.
 
       - alert: AGLedgerApiKeyExpiringTomorrow
         # The 24h window, not the 7d one. On an install that sets
@@ -1071,8 +1400,8 @@ groups:
             filter has no lower bound, so it also returns keys that expired earlier. No admin
             route rotates a key the caller does not hold: mint the replacement for the same
             owner with POST /v1/admin/api-keys, then revoke the old one with PATCH
-            /v1/admin/api-keys/{keyId}. POST /v1/auth/keys/rotate rotates the CALLER's own key
-            and cuts over immediately unless gracePeriodSeconds is passed.
+            /v1/admin/api-keys/{keyId}. POST /v1/auth/keys/rotate does not renew: it replaces the
+            CALLER's own secret and keeps its expiry.
 
   # ---------------------------------------------------------------------------
   # Target liveness and process health. Every other group in this file reads a

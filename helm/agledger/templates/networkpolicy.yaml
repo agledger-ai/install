@@ -32,6 +32,37 @@
           protocol: TCP
 {{- end }}
 {{- end }}
+{{- /* One `from` peer for the API's port 3000: a namespaceSelector AND a
+       podSelector, both from the entry.
+
+       The namespace half is required. A pod label is not an identity: any
+       workload that can create a pod can give it
+       `app.kubernetes.io/name: ingress-nginx`, so a label matched across every
+       namespace admits whoever claims it, straight to the API port. The entry
+       has to say which namespace its controller runs in; `namespaceSelector: {}`
+       still admits every namespace, but only when written on purpose.
+
+       An entry that omits podSelector admits every pod in the namespaces it
+       selects.
+       */}}
+{{- define "agledger.networkPolicyPeer" -}}
+{{- $e := .entry }}
+{{- if or (not (hasKey $e "namespaceSelector")) (kindIs "invalid" $e.namespaceSelector) }}
+{{- fail (printf "%s: every entry needs a namespaceSelector beside its podSelector. A pod label matched in every namespace admits any pod that carries it, and any workload can give its pod that label. Name the namespace the pod runs in, for example namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}, or write namespaceSelector: {} to admit every namespace deliberately." .field) }}
+{{- end }}
+        {{- if $e.namespaceSelector }}
+        - namespaceSelector:
+            {{- toYaml $e.namespaceSelector | nindent 12 }}
+        {{- else }}
+        - namespaceSelector: {}
+        {{- end }}
+          {{- if $e.podSelector }}
+          podSelector:
+            {{- toYaml $e.podSelector | nindent 12 }}
+          {{- else }}
+          podSelector: {}
+          {{- end }}
+{{- end }}
 {{- if .Values.networkPolicy.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -56,17 +87,7 @@ spec:
     # networkPolicy.ingressCIDRs rather than disabling the policy.
     - from:
         {{- range .Values.networkPolicy.ingressFrom }}
-        - namespaceSelector: {}
-        {{- /* Parenthesized lookup: an entry that omits podSelector is the
-               "admit any pod in this namespace" shape, and a bare
-               .podSelector.matchLabels nil-derefs on it. */}}
-          {{- if (.podSelector).matchLabels }}
-          podSelector:
-            matchLabels:
-              {{- toYaml (.podSelector).matchLabels | nindent 14 }}
-          {{- else }}
-          podSelector: {}
-          {{- end }}
+        {{- include "agledger.networkPolicyPeer" (dict "entry" . "field" "networkPolicy.ingressFrom") }}
         {{- end }}
         {{- range .Values.networkPolicy.ingressCIDRs }}
         - ipBlock:
@@ -80,14 +101,7 @@ spec:
                down. Namespace-wide, because the Prometheus Operator commonly
                runs the server in a monitoring namespace of its own. */}}
         {{- range ((.Values.monitoring).serviceMonitor).scrapeFrom }}
-        - namespaceSelector: {}
-          {{- if (.podSelector).matchLabels }}
-          podSelector:
-            matchLabels:
-              {{- toYaml (.podSelector).matchLabels | nindent 14 }}
-          {{- else }}
-          podSelector: {}
-          {{- end }}
+        {{- include "agledger.networkPolicyPeer" (dict "entry" . "field" "monitoring.serviceMonitor.scrapeFrom") }}
         {{- end }}
         {{- end }}
         {{- if (.Values.openshift).enabled }}
@@ -156,6 +170,10 @@ spec:
         - port: 443
           protocol: TCP
     {{- include "agledger.otlpEgress" . }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    # networkPolicy.extraEgress
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -217,6 +235,10 @@ spec:
         - port: 443
           protocol: TCP
     {{- include "agledger.otlpEgress" . }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    # networkPolicy.extraEgress
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 {{- if (include "agledger.bundledPostgres" .) }}
 ---
 {{- /*
@@ -252,7 +274,8 @@ spec:
   ingress:
     {{- /* Every workload in this release that opens a database connection, by
            the component label each one carries: the two Deployments, the
-           migration Job, and the backup CronJob and its manual-run Job. A peer
+           migration Job, the backup CronJob and its manual-run Job, and the Job
+           an operator starts from the post-restore CronJob. A peer
            with only a podSelector means "in this policy's own namespace", which
            is where the whole release lives.
 
@@ -262,7 +285,7 @@ spec:
            nothing (a selector matching no pod admits no pod) and keeps the list
            true if that Job ever reaches this path. */}}
     - from:
-        {{- range (list "api" "worker" "migrate" "preflight" "backup") }}
+        {{- range (list "api" "worker" "migrate" "preflight" "backup" "post-restore") }}
         - podSelector:
             matchLabels:
               {{- include "agledger.selectorLabels" $ | nindent 14 }}

@@ -7,7 +7,7 @@
 // request body with the key the cert is bound to; the Server seals that signature into the
 // chain entry. The walkthrough drives two claims (within authority: auto gate; over
 // authority: principal gate with a human-rendered verdict), then proves, offline and against
-// out-of-band keys, that every chain verifies AND that the agents' own signatures re-verify
+// supplied keys, that every chain verifies AND that the agents' own signatures re-verify
 // against the cert keys the credentials exposed.
 //
 // Negative controls, each of which fails the run if it does not bite:
@@ -18,7 +18,8 @@
 //
 // Run: node --env-file=oidc.env walkthrough.mjs   (oidc.env is written by setup.sh)
 // Env: AGLEDGER_API_URL, ADJUSTER_AGENT_ID, SUPERVISOR_AGENT_ID, AUDITOR_AGENT_ID, OIDC_TOKEN_URL,
-//      and optionally the four client secrets. No AGLedger API key: that is the point.
+//      and the four client secrets (setup.sh copies them from idp/secrets.env into oidc.env).
+//      No AGLedger API key: that is the point.
 import { AgledgerClient, oidcCertCredential, OidcExchangeError, AgledgerApiError } from '@agledger/sdk';
 import { verifyExport } from '@agledger/sdk/verify';
 import { generateKeyPairSync, sign } from 'node:crypto';
@@ -45,13 +46,21 @@ async function idpToken(clientId, secret) {
   if (!r.ok) throw new Error(`IdP token endpoint ${r.status} for ${clientId}`);
   return (await r.json()).access_token;
 }
+// The client secrets are this realm's own, generated into idp/secrets.env (see the README).
+// No fallback: a secret published in this file would be a working credential on every
+// realm imported from it.
+function secret(name) {
+  const v = process.env[name];
+  if (!v) { console.error(`${name} is not set. Run setup.sh first (it copies the secrets from idp/secrets.env).`); process.exit(2); }
+  return v;
+}
 const workload = (clientId, secret) => {
   const credential = oidcCertCredential({ getOidcToken: () => idpToken(clientId, secret) });
   return { clientId, credential, client: new AgledgerClient({ baseUrl: BASE, bearerToken: credential }) };
 };
-const adjuster = workload('claims-adjuster', process.env.ADJUSTER_SECRET ?? 'adjuster-secret-1');
-const supervisor = workload('claims-supervisor', process.env.SUPERVISOR_SECRET ?? 'supervisor-secret-1');
-const auditor = workload('claims-auditor', process.env.AUDITOR_SECRET ?? 'auditor-secret-1');
+const adjuster = workload('claims-adjuster', secret('ADJUSTER_SECRET'));
+const supervisor = workload('claims-supervisor', secret('SUPERVISOR_SECRET'));
+const auditor = workload('claims-auditor', secret('AUDITOR_SECRET'));
 
 step('1. who am I: each workload resolves to its agent through a cert, not a key');
 for (const [w, want] of [[adjuster, PERF_ID], [supervisor, PRIN_ID], [auditor, AUDITOR_ID]]) {
@@ -62,7 +71,7 @@ for (const [w, want] of [[adjuster, PERF_ID], [supervisor, PRIN_ID], [auditor, A
 
 step('2. negative: a workload no agent answers to is refused at the exchange');
 try {
-  await workload('unbound-workload', process.env.UNBOUND_SECRET ?? 'unbound-secret-1').client.auth.getMe();
+  await workload('unbound-workload', secret('UNBOUND_SECRET')).client.auth.getMe();
   bad('unbound workload obtained a cert');
 } catch (e) {
   if (e instanceof OidcExchangeError && e.status === 400 && /oidcSub/.test(e.recoveryHint ?? '')) ok(`unbound workload: OidcExchangeError ${e.status}, recoveryHint names the (iss, sub) binding: "${(e.recoveryHint ?? '').slice(0, 110)}..."`);
@@ -71,7 +80,7 @@ try {
 
 step('3. negative: one token, one exchange');
 {
-  const jwt = await idpToken('claims-adjuster', process.env.ADJUSTER_SECRET ?? 'adjuster-secret-1');
+  const jwt = await idpToken('claims-adjuster', secret('ADJUSTER_SECRET'));
   const sub = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString()).sub;
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const body = JSON.stringify({ oidcToken: jwt, publicKeyJwk: { kty: 'OKP', crv: 'Ed25519', x: publicKey.export({ format: 'jwk' }).x },
@@ -132,7 +141,7 @@ step('5. the adjuster exports every chain it is party to; the auditor verifies t
 // An audit export is a structural action bound to the record's named agents (or an org admin):
 // a third agent, however read-scoped, resolves as org-member and is refused 403
 // WRONG_STRUCTURAL_ROLE. So the workload that did the work hands the files over, and the
-// auditor's job is done with no credential at all: files, out-of-band keys, cert keys.
+// auditor's job is done with no credential at all: files, supplied keys, cert keys.
 try { await auditor.client.records.getAuditExport(manifest[0].recordId); bad('auditor (not party to the record) was allowed to export it'); }
 catch (e) { if (e instanceof AgledgerApiError && e.status === 403 && e.code === 'WRONG_STRUCTURAL_ROLE') ok(`auditor cannot export a record it is not party to: 403 ${e.code}`); else bad(`auditor export: ${e?.status} ${e?.code} ${e?.message?.slice(0, 120)}`); }
 const keys = await auditor.client.verificationKeys.list(); // unauthenticated route; the auditor cert is not needed for it
@@ -144,8 +153,8 @@ let present = 0, verified = 0, chains = 0, unchecked = 0;
 for (const m of manifest) {
   const exp = await adjuster.client.records.getAuditExport(m.recordId);
   writeFileSync(join(AUD, `${m.recordId}.audit-export.json`), JSON.stringify(exp, null, 2));
-  const withKeys = verifyExport(exp, { publicKeys: keys.data, requireOutOfBandKeys: true, agentKeys });
-  const without = verifyExport(exp, { publicKeys: keys.data, requireOutOfBandKeys: true });
+  const withKeys = verifyExport(exp, { publicKeys: keys.data, requireSuppliedKeys: true, agentKeys });
+  const without = verifyExport(exp, { publicKeys: keys.data, requireSuppliedKeys: true });
   chains++;
   if (!withKeys.valid) bad(`${m.stage} ${m.recordId}: chain invalid ${JSON.stringify(withKeys.brokenAt ?? withKeys).slice(0, 200)}`);
   if (withKeys.keyProvenance?.embedded !== 0) bad(`${m.stage} ${m.recordId}: verified against an export-embedded key`);
@@ -153,7 +162,7 @@ for (const m of manifest) {
   if (without.agentSignatures.verified !== 0) bad(`${m.stage} ${m.recordId}: agent signatures verified with no agent keys supplied`);
   unchecked += without.agentSignatures.present - without.agentSignatures.verified;
 }
-if (chains === manifest.length && fail === 0) ok(`${chains} chains verify against out-of-band keys (0 embedded)`);
+if (chains === manifest.length && fail === 0) ok(`${chains} chains verify against supplied keys (0 embedded)`);
 if (present > 0 && present === verified) ok(`${verified}/${present} sealed agent signatures re-verify against the two cert keys the credentials exposed`);
 else bad(`agent signatures present=${present} verified=${verified}`);
 if (unchecked === present) ok(`without agent keys the same ${present} signatures are counted but not checked (the export carries no cert keys; archive them)`);

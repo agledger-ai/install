@@ -76,9 +76,11 @@ services:
       # rather than passed through, so the CLI sees exactly one connection
       # string on this service.
       - DATABASE_URL=${DATABASE_URL_MIGRATE:-${DATABASE_URL_DIRECT:-${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-agledger}}}}
+      # Set, the migration gives agledger_app a login under it (plus CREATE on
+      # the database and the pg-boss schema) on every run. Empty on an external
+      # database unless its operator asks for that; the bundled overlay fills it.
+      - AGLEDGER_APP_ROLE_PASSWORD=${AGLEDGER_APP_ROLE_PASSWORD:-}
       - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-}
-      # Post-v1.0: shipped migrations are immutable; refuse any baseline checksum rebase.
-      - AGLEDGER_LAUNCH_FROZEN=${AGLEDGER_LAUNCH_FROZEN:-true}
       # Knobs for the migration run. This service carries no env_file, so a
       # value in .env reaches it only by being named here, and .env.example
       # documents all five as settable, so name every one of them or the
@@ -130,7 +132,13 @@ services:
       - path: .env
         required: false
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-agledger}}
+      # The bundled fallback connects as agledger_app, not as POSTGRES_USER.
+      # POSTGRES_USER owns every table, and an owner passes every privilege
+      # check on its own tables, so serving as it leaves the audit chain's
+      # UPDATE/DELETE revokes binding nobody. agledger-migrate still runs as
+      # the owner, and on the bundled path (docker-compose.postgres.yml) gives
+      # agledger_app its login under the same password this line uses.
+      - DATABASE_URL=${DATABASE_URL:-postgresql://agledger_app:${AGLEDGER_APP_ROLE_PASSWORD:-${POSTGRES_PASSWORD:-}}@postgres:5432/${POSTGRES_DB:-agledger}}
       - ALLOW_DB_WITHOUT_SSL=${ALLOW_DB_WITHOUT_SSL:-false}
     depends_on:
       agledger-migrate:
@@ -199,7 +207,8 @@ services:
       - path: .env
         required: false
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql://${POSTGRES_USER:-agledger}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-agledger}}
+      # agledger_app, for the reason given on agledger-api.
+      - DATABASE_URL=${DATABASE_URL:-postgresql://agledger_app:${AGLEDGER_APP_ROLE_PASSWORD:-${POSTGRES_PASSWORD:-}}@postgres:5432/${POSTGRES_DB:-agledger}}
       - ALLOW_DB_WITHOUT_SSL=${ALLOW_DB_WITHOUT_SSL:-false}
       - WORKER_HEALTH_PORT=3001
     depends_on:
@@ -351,7 +360,7 @@ services:
     restart: unless-stopped
     environment:
       # No `:-admin` fallback. A default here is indistinguishable from a chosen
-      # password, and it was the value install.sh then printed as the login.
+      # password.
       # install.sh generates one into .env under --with-monitoring; an operator
       # enabling the profile by hand sets it themselves.
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}

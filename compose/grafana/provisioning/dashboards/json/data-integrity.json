@@ -78,7 +78,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Parents the consistency sweep settled out of band: every child terminal, no activity for five minutes, so the sweep rolled the parent up. Movement here is NORMAL, not a fault. A parent whose children are all notarize-only has no last-child transition to settle it inline and always settles here; only a parent whose inline rollup was lost to a crash or a dropped cascade job is a real fault, and this panel cannot tell the two apart. Read the GAP instead: stuck rising while repaired stays flat means those parents cannot settle and needs a human. The sweep handles at most 50 parents per five-minute pass, so a large backfill drains at roughly 600 an hour and the two series close over hours rather than minutes.",
+      "description": "Parents the consistency sweep rolled up out of band (failed, or expired past their own deadline): every child terminal, at least one failed, no activity for five minutes, so the sweep rolled the failure up. Each one is an inline rollup lost to a crash or a dropped cascade job. Children never settle a parent, so a parent whose children all delivered waits for its own completion and never appears here. Read the GAP instead: stuck rising while repaired stays flat means those parents cannot be rolled up and needs a human. The sweep handles at most 50 parents per five-minute pass, so a large backfill drains at roughly 600 an hour and the two series close over hours rather than minutes.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -138,11 +138,11 @@
             "uid": "${datasource}"
           },
           "expr": "sum(increase(agledger_auto_rollup_repaired_parents_total{job=~\"$job\"}[1h]))",
-          "legendFormat": "settled by sweep (1h)",
+          "legendFormat": "rolled up by sweep (1h)",
           "refId": "B"
         }
       ],
-      "title": "AUTO_ROLLUP swept vs settled (1h) \u2014 agledger_auto_rollup_{stuck,repaired}_parents_total",
+      "title": "AUTO_ROLLUP swept vs rolled up (1h) \u2014 agledger_auto_rollup_{stuck,repaired}_parents_total",
       "type": "stat"
     },
     {
@@ -423,6 +423,98 @@
       ],
       "title": "Federation delivery divergence (1h) \u2014 health check",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Delegation parents waiting on their performer's own completion, every child terminal and the tree quiet for five minutes: at ACTIVE with none failed, or sent back for revision by the principal. Children never settle a parent, so each of these settles only when its performer submits the parent's own completion; one with a deadline expires if it never does, and one without stays ACTIVE until its performer submits or its principal cancels it. A few that come and go are performers mid-step. A count that only grows, or an oldest wait longer than your orchestrators should take, means a performer that does not submit the parent's completion. The worker logs the longest-waiting parent ids each pass; GET /v1/records/{id} on one shows the completion step in its nextSteps. With more than one worker replica, each pass runs on one of them; the queries read the replica that refreshed last.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "id": 6,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(agledger_delegation_parents_awaiting_own_completion{job=~\"$job\"} and on(instance) (agledger_delegation_parents_awaiting_own_completion_updated_timestamp_seconds{job=~\"$job\"} == on() group_left() max(agledger_delegation_parents_awaiting_own_completion_updated_timestamp_seconds{job=~\"$job\"})))",
+          "legendFormat": "parents awaiting own completion",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(agledger_delegation_parents_awaiting_own_completion_oldest_age_seconds{job=~\"$job\"} and on(instance) (agledger_delegation_parents_awaiting_own_completion_updated_timestamp_seconds{job=~\"$job\"} == on() group_left() max(agledger_delegation_parents_awaiting_own_completion_updated_timestamp_seconds{job=~\"$job\"})))",
+          "legendFormat": "longest wait",
+          "refId": "B"
+        }
+      ],
+      "title": "Delegation parents awaiting their own completion",
+      "type": "stat"
     }
   ],
   "refresh": "30s",

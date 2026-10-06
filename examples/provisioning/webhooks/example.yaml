@@ -7,7 +7,7 @@
 # never as plaintext here.
 webhooks:
   # Org webhook — specific record lifecycle events, CloudEvents envelope.
-  - ownerName: Acme Corp
+  - ownerName: Default
     ownerType: org
     url: ${ACME_WEBHOOK_URL:-https://hooks.acme-corp.example.com/agledger}
     format: cloudevents
@@ -22,7 +22,7 @@ webhooks:
   # deliveries (X-AGLedger-Signature: t=...,v1=...). Without a secret the Server
   # generates a random one that is never surfaced — fine for ed25519, useless for
   # HMAC. Supplying a secret also pins the scheme to hmac.
-  - ownerName: Acme Corp
+  - ownerName: Default
     ownerType: org
     url: https://hooks.acme-corp.example.com/agledger-hmac
     eventTypes:
@@ -42,7 +42,7 @@ webhooks:
   # `recordTypes` narrows record-scoped events to the listed contract types
   # (type-segregated routing); here the ERP only sees invoice records. Omit
   # it, or use ['*'], to receive every type.
-  - ownerName: Acme Corp
+  - ownerName: Default
     ownerType: org
     url: https://erp.acme-corp.example.com/agledger/settlement
     signingAlg: ed25519
@@ -67,7 +67,7 @@ webhooks:
   # key cannot be minted with it and an agent cannot subscribe itself.
   - ownerName: External Monitor Agent
     ownerType: agent
-    ownerOrgName: Acme Corp
+    ownerOrgName: Default
     url: https://monitor.example.com/webhooks/agledger
     format: standard
     eventTypes: ['*']

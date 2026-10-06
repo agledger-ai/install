@@ -1,0 +1,134 @@
+{{- include "agledger.validateValues" . -}}
+{{- /* The steps restore.sh runs after the migration on a Compose install
+       (revocation replay, the restore marker, the external-anchor comparison),
+       for a cluster install, where only the release holds the configuration
+       they need. See `postRestore` in values.yaml.
+
+       A CronJob rather than a Job so it can sit in the release doing nothing:
+       `kubectl create job --from=cronjob/<name>` stamps out a Job from the
+       template below when an operator asks for one. It is suspended, and its
+       schedule names February 31, a date that never comes, so nothing starts
+       it on its own. A manual Job ignores the suspension.
+
+       The pod is the api's: its image, env sources, volumes, security context
+       and placement, so the steps run with exactly the configuration the api
+       will boot with. The one addition is the restore's input, a Secret of this
+       CronJob's name that the runbook creates from the directory restore.sh
+       writes. The volume is optional, so a Job run without that Secret starts,
+       and post-restore.js refuses with a message naming it, rather than the pod
+       sitting in ContainerCreating. */}}
+{{- if (.Values.postRestore).enabled }}
+{{- $name := include "agledger.postRestoreName" . }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: post-restore
+spec:
+  suspend: true
+  schedule: "0 0 31 2 *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "agledger.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: post-restore
+    spec:
+      {{- /* No retry. Each step is safe to repeat (the replay counts a
+             revocation already applied, and the marker is written once per id),
+             but a retry leaves the operator reading one pod's log among
+             several. A failed run is re-run as a new Job from the same Secret. */}}
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            {{- include "agledger.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: post-restore
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "agledger.serviceAccountName" . }}
+          automountServiceAccountToken: {{ include "agledger.automountToken" . }}
+          {{- with .Values.image.pullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if not (.Values.openshift).enabled }}
+          {{- with .Values.api.podSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- end }}
+          containers:
+            - name: post-restore
+              image: {{ include "agledger.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              {{- /* The permission prefix the api carries, for the reason the
+                     migration Job gives: NODE_OPTIONS from extraEnv reaches this
+                     process, and Node refuses an --allow-fs-write in it from a
+                     process not started with --permission. */}}
+              command: ["/nodejs/bin/node", {{ include "agledger.permissionArgs" . }}"dist/scripts/post-restore.js", "--restore-input", "/etc/agledger/post-restore"]
+              envFrom:
+                - configMapRef:
+                    name: {{ include "agledger.fullname" . }}
+                - secretRef:
+                    name: {{ include "agledger.secretName" . }}
+                {{- with .Values.extraEnvFrom }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              {{- $ownerClears := include "agledger.ownerCredentialClears" . }}
+              {{- if or .Values.extraEnv $ownerClears }}
+              env:
+                {{- with $ownerClears }}
+                {{- . | trim | nindent 16 }}
+                {{- end }}
+                {{- with .Values.extraEnv }}
+                {{- include "agledger.envList" . | trim | nindent 16 }}
+                {{- end }}
+              {{- end }}
+              resources:
+                {{- toYaml .Values.api.resources | nindent 16 }}
+              securityContext:
+                {{- toYaml .Values.api.securityContext | nindent 16 }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                - name: restore-input
+                  mountPath: /etc/agledger/post-restore
+                  readOnly: true
+                {{- include "agledger.licenseVolumeMount" . | nindent 16 }}
+                {{- include "agledger.provisioningVolumeMounts" . | nindent 16 }}
+                {{- with .Values.extraVolumeMounts }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi
+            - name: restore-input
+              secret:
+                secretName: {{ $name }}
+                optional: true
+                defaultMode: 292  # 0444
+            {{- include "agledger.licenseVolume" . | nindent 12 }}
+            {{- include "agledger.provisioningVolumes" . | nindent 12 }}
+            {{- with .Values.extraVolumes }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.api.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.api.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.api.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

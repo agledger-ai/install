@@ -23,7 +23,12 @@
 
 services:
   postgres:
-    image: postgres:18-alpine
+    # Pinned by digest: this image holds the whole chain, and a tag is whatever
+    # the registry says it is on the day of the pull. The tag stays beside the
+    # digest because Dependabot reads the update stream from it; Docker pulls
+    # by the digest. Keep it equal to postgres.bundled.image in the Helm chart;
+    # the build fails when the two differ.
+    image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-agledger}
       # Empty default, deliberately, and NOT `:?`.
@@ -85,12 +90,30 @@ services:
 
   # Add postgres dependency and bundled PG detection to application services
   agledger-migrate:
+    environment:
+      # The migration runs as POSTGRES_USER, the owner, and on every run gives
+      # agledger_app a login under this password, plus CREATE on the database
+      # and ownership of the pg-boss schema. The API and worker connect as
+      # agledger_app under the same expression (docker-compose.yml), so the
+      # audit chain's privilege gate binds the process that serves requests.
+      #
+      # install.sh and upgrade.sh generate AGLEDGER_APP_ROLE_PASSWORD. A .env
+      # that leaves it empty falls back to POSTGRES_PASSWORD, which keeps the
+      # runtime off the owner role but lets one password open both roles.
+      # Here and not in docker-compose.yml because only this overlay's
+      # database is this install's to provision; an external database's roles
+      # are its operator's.
+      - AGLEDGER_APP_ROLE_PASSWORD=${AGLEDGER_APP_ROLE_PASSWORD:-${POSTGRES_PASSWORD:-}}
     depends_on:
       postgres:
         condition: service_healthy
 
   agledger-api:
     environment:
+      # .env reaches this container through env_file, owner password included.
+      # The API never uses it (it connects as agledger_app), so it is cleared
+      # rather than handed to a process that has no use for it.
+      - POSTGRES_PASSWORD=
       - AGLEDGER_PG_BUNDLED=true
       - ALLOW_DB_WITHOUT_SSL=true
       # Bundled PG ships with max_connections=100. The app default (20) already
@@ -103,6 +126,7 @@ services:
 
   agledger-worker:
     environment:
+      - POSTGRES_PASSWORD=
       - AGLEDGER_PG_BUNDLED=true
       - ALLOW_DB_WITHOUT_SSL=true
       - DATABASE_POOL_MAX=${DATABASE_POOL_MAX:-20}

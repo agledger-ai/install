@@ -46,6 +46,7 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: {{ include "agledger.serviceAccountName" . }}
+      automountServiceAccountToken: {{ include "agledger.automountToken" . }}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -80,9 +81,15 @@ spec:
           {{- if (include "agledger.chartSuppliesDatabaseUrl" .) }}
           {{- include "agledger.assertNoDuplicateDatabaseUrl" (dict "envList" .Values.extraEnv "field" "extraEnv" "source" "the chart's Secret") }}
           {{- end }}
-          {{- if .Values.extraEnv }}
+          {{- $ownerClears := include "agledger.ownerCredentialClears" . }}
+          {{- if or .Values.extraEnv $ownerClears }}
           env:
-            {{- include "agledger.extraEnv" . | trim | nindent 12 }}
+            {{- with $ownerClears }}
+            {{- . | trim | nindent 12 }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- include "agledger.envList" . | trim | nindent 12 }}
+            {{- end }}
           {{- end }}
           livenessProbe:
             httpGet:

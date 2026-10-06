@@ -14,7 +14,7 @@ works the same way; the Keycloak-specific setting is called out below.
 
 | File | What it is |
 |------|------------|
-| `idp/realm-meridian.json` | A Keycloak realm with four service-account clients: adjuster, supervisor, a read-only auditor, and one workload deliberately left unbound. The client secrets are development values for a throwaway realm. |
+| `idp/realm-meridian.json` | A Keycloak realm with four service-account clients: adjuster, supervisor, a read-only auditor, and one workload deliberately left unbound. The client secrets are `${...}` placeholders Keycloak fills from the environment at import, so every realm imported from this file has secrets of its own. |
 | `setup.sh` | The operator half. Registers the realm as a trusted issuer and creates one agent per workload, bound by the `(iss, sub)` pair read off a real token. Writes `oidc.env`. Safe to re-run. |
 | `walkthrough.mjs` | The agents' half, on the published `@agledger/sdk`. Two claims, four refusals the Server must make, and offline verification of every chain and every agent signature. |
 | `package.json` | Pins the SDK version this was run against. |
@@ -25,24 +25,38 @@ On a Compose install (`./scripts/install.sh`), with the insurance types register
 (`../register.sh`) and a platform key to hand:
 
 ```bash
-# 1. The IdP, on the Compose network so the Server can reach it by name
+# 1. Secrets for this realm: the four client secrets and the Keycloak admin password.
+#    Generated here, never shipped: each client secret grants a workload its scopes.
+( umask 077; for v in ADJUSTER_SECRET SUPERVISOR_SECRET AUDITOR_SECRET UNBOUND_SECRET KC_BOOTSTRAP_ADMIN_PASSWORD; do
+    echo "$v=$(openssl rand -hex 24)"; done > idp/secrets.env )
+
+# 2. The IdP, on the Compose network so the Server can reach it by name. Keycloak reads
+#    the client secrets from its environment into the realm's ${...} placeholders.
 docker run -d --name keycloak --network compose_default -p 127.0.0.1:8080:8080 \
   -v "$PWD/idp/realm-meridian.json:/opt/keycloak/data/import/realm.json:ro" \
-  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=change-me \
+  --env-file idp/secrets.env -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
   -e KC_HOSTNAME=http://keycloak:8080 -e KC_HOSTNAME_STRICT=false -e KC_HTTP_ENABLED=true \
   quay.io/keycloak/keycloak:26.0 start-dev --import-realm
 
-# 2. Let the Server fetch the realm's keys over the private network. Add to compose/.env:
-#      SSRF_ALLOW_CIDRS=172.16.0.0/12
+# 3. Let the Server fetch the realm's keys from that one container, over plain HTTP.
+#    Admit its address alone, not the Docker range: SSRF_ALLOW_CIDRS is the only thing
+#    between webhook and federation URLs and every other container on this host.
+docker inspect -f '{{(index .NetworkSettings.Networks "compose_default").IPAddress}}' keycloak
+#    Add to compose/.env, with the address printed above:
+#      SSRF_ALLOW_CIDRS=<that address>/32
 #      SSRF_ALLOW_PLAIN_HTTP=true
 #    then, from compose/:  docker compose up -d
+#    SSRF_ALLOW_PLAIN_HTTP admits http:// for every outbound URL, webhooks and federation
+#    peers included, so remove both lines when you are done with the walkthrough. The
+#    address can change when the container is recreated; re-read it if the exchange starts
+#    failing with a fetch error.
 
-# 3. The operator half
+# 4. The operator half (reads idp/secrets.env)
 export AGLEDGER_API_URL=http://localhost:3001
 export AGLEDGER_PLATFORM_KEY=agl_plt_...
 ./setup.sh
 
-# 4. The agents' half: no AGLedger key in its environment
+# 5. The agents' half: no AGLedger key in its environment
 npm install
 npm run walkthrough
 ```
@@ -50,16 +64,23 @@ npm run walkthrough
 `setup.sh` reaches the realm at `localhost:8080` and tells the Server it lives at
 `http://keycloak:8080`, which is also the `iss` in every token because of `KC_HOSTNAME`.
 Override with `OIDC_TOKEN_URL` and `OIDC_ISSUER` if yours differ. With an IdP on a public
-https URL, step 2 is not needed.
+https URL, step 3 is not needed.
 
 The walkthrough writes every export, the Server's verification keys and the two agents'
-cert keys to `exports/`. Check them with the published verifier as an auditor would:
+cert keys to `exports/`. Check them with the published verifier as an auditor would, pinning
+the vault key `./scripts/install.sh` printed at install (`Vault signing key pin: sha256:<hex>`):
 
 ```bash
-npx @agledger/verify exports/<recordId>.audit-export.json \
-  --keys exports/verification-keys.json --require-out-of-band-keys \
+npx @agledger/verify@2 exports/<recordId>.audit-export.json \
+  --trust-anchor sha256:<hex> \
+  --keys exports/verification-keys.json --require-supplied-keys \
   --agent-keys exports/agent-keys.json
 ```
+
+The run reports `[PASS]` only when every entry's signing key links to that pin through the
+Server's signed key statements. Without `--trust-anchor` the same files read
+`[VERIFIED, NOT ANCHORED]`: the keys came from the Server being checked, so nothing ties them
+to a key you hold.
 
 ## What the walkthrough shows
 
@@ -73,9 +94,10 @@ npx @agledger/verify exports/<recordId>.audit-export.json \
   - A token exchanged once is refused a second time (`409 OIDC_JTI_REPLAY`).
   - A cert whose IdP asserted read-only scopes cannot write (`403` naming `records:write`).
   - An agent that is not party to a record cannot export it (`403 WRONG_STRUCTURAL_ROLE`).
-- **Offline verification.** Every chain verifies against out-of-band keys, and every sealed
-  agent signature re-verifies against the cert keys. The same exports verified without the
-  agent keys report the signatures as present but unchecked.
+- **Offline verification.** Every chain verifies against the supplied verification keys
+  (none taken from the export itself), and every sealed agent signature re-verifies against
+  the cert keys. The same exports verified without the agent keys report the signatures as
+  present but unchecked.
 
 ## The CLI and the MCP server on a token
 
@@ -84,7 +106,9 @@ Both take a command that prints a fresh IdP token, run on every cert exchange. L
 
 ```bash
 export AGLEDGER_API_URL=http://localhost:3001
-export AGLEDGER_OIDC_TOKEN_CMD='curl -s -X POST http://localhost:8080/realms/meridian/protocol/openid-connect/token -d grant_type=client_credentials -d client_id=claims-adjuster -d client_secret=adjuster-secret-1 | jq -r .access_token'
+. idp/secrets.env
+export ADJUSTER_SECRET
+export AGLEDGER_OIDC_TOKEN_CMD='curl -s -X POST http://localhost:8080/realms/meridian/protocol/openid-connect/token -d grant_type=client_credentials -d client_id=claims-adjuster -d client_secret="$ADJUSTER_SECRET" | jq -r .access_token'
 agledger auth --json          # credential: oidc-cert, the adjuster's agent id
 agledger-mcp --api-url "$AGLEDGER_API_URL"   # agledger_discover reports the cert identity
 ```
@@ -98,8 +122,8 @@ identity token, such as `gcloud auth print-identity-token` or `kubectl create to
   `aud: ["agledger", "account"]`. With more than one audience the Server requires
   `expectedAzp` on the trusted-issuer row, which names one client, and there is one row per
   issuer, audience and org. So on default settings one realm serves one workload per org:
-  the second client's row is refused `409`, and its token against the first row is refused
-  `401 wrong_audience`. Set `fullScopeAllowed: false` on each client (the realm file here
+  the second client's row is refused `409 TRUSTED_ISSUER_EXISTS` naming the row that holds
+  the key, and its token against the first row is refused `401 wrong_azp`. Set `fullScopeAllowed: false` on each client (the realm file here
   does): the token carries only `agledger`, and one row with no `expectedAzp` serves the
   whole fleet.
 - **Bind from a token, not from config.** A Keycloak service account's `sub` is the
@@ -117,9 +141,9 @@ identity token, such as `gcloud auth print-identity-token` or `kubectl create to
   `exports/agent-keys.json` holds. The CLI and the MCP server keep theirs in memory and
   discard them, so signatures they sealed can be re-checked only from the cert's issuance
   entry in a full vault dump, not from a per-record export.
-- **Every write under a cert is signed, the principal's verdict included.** The run seals 24
-  signatures across 13 chains: one per create, register, activate, propose, accept,
-  completion and verdict.
+- **Every write under a cert is signed, the principal's verdict included.** The run seals
+  signatures across 13 chains, at least one per create, register, activate, propose, accept,
+  completion and verdict; step 5 prints how many it found and re-verified.
 
 ## Scope
 

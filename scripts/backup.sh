@@ -70,6 +70,10 @@ if ! [[ "$KEEP" =~ ^[0-9]+$ ]] || [[ "$KEEP" -lt 1 ]]; then
   die "--keep must be a whole number of backups to retain, 1 or more (got '${KEEP}'). This run keeps the backup it takes, so 0 is not a retention policy: to remove backups, delete them from ${BACKUP_ROOT}."
 fi
 
+# The archive holds the whole database, so nothing this run writes is readable
+# beyond the account running it.
+umask 077
+
 load_env
 detect_db_mode
 build_compose_cmd
@@ -81,8 +85,6 @@ build_compose_cmd
 BACKUP_PROJECT="$(compose_project_name)"
 BACKUP_PATH="${BACKUP_ROOT}/${BACKUP_PROJECT}-${TIMESTAMP}"
 
-report_legacy_backup_root
-
 mkdir -p "${BACKUP_PATH}"
 log "Backup directory: ${BACKUP_PATH}"
 
@@ -90,15 +92,56 @@ log "Backup directory: ${BACKUP_PATH}"
 
 log "Backing up PostgreSQL..."
 
+# created_at is read from the database's clock, before the dump starts.
+# restore.sh reads it back (backup-metadata) as the instant to export
+# revocations from, and the database stamps every revocation with its own
+# clock, so a host clock that runs ahead would drop the revocations made in the
+# gap, and a stamp taken after the dump would drop those made while it ran.
+BACKUP_CLOCK_SQL="SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"
+
 if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   log "Using external DATABASE_URL for pg_dump."
   # Credentials move into the environment, never argv, and the client version
   # is reconciled with the server's before the dump runs.
   pg_env_from_url "${DATABASE_URL}" || die "DATABASE_URL is not a postgres:// URL."
+  BACKUP_CREATED_AT="$(pg_client_run psql -Atc "${BACKUP_CLOCK_SQL}" 2>/dev/null | tr -d '[:space:]')" || true
+  [[ "${BACKUP_CREATED_AT}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+    || die "Could not read the database's clock (SELECT now()) before the dump, so the backup cannot record when it was taken. No backup was kept."
   pg_client_run pg_dump -Fc > "${BACKUP_PATH}/db.dump"
 else
   log "Using compose postgres service."
+  BACKUP_CREATED_AT="$("${COMPOSE[@]}" exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -Atc "${BACKUP_CLOCK_SQL}" 2>/dev/null | tr -d '[:space:]')" || true
+  [[ "${BACKUP_CREATED_AT}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+    || die "Could not read the database's clock (SELECT now()) before the dump, so the backup cannot record when it was taken. No backup was kept."
   "${COMPOSE[@]}" exec -T postgres pg_dump -U "${POSTGRES_USER}" -Fc "${POSTGRES_DB}" > "${BACKUP_PATH}/db.dump"
+fi
+
+# Which database this is, for restore.sh to tell whether the database it later
+# replaces is this one carried forward (see database_token_sql). Left empty
+# when the server will not answer, which costs that restore its revocation
+# replay and nothing else: it lists the credentials to compare instead.
+if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
+  DATABASE_TOKEN="$(pg_client_run psql -Atc "$(database_token_sql)" 2>/dev/null | tr -d '[:space:]')" || true
+else
+  DATABASE_TOKEN="$("${COMPOSE[@]}" exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -Atc "$(database_token_sql)" 2>/dev/null | tr -d '[:space:]')" || true
+fi
+if ! is_database_token "${DATABASE_TOKEN}"; then
+  log "WARN: the database did not report its system identifier and OID, so this archive records no"
+  log "      database_token. A restore of it cannot show which database it replaces, and lists the"
+  log "      credentials to compare against your own record instead of re-applying revocations."
+  DATABASE_TOKEN=""
+fi
+# Read after the dump has finished, so a physical copy of this database taken
+# before then (a snapshot, a point-in-time restore, a clone) is behind it.
+if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
+  WAL_LSN="$(pg_client_run psql -Atc "$(wal_position_sql)" 2>/dev/null | tr -d '[:space:]')" || true
+else
+  WAL_LSN="$("${COMPOSE[@]}" exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -Atc "$(wal_position_sql)" 2>/dev/null | tr -d '[:space:]')" || true
+fi
+if ! is_wal_lsn "${WAL_LSN}"; then
+  log "WARN: the database did not report its WAL position, so this archive records no wal_lsn. A"
+  log "      restore of it lists the credentials to compare instead of re-applying revocations."
+  WAL_LSN=""
 fi
 
 # The dump is checked before anything reports success on it. A backup is only
@@ -163,7 +206,9 @@ fi
 METADATA_FILE="${BACKUP_PATH}/backup-metadata"
 {
   echo "# AGLedger backup metadata. Written by backup.sh, read by restore.sh."
-  echo "created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  echo "created_at=${BACKUP_CREATED_AT}"
+  echo "database_token=${DATABASE_TOKEN}"
+  echo "wal_lsn=${WAL_LSN}"
   echo "compose_project=${BACKUP_PROJECT}"
   echo "agledger_version=$(get_env_value AGLEDGER_VERSION "${COMPOSE_DIR}/.env")"
   echo "agledger_image_pin=$(get_env_value AGLEDGER_IMAGE_PIN "${COMPOSE_DIR}/.env")"
@@ -185,10 +230,8 @@ rm -rf "${BACKUP_PATH}"
 
 log "Retaining last ${KEEP} backups for project ${BACKUP_PROJECT}..."
 # Scoped to this project's archives. Unscoped, a `--keep` run in one checkout
-# deleted the pre-upgrade archive another install had just taken, which is the
-# one archive whose loss cannot be noticed until the rollback that needs it.
-# Archives from earlier releases carry no project in their name and are left
-# alone for the same reason.
+# would delete the pre-upgrade archive another install had just taken, which is
+# the one archive whose loss cannot be noticed until the rollback that needs it.
 #
 # The timestamp is spelled out digit by digit rather than as `*`, because one
 # project name can be a prefix of another: `agledger` and the README's own

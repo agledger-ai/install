@@ -540,7 +540,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "A cascade-rollup job gave up after every pg-boss retry. If the failing job was the last child's, the parent is stranded ACTIVE with every child terminal and nothing rolls it up; if other children were still outstanding, a later one rolls the parent up normally and only this attempt was lost. The auto-rollup consistency sweep (agledger_auto_rollup_stuck_parents_total, data-integrity dashboard) settles the parent either way: it rolls up any ACTIVE parent whose children are all terminal once the tree has been quiet for five minutes, and it runs every five minutes, so expect the settlement five to ten minutes later. This counter names the cause at the moment it happens, which the sweep cannot.",
+      "description": "A cascade-rollup job gave up after every pg-boss retry. The job only ever fails a parent, or expires one past its own deadline (children never settle one). If the failing job was the last child's and a child failed, the parent is stranded ACTIVE beside that failure; if other children were still outstanding, a later one rolls the failure up normally and only this attempt was lost. The auto-rollup consistency sweep (agledger_auto_rollup_stuck_parents_total, data-integrity dashboard) rolls the failure up either way, failing the parent or expiring it past its own deadline: it rolls up any ACTIVE parent whose children are all terminal with one failed once the tree has been quiet for five minutes, and it runs every five minutes, so expect it five to ten minutes later. This counter names the cause at the moment it happens, which the sweep cannot.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1409,7 +1409,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "SIEM HTTP batches dropped after delivery failure. BUS EVENTS ONLY: polled system_audit_log rows no longer pass through this sender's buffer, and a batch a collector refuses on that path is retried from an unadvanced cursor rather than dropped. So 0 here does NOT mean the compliance feed is complete. For the polled path read SIEM poll deliveries refused alongside it.",
+      "description": "SIEM HTTP batches dropped after delivery failure. BUS EVENTS ONLY: polled system_audit_log rows do not pass through this sender's buffer, and a batch a collector refuses on that path is retried from an unadvanced cursor rather than dropped. So 0 here does NOT mean the compliance feed is complete. For the polled path read SIEM poll deliveries refused alongside it.",
       "fieldConfig": {
         "defaults": {
           "color": {

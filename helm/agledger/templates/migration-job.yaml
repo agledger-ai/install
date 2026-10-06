@@ -1,26 +1,4 @@
-apiVersion: batch/v1
-kind: Job
-metadata:
-  # Bundled Postgres is a normal chart resource, not a hook — Helm only creates it
-  # AFTER all pre-install hooks succeed. If the migration ran as a pre-install hook
-  # here, its wait-for-db init container would block forever waiting for a Postgres
-  # that does not yet exist → `helm install` deadlocks. So on the
-  # bundled path the migration is a normal resource too, applied alongside Postgres,
-  # ordered by the wait-for-db init container below. The name is per-revision so
-  # `helm upgrade` creates a fresh Job (a fixed-name normal Job is rejected on
-  # upgrade — Job pod templates are immutable); ttlSecondsAfterFinished GCs old ones.
-  # External DB always pre-exists, so that path keeps the pre-install/pre-upgrade hook.
-  name: {{ include "agledger.fullname" . }}-migrate{{- if (include "agledger.bundledPostgres" .) }}-{{ .Release.Revision }}{{- end }}
-  labels:
-    {{- include "agledger.labels" . | nindent 4 }}
-    app.kubernetes.io/component: migrate
-  {{- if not (include "agledger.bundledPostgres" .) }}
-  annotations:
-    "helm.sh/hook": pre-install,pre-upgrade
-    "helm.sh/hook-weight": "-5"
-    "helm.sh/hook-delete-policy": before-hook-creation
-  {{- end }}
-spec:
+{{- define "agledger.migrateJobSpec" }}
   backoffLimit: 3
   ttlSecondsAfterFinished: 86400
   template:
@@ -30,6 +8,7 @@ spec:
         app.kubernetes.io/component: migrate
     spec:
       serviceAccountName: {{ include "agledger.serviceAccountName" . }}
+      automountServiceAccountToken: {{ include "agledger.automountToken" . }}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -103,10 +82,16 @@ spec:
             - name: tmp
               mountPath: /tmp
             {{- include "agledger.licenseVolumeMount" . | nindent 12 }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
         {{- include "agledger.licenseVolume" . | nindent 8 }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with (.Values.migrate.nodeSelector | default .Values.api.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -119,3 +104,45 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}
+{{- $spec := include "agledger.migrateJobSpec" . }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Bundled Postgres is a normal chart resource, not a hook — Helm only creates it
+  # AFTER all pre-install hooks succeed. If the migration ran as a pre-install hook
+  # here, its wait-for-db init container would block forever waiting for a Postgres
+  # that does not yet exist → `helm install` deadlocks. So on the
+  # bundled path the migration is a normal resource too, applied alongside Postgres,
+  # ordered by the wait-for-db init container below. The name is per-revision so
+  # `helm upgrade` creates a fresh Job (a fixed-name normal Job is rejected on
+  # upgrade — Job pod templates are immutable); ttlSecondsAfterFinished GCs old ones.
+  # External DB always pre-exists, so that path keeps the pre-install/pre-upgrade hook.
+  {{- /* On bundled Postgres the name carries the revision AND a hash of the
+         rendered spec below. The revision makes each `helm upgrade` a fresh
+         Job. A renderer (helm template, Argo CD, Flux) renders every sync as
+         revision 1, so there the hash is what moves: a new image, or any
+         other change to what the Job runs, is a new Job name, and the
+         previous name, whose spec is immutable, is pruned rather than
+         patched. An unchanged spec keeps its name, which is right too: the
+         same image has no migration the last run did not apply. */}}
+  {{- /* The cut to 36 characters is only where the revision and hash follow it.
+         The hook name on the external path has neither, so it keeps the whole
+         fullname: two releases sharing a cut prefix would share a hook name,
+         and before-hook-creation would delete the other release's Job. */}}
+  {{- if (include "agledger.bundledPostgres" .) }}
+  name: {{ include "agledger.fullname" . | trunc 36 | trimSuffix "-" }}-migrate-{{ .Release.Revision }}-{{ $spec | sha256sum | trunc 8 }}
+  {{- else }}
+  name: {{ include "agledger.fullname" . }}-migrate
+  {{- end }}
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  {{- if not (include "agledger.bundledPostgres" .) }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+  {{- end }}
+spec:
+{{- $spec }}

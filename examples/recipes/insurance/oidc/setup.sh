@@ -14,12 +14,22 @@
 #                          (default http://localhost:8080/realms/meridian/protocol/openid-connect/token)
 #   OIDC_ISSUER            the `iss` the IdP writes into its tokens, which is also the URL the
 #                          Server fetches the realm's keys from (default http://keycloak:8080/realms/meridian)
-#   ADJUSTER_SECRET, SUPERVISOR_SECRET, AUDITOR_SECRET   client secrets (defaults match idp/realm-meridian.json)
+#   ADJUSTER_SECRET, SUPERVISOR_SECRET, AUDITOR_SECRET, UNBOUND_SECRET
+#                          the realm's client secrets. Read from idp/secrets.env, the file the
+#                          README generates and hands Keycloak, unless already set.
 #
-# Writes oidc.env beside this script: the agent ids and URLs walkthrough.mjs reads.
-# Safe to re-run: an existing trust row and existing bound agents are reused.
+# Writes oidc.env beside this script (mode 600): the agent ids, URLs and client secrets
+# walkthrough.mjs reads. Safe to re-run: an existing trust row and existing bound agents are reused.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+for v in ADJUSTER_SECRET SUPERVISOR_SECRET AUDITOR_SECRET UNBOUND_SECRET; do
+  # A value already in the environment wins over the file.
+  if [ -z "${!v:-}" ] && [ -f "$HERE/idp/secrets.env" ]; then
+    val="$(sed -n "s/^$v=//p" "$HERE/idp/secrets.env" | tail -1)"
+    [ -n "$val" ] && printf -v "$v" '%s' "$val"
+  fi
+  [ -n "${!v:-}" ] || { echo "$v is not set: generate idp/secrets.env first (README, step 1)"; exit 1; }
+done
 API="${AGLEDGER_API_URL:?set AGLEDGER_API_URL}"; PLT="${AGLEDGER_PLATFORM_KEY:?set AGLEDGER_PLATFORM_KEY}"
 TOKEN_URL="${OIDC_TOKEN_URL:-http://localhost:8080/realms/meridian/protocol/openid-connect/token}"
 ISS="${OIDC_ISSUER:-http://keycloak:8080/realms/meridian}"
@@ -81,17 +91,25 @@ agent_for(){ # displayName clientId secret -> agent id
   fi
   echo "$id"
 }
-ADJ=$(agent_for "Claims adjuster (OIDC)"   claims-adjuster   "${ADJUSTER_SECRET:-adjuster-secret-1}")     || fail=1
-SUP=$(agent_for "Claims supervisor (OIDC)" claims-supervisor "${SUPERVISOR_SECRET:-supervisor-secret-1}") || fail=1
-AUD=$(agent_for "Claims auditor (OIDC)"    claims-auditor    "${AUDITOR_SECRET:-auditor-secret-1}")       || fail=1
+ADJ=$(agent_for "Claims adjuster (OIDC)"   claims-adjuster   "$ADJUSTER_SECRET")   || fail=1
+SUP=$(agent_for "Claims supervisor (OIDC)" claims-supervisor "$SUPERVISOR_SECRET") || fail=1
+AUD=$(agent_for "Claims auditor (OIDC)"    claims-auditor    "$AUDITOR_SECRET")    || fail=1
 echo "     unbound-workload is deliberately left unbound: the walkthrough shows its exchange refused"
 [ "$fail" = 0 ] || { echo; echo "SETUP FAIL"; exit 1; }
 
+( umask 077
 cat > "$HERE/oidc.env" <<EOF
 AGLEDGER_API_URL=$API
 OIDC_TOKEN_URL=$TOKEN_URL
 ADJUSTER_AGENT_ID=$ADJ
 SUPERVISOR_AGENT_ID=$SUP
 AUDITOR_AGENT_ID=$AUD
+ADJUSTER_SECRET=$ADJUSTER_SECRET
+SUPERVISOR_SECRET=$SUPERVISOR_SECRET
+AUDITOR_SECRET=$AUDITOR_SECRET
+UNBOUND_SECRET=$UNBOUND_SECRET
 EOF
+)
+# umask covers only a file this run creates; one an earlier run wrote keeps its mode.
+chmod 600 "$HERE/oidc.env"
 echo; echo "SETUP PASS: row $ROW, agents written to oidc.env"

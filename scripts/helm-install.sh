@@ -65,6 +65,10 @@ EXTRA_VALUES=""
 # on. Every consumer below iterates the array; nothing rebuilds the string.
 EXTRA_ARGS=()
 VERSION=""
+# Whether THIS run's arguments named the version. VERSION is also filled from
+# the release's own revisions on a reconcile, and from Docker Hub on a first
+# install; only a version the operator named may move a release's image tag.
+VERSION_GIVEN=false
 CA_CERT=""
 EXTERNAL_URL=""
 # Bundled in the agledger/agledger image at build time. Covers AWS RDS / Aurora.
@@ -107,14 +111,16 @@ usage() {
     --db <url>            External PostgreSQL connection string
     --bundled             Use the chart's bundled PostgreSQL
     --external-url <url>  Public URL this Server is reachable at. Signed into
-                          every record as the issuer, and permanent.
+                          every record as the issuer, and permanent. Required
+                          on a first install with no terminal to ask on.
     --namespace <ns>      Kubernetes namespace (default: default)
     --release <name>      Helm release name (default: agledger)
     --values <file>       Extra values file, passed to helm as -f
     --version <X.Y.Z>     Chart/image version. Required to verify signatures
                           when the version cannot be resolved from Docker Hub.
                           Omitted on an existing release, the run stays on the
-                          version that release's own revisions name.
+                          version that release's own revisions name, and on
+                          the image tag the release already runs.
     --chart <ref>         Chart to install (default: the Docker Hub OCI chart).
                           Takes an oci:// reference on your own registry, or a
                           local agledger-chart-X.Y.Z.tgz from `helm pull`.
@@ -201,7 +207,11 @@ ask() {
   # A nonzero `read` still assigns what it managed to consume, which is a real
   # answer when the operator ended the line with EOF instead of Enter. Only an
   # empty-handed failure is a fallback, and only that is worth narrating.
+  # ASK_DEFAULTED says which happened, for a caller that must not take its
+  # default without an answer (the issuer prompt).
+  ASK_DEFAULTED=false
   if [[ "$__ok" -eq 0 && -z "$__reply" ]]; then
+    ASK_DEFAULTED=true
     info "No terminal for input; using the default (${__default:-empty}). Pass ${__flag} to choose."
   fi
   printf -v "$__var" '%s' "${__reply:-$__default}"
@@ -219,7 +229,7 @@ while [[ $# -gt 0 ]]; do
     --namespace)    NAMESPACE="$2"; shift 2 ;;
     --release)      RELEASE="$2"; shift 2 ;;
     --values)       EXTRA_VALUES="$2"; shift 2 ;;
-    --version)      VERSION="$2"; shift 2 ;;
+    --version)      VERSION="$2"; VERSION_GIVEN=true; shift 2 ;;
     --marketplace)  EXTRA_ARGS+=(--set "marketplace.productId=$2"); shift 2 ;;
     --ca-cert)      CA_CERT="$2"; shift 2 ;;
     --no-ca-cert)   CA_CERT="none"; shift ;;
@@ -329,7 +339,7 @@ case "$SECRET_DIR" in
 esac
 
 # Does this release already exist? `helm install` refuses a name that is in use,
-# so before this the ONLY way to correct a value was `helm uninstall` and a
+# so with it the ONLY way to correct a value would be `helm uninstall` and a
 # fresh install, which on a bundled-PG release means the database too. The
 # install is a `helm upgrade --install`, and everything below that would
 # generate, prompt for, or overwrite state reads this first.
@@ -371,7 +381,7 @@ fi
 # True when the existing release already answers for a value, so this run has no
 # business asking for one or generating one. Always false on a first install.
 release_declares() {
-  [[ "$RELEASE_EXISTS" == true ]] && "$1" "$RELEASE_VALUES"
+  [[ "$RELEASE_EXISTS" == true ]] && "$@" "$RELEASE_VALUES"
 }
 
 # The database TLS CA cert path a values file names under
@@ -395,6 +405,23 @@ ca_cert_in() {
       gsub(/["'"'"']/, "", v)
       sub(/[[:space:]]+$/, "", v)
       # YAML nulls are a cert the release does not have, the same as "".
+      if (v == "null" || v == "Null" || v == "NULL" || v == "~") { v = "" }
+      print v; exit
+    }
+  ' "$1" 2>/dev/null || true
+}
+
+# The `image.tag` a values file names, or empty when it names none. Same shape
+# as ca_cert_in: a top-level `image:` block naming the key.
+image_tag_in() {
+  awk '
+    /^[^[:space:]#]/ { top = $0; sub(/:.*/, "", top) }
+    top == "image" && /^[[:space:]]+tag:[[:space:]]*/ {
+      v = $0
+      sub(/^[[:space:]]+tag:[[:space:]]*/, "", v)
+      sub(/[[:space:]]+#.*/, "", v)
+      gsub(/["'"'"']/, "", v)
+      sub(/[[:space:]]+$/, "", v)
       if (v == "null" || v == "Null" || v == "NULL" || v == "~") { v = "" }
       print v; exit
     }
@@ -668,14 +695,49 @@ fi
 # they name one we stay out of the way entirely: no keygen pod, no flag of
 # ours, and no "save this key" line naming a key they never asked for.
 #
-# Only their `--set*` forms are checked, not a values file: `--set` already
-# beat `-f` before this change, so values-file behaviour is unchanged and there
-# is nothing here to restore. The two key paths are specific enough that the
-# substring collisions `operator_set_openshift` guards against do not apply.
+# Only their `--set*` forms are checked, not a values file: by helm's own
+# precedence any `--set` beats `-f`, so a values file is not a way to name these
+# two keys over this script.
+#
+# `operator_named KEY` is true when an assignment's key is KEY or a path under
+# it (`ingress.hosts` is named by `ingress.hosts[0].host=...`), and
+# `operator_named KEY=VALUE` also requires that value. The key is compared
+# whole, never as a substring: `secrets.vaultSigningKeyPrevious` names the
+# predecessor key, not `secrets.vaultSigningKey`. Only the five `--set*` flags
+# are read, as `--set K=V` and as `--set=K=V`, and their comma lists are split
+# the way helm splits them: `\,` stays inside a value, and `--set-literal` is a
+# single assignment.
 operator_named() {
-  local arg
+  local want="$1" want_key want_val="" has_val=false
+  local arg flag="" pending="" rest seg key
+  want_key="${want%%=*}"
+  if [[ "$want" == *=* ]]; then has_val=true; want_val="${want#*=}"; fi
   for arg in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
-    [[ "$arg" == *"$1"* ]] && return 0
+    if [[ -n "$pending" ]]; then
+      flag="$pending"; pending=""; rest="$arg"
+    else
+      case "$arg" in
+        --set|--set-string|--set-file|--set-json|--set-literal)
+          pending="$arg"; continue ;;
+        --set=*|--set-string=*|--set-file=*|--set-json=*|--set-literal=*)
+          flag="${arg%%=*}"; rest="${arg#*=}" ;;
+        *) continue ;;
+      esac
+    fi
+    [[ "$flag" == "--set-literal" ]] || rest="${rest//\\,/ }"
+    while :; do
+      if [[ "$flag" == "--set-literal" ]]; then seg="$rest"; else seg="${rest%%,*}"; fi
+      if [[ "$seg" == *=* ]]; then
+        key="${seg%%=*}"
+        if [[ "$has_val" == true ]]; then
+          [[ "$key" == "$want_key" && "${seg#*=}" == "$want_val" ]] && return 0
+        else
+          [[ "$key" == "$want_key" || "$key" == "$want_key".* || "$key" == "$want_key"\[* ]] && return 0
+        fi
+      fi
+      [[ "$flag" != "--set-literal" && "$rest" == *,* ]] || break
+      rest="${rest#*,}"
+    done
   done
   return 1
 }
@@ -719,13 +781,68 @@ values_files_declare() {
       local IFS=,
       for part in $file; do
         [[ -n "$part" ]] \
-          && "$1" "$part" \
+          && "$@" "$part" \
           && return 0
       done
     fi
   done
   return 1
 }
+
+# The image.tag a values file names, printed, for values_files_declare to stop
+# at the first file that names one.
+print_image_tag() {
+  local tag
+  tag="$(image_tag_in "$1")"
+  [[ -n "$tag" ]] && printf '%s\n' "$tag"
+}
+
+# The value this run's --set gives KEY, or empty. The last --set wins, as in
+# helm. Plain `--set K=V` and `--set=K=V`, including comma lists.
+set_value_of() {
+  local want="$1" arg pending=false seg found=""
+  for arg in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
+    if [[ "$pending" == true ]]; then
+      pending=false
+    else
+      case "$arg" in
+        --set|--set-string) pending=true; continue ;;
+        --set=*|--set-string=*) arg="${arg#*=}" ;;
+        *) continue ;;
+      esac
+    fi
+    local IFS=,
+    for seg in $arg; do
+      [[ "$seg" == "${want}="* ]] && found="${seg#*=}"
+    done
+  done
+  printf '%s' "$found"
+}
+
+# The image tag this run deploys when it does not move the tag itself: a
+# reconcile without --version. --set first, then this run's values files, then
+# the release's own values, which --reset-then-reuse-values carries forward.
+# Empty when nothing names one (the chart's appVersion applies), or when this
+# run's --version sets it.
+RUN_IMAGE_TAG=""
+RUN_IMAGE_TAG_FROM=""
+if [[ "$RELEASE_EXISTS" == true ]] && [[ "$VERSION_GIVEN" != true ]]; then
+  RUN_IMAGE_TAG="$(set_value_of image.tag)"
+  RUN_IMAGE_TAG_FROM="set"
+  if [[ -z "$RUN_IMAGE_TAG" ]]; then
+    RUN_IMAGE_TAG="$(values_files_declare print_image_tag || true)"
+    RUN_IMAGE_TAG_FROM=values
+  fi
+  if [[ -z "$RUN_IMAGE_TAG" ]]; then
+    RUN_IMAGE_TAG="$(image_tag_in "$RELEASE_VALUES")"
+    RUN_IMAGE_TAG_FROM=release
+  fi
+  # The keygen pod runs the image the workloads will. A Docker Hub image was
+  # resolved to its verified digest above and keeps it.
+  if [[ -n "$RUN_IMAGE_TAG" && "$IMAGE_MIRRORED" == true ]]; then
+    IMG_REF="${IMAGE_REPO}:${RUN_IMAGE_TAG}"
+  fi
+fi
 
 # True when the operator has already expressed an openshift.enabled preference,
 # in any of the three ways they can reach the chart from here.
@@ -814,6 +931,29 @@ release_issuer() {
 # splits the chain rather than correcting it. The chart refuses to render a
 # production install that supplies neither this nor an ingress host, which is
 # why this asks rather than defaulting quietly.
+#
+# With nobody to ask, it refuses instead of taking the prompt's default. Every
+# other prompt here has a default that can be changed on a re-run; this one is
+# signed into the chain the first boot writes, so an unattended install with no
+# --external-url would make https://localhost the permanent issuer of a Server
+# that has a domain. Saying https://localhost on purpose is one flag.
+#
+# The refusal is for the run where nothing at all speaks to the issuer. The
+# matchers above recognise an ingress or Route exposure only when one source
+# carries both its host and its `enabled`, so an exposure split across a values
+# file and a --set, a --set-json block, or an existing release (one in a
+# non-production nodeEnv takes the chart's own fallback) is not proof of "no
+# issuer". Those runs pass nothing of ours and leave the answer to the chart,
+# which refuses a production render that has none.
+declares_exposure_block() {
+  grep -qE '^(ingress|route):' "$1" 2>/dev/null
+}
+issuer_left_to_chart() {
+  [[ "$RELEASE_EXISTS" == true ]] && return 0
+  operator_named ingress || operator_named route || operator_named config.nodeEnv && return 0
+  values_files_declare declares_exposure_block
+}
+ISSUER_REFUSAL="No terminal answered the external URL prompt, and neither your arguments, a values file nor an existing release names one. It is the issuer signed into every record this Server writes and cannot be changed for rows already written, so this installer does not choose it for you. Nothing was installed. Re-run with --external-url https://<your domain>, or --external-url https://localhost for a node with no domain."
 if operator_set_issuer; then
   if [[ -n "$EXTERNAL_URL" ]]; then
     :
@@ -825,6 +965,11 @@ if operator_set_issuer; then
   else
     info "Keeping the external URL the release already publishes."
   fi
+elif [[ -z "$TTY_IN" ]] && issuer_left_to_chart; then
+  info "No terminal to ask for the external URL on; leaving it to your configuration and the release."
+  info "The chart refuses a production render that ends up with no issuer, naming what to set."
+elif [[ -z "$TTY_IN" ]]; then
+  fatal "$ISSUER_REFUSAL"
 else
   echo ""
   echo "  Public URL this Server will be reachable at."
@@ -833,6 +978,11 @@ else
   echo "    Press Enter for https://localhost if this node has no domain yet."
   echo ""
   ask EXTERNAL_URL "  External URL [https://localhost]: " "https://localhost" "--external-url <url>"
+  # A terminal that opened but could not be read (a backgrounded run) is the
+  # same nobody-to-ask case.
+  if [[ "$ASK_DEFAULTED" == true ]]; then
+    fatal "$ISSUER_REFUSAL"
+  fi
 fi
 if [[ -n "$EXTERNAL_URL" ]]; then
   info "Chain issuer: ${EXTERNAL_URL}"
@@ -847,9 +997,7 @@ fi
 # AGLEDGER_SIGNING_ALGORITHM: ed25519 (default) or es256. es256 is for
 # FIPS-mode clusters, whose providers cannot compute Ed25519; it also sets the
 # AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG acknowledgment via extraEnv (chain
-# consumers need @agledger/verify >= 1.4.0, the release that resolves a
-# @agledger/verify-core carrying ES256 under every install shape; core is where
-# the support lives).
+# consumers need @agledger/verify >= 2.0.0, as on any 2.x install).
 SIGNING_ALGORITHM="${AGLEDGER_SIGNING_ALGORITHM:-ed25519}"
 case "$SIGNING_ALGORITHM" in
   ed25519|es256) ;;
@@ -886,12 +1034,47 @@ declares_secrets_key() {
   ' "$1" 2>/dev/null
 }
 
+# The release's own Secret holding VAULT_SIGNING_KEY, by the instance label the
+# chart puts on everything it makes. Empty for `secrets.existingSecret`, which
+# the operator owns and the chart does not label.
+vault_key_secret() {
+  kubectl get secret --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE}" \
+    -o jsonpath='{range .items[?(@.data.VAULT_SIGNING_KEY)]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+    | head -1 || true
+}
+
+# Why the keygen pod has not started, when the reason is that its image cannot
+# be pulled: "<reason>: <message>", or nothing. The api, worker and every hook
+# Job run that same image, so an install past this point fails the same way.
+keygen_pull_failure() {
+  local reason message
+  reason="$(kubectl get pod agledger-keygen --namespace "$NAMESPACE" \
+    -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)"
+  case "$reason" in
+    ErrImagePull|ImagePullBackOff|InvalidImageName|ErrImageNeverPull|RegistryUnavailable) ;;
+    *) return 0 ;;
+  esac
+  message="$(kubectl get pod agledger-keygen --namespace "$NAMESPACE" \
+    -o jsonpath='{.status.containerStatuses[0].state.waiting.message}' 2>/dev/null || true)"
+  printf '%s%s' "$reason" "${message:+: $message}"
+}
+
 VAULT_KEY=""
+# Display only, never passed to helm: --set-file would copy the key into the
+# release's stored values, which the chart's lookup exists to keep it out of.
+REUSED_VAULT_KEY=""
 if operator_named secrets.vaultSigningKey || operator_named secrets.existingSecret; then
   info "Using the vault signing key from your own --set; not generating one."
 elif release_holds_vault_key; then
   info "The release already holds a vault signing key; reusing it rather than generating one."
   info "Generating one here would re-key the chain and orphan every entry already signed."
+  # Read back so the summary prints it: a first run that stopped at the rollout
+  # wait never reached the line that prints the key it generated.
+  VAULT_KEY_SECRET="$(vault_key_secret)"
+  if [[ -n "$VAULT_KEY_SECRET" ]]; then
+    REUSED_VAULT_KEY="$(kubectl get secret "$VAULT_KEY_SECRET" --namespace "$NAMESPACE" \
+      -o jsonpath='{.data.VAULT_SIGNING_KEY}' 2>/dev/null | base64 --decode 2>/dev/null || true)"
+  fi
 else
   info "Generating ${SIGNING_ALGORITHM} vault signing key..."
   # The pod runs in the namespace the workload will run in, not whatever the
@@ -927,12 +1110,28 @@ else
   KEYGEN_LOG="${SECRET_DIR}/keygen.log"
   : > "$KEYGEN_LOG"
   chmod 600 "$KEYGEN_LOG"
-  kubectl run agledger-keygen --rm --attach --restart=Never \
+  # No `--rm`: on a pull failure the attach only times out, and the pod has to
+  # still be there to say why. It is deleted below once read, and first here,
+  # so a pod an interrupted run left behind is not read as this run's answer.
+  kubectl delete pod agledger-keygen --namespace "$NAMESPACE" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  kubectl run agledger-keygen --attach --restart=Never \
     --namespace "$NAMESPACE" \
     --image="$IMG_REF" \
     --command -- /nodejs/bin/node dist/scripts/generate-signing-key.js --algorithm "$SIGNING_ALGORITHM" \
     >"$KEYGEN_LOG" 2>&1 </dev/null || true
+  # The attach can connect after the container has already exited (on a node
+  # that pulls the image first, the container then runs in well under a
+  # second), and returns rc 0 with only its banner. The pod's log still holds
+  # the key and its pin, so it is read before the pod is deleted.
+  if ! grep -q '^VAULT_SIGNING_KEY=' "$KEYGEN_LOG"; then
+    kubectl wait pod/agledger-keygen --namespace "$NAMESPACE" \
+      --for=jsonpath='{.status.phase}'=Succeeded --timeout=60s >/dev/null 2>&1 || true
+    kubectl logs agledger-keygen --namespace "$NAMESPACE" >>"$KEYGEN_LOG" 2>/dev/null || true
+  fi
+  KEYGEN_PULL_FAILURE="$(keygen_pull_failure)"
+  kubectl delete pod agledger-keygen --namespace "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
   VAULT_KEY=$(sed -n 's/^VAULT_SIGNING_KEY=\([^[:space:]][^[:space:]]*\).*/\1/p' "$KEYGEN_LOG" | head -1 || true)
+  VAULT_KEY_PIN=$(sed -n 's/^Pin: \(sha256:[0-9a-f]\{64\}\).*/\1/p' "$KEYGEN_LOG" | head -1 || true)
 
   if [[ -z "$VAULT_KEY" ]]; then
     echo "  [!] The keygen pod produced no key. What it reported:" >&2
@@ -940,6 +1139,11 @@ else
       sed 's/^/      /' "$KEYGEN_LOG" >&2
     else
       echo "      (nothing at all)" >&2
+    fi
+    # A key made locally would get past this step and leave the install to fail
+    # on the same pull at the first hook Job, minutes later and less clearly.
+    if [[ -n "$KEYGEN_PULL_FAILURE" ]]; then
+      fatal "The cluster cannot pull ${IMG_REF} (${KEYGEN_PULL_FAILURE}). The api, worker and every hook Job run this image, so nothing was installed. Fix the image reference, or the nodes' access to the registry (imagePullSecrets, a mirror, egress), then run this installer again."
     fi
     # Fallback: generate locally with openssl if available.
     #
@@ -957,6 +1161,12 @@ else
       else
         VAULT_KEY=$(openssl genpkey -algorithm ed25519 2>/dev/null | openssl pkey -outform DER 2>/dev/null | openssl base64 -A 2>/dev/null)
       fi
+      # The pin is the SHA-256 of the key's SPKI, as generate-signing-key.js prints it.
+      if [[ -n "$VAULT_KEY" ]]; then
+        VAULT_KEY_PIN_HEX=$(printf '%s' "$VAULT_KEY" | openssl base64 -d -A 2>/dev/null \
+          | openssl pkey -inform DER -pubout -outform DER 2>/dev/null | openssl dgst -sha256 -r 2>/dev/null | cut -d' ' -f1 || true)
+        [[ "$VAULT_KEY_PIN_HEX" =~ ^[0-9a-f]{64}$ ]] && VAULT_KEY_PIN="sha256:${VAULT_KEY_PIN_HEX}"
+      fi
     fi
   fi
 
@@ -969,6 +1179,48 @@ else
     ${SELF} --set-file secrets.vaultSigningKey=./vault-signing-key ..."
 
   info "Vault signing key generated"
+fi
+
+# The instance id on a first install onto secrets.existingSecret. The chart
+# refuses that render without `instanceId`: with no ConfigMap to read back, a
+# renderer would mint a new id on every sync and the Server refuses to boot
+# under a second one. This run is a real install, so it mints the id once and
+# passes it, and the operator pins it in the values they keep. Any other first
+# install lets the chart generate it into its ConfigMap, and a release that
+# exists keeps what it has.
+declares_existing_secret() {
+  awk '
+    /^[^[:space:]#]/ { top = $0; sub(/:.*/, "", top) }
+    top == "secrets" && /^[[:space:]]+existingSecret:[[:space:]]*[^[:space:]#]/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$1" 2>/dev/null
+}
+declares_instance_id() {
+  grep -qE '^instanceId:[[:space:]]*[^[:space:]#"]' "$1" 2>/dev/null \
+    || grep -qE '^instanceId:[[:space:]]*"[^"]' "$1" 2>/dev/null
+}
+# A v4 UUID from whatever this host has. The script is piped from curl, so it
+# cannot lean on a helper library.
+generate_instance_id() {
+  local raw
+  if [[ -r /proc/sys/kernel/random/uuid ]]; then
+    tr -d '[:space:]' < /proc/sys/kernel/random/uuid
+  elif command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  elif command -v openssl >/dev/null 2>&1; then
+    raw="$(openssl rand -hex 16)"
+    printf '%s-%s-4%s-%x%s-%s\n' "${raw:0:8}" "${raw:8:4}" "${raw:13:3}" "$(( (16#${raw:16:1} & 3) | 8 ))" "${raw:17:3}" "${raw:20:12}"
+  else
+    return 1
+  fi
+}
+INSTANCE_ID=""
+if [[ "$RELEASE_EXISTS" != true ]] \
+   && ! operator_named instanceId && ! values_files_declare declares_instance_id \
+   && { operator_named secrets.existingSecret || values_files_declare declares_existing_secret; }; then
+  INSTANCE_ID="$(generate_instance_id)" \
+    || fatal "secrets.existingSecret is set and this host has no way to generate a UUID for instanceId (no /proc/sys/kernel/random/uuid, uuidgen or openssl). Pass --set instanceId=<a new UUID> and pin it in your values."
+  info "Generated instanceId ${INSTANCE_ID} for this first install on secrets.existingSecret; pin it in your values (see the closing notes)."
 fi
 
 if [[ -n "$VAULT_KEY" ]]; then
@@ -1014,6 +1266,9 @@ fi
 if [[ -n "$VAULT_KEY" ]]; then
   HELM_CMD+=(--set-file "secrets.vaultSigningKey=${SECRET_DIR}/vault-signing-key")
 fi
+if [[ -n "$INSTANCE_ID" ]]; then
+  HELM_CMD+=(--set "instanceId=${INSTANCE_ID}")
+fi
 if [[ -n "$EXTERNAL_URL" ]]; then
   HELM_CMD+=(--set-file "config.externalUrl=${SECRET_DIR}/external-url")
 fi
@@ -1045,9 +1300,22 @@ fi
 # agledger/agledger on Docker Hub, and an enclave cannot reach it. The tag comes
 # from --version, so without one the chart stays on its appVersion, which is the
 # right answer for a mirror that copied the release under its own version.
+#
+# On a reconcile the tag comes from --version only when THIS run names one. The
+# version adopted off the release's revisions above is the CHART's version, and
+# a mirror may carry the image under a tag of its own (with a local .tgz,
+# `--version <tag>` never reaches the chart's metadata at all). Setting the
+# chart version over the release's own image.tag moves a re-run meant to fix a
+# CA onto an image the mirror may not hold. Left unset,
+# --reset-then-reuse-values keeps the tag the release runs.
 if [[ "$IMAGE_REPO" != "$DEFAULT_IMAGE_REPO" ]]; then
   HELM_CMD+=(--set "image.repository=${IMAGE_REPO}")
-  [[ -n "$VERSION" ]] && HELM_CMD+=(--set "image.tag=${VERSION}")
+  if [[ -n "$VERSION" ]] && { [[ "$VERSION_GIVEN" == true ]] || [[ "$RELEASE_EXISTS" != true ]]; }; then
+    HELM_CMD+=(--set "image.tag=${VERSION}")
+  fi
+fi
+if [[ -n "$RUN_IMAGE_TAG" && "$RUN_IMAGE_TAG_FROM" == release ]]; then
+  info "Keeping the image tag the release already runs: ${RUN_IMAGE_TAG}. Pass --version to move it."
 fi
 
 # DB_URL first, in the same order the database decision above announces it:
@@ -1199,13 +1467,34 @@ report_preflight() {
   echo "  it removed first, so nothing already written is lost." >&2
 }
 
+# What the database check warned about on a run that passed it. A warning does
+# not stop the install, and a Job that succeeded is otherwise never read, so a
+# finding such as a runtime role that owns the audit chain's tables would be in
+# the Job's log and nowhere the operator looks.
+report_preflight_warnings() {
+  local uid pod warnings
+  uid="$(preflight_job_uid)"
+  if [[ -z "$uid" || "$uid" == "$PREFLIGHT_UID_BEFORE" ]]; then return 0; fi
+  pod="$(kubectl get pod --namespace "$NAMESPACE" \
+      -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=preflight" \
+      --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | tail -1 || true)"
+  if [[ -z "$pod" ]]; then return 0; fi
+  # The report marks each warning with a yellow sign; the colour codes are dropped.
+  warnings="$(kubectl logs "$pod" --namespace "$NAMESPACE" --tail=-1 2>/dev/null \
+      | sed 's/\x1b\[[0-9;]*m//g' | grep '⚠' || true)"
+  if [[ -z "$warnings" ]]; then return 0; fi
+  echo ""
+  echo "  [!] The database check passed with warnings:"
+  printf '%s\n' "$warnings" | sed 's/^[[:space:]]*/      /'
+}
+
 # Identity of the migrate Job that already exists, read before helm runs. Same
 # before-hook-creation reasoning as preflight_job_uid: the migrate hook runs
 # first (weight -5, preflight is 0), so a failure here means preflight's own
 # UID never changes and report_preflight below reports nothing, correctly.
 #
 # On the bundled-Postgres path the migrate Job is a normal resource named
-# `-migrate-<revision>`, not a hook, so `before-hook-creation` never deletes
+# `-migrate-<revision>-<spec hash>`, not a hook, so `before-hook-creation` never deletes
 # the previous one and several coexist (24h TTL). An unsorted list from the
 # API server reads alphabetically for small counts (`-migrate-1` before
 # `-migrate-2`), which is oldest-first, the opposite of what a freshly failed
@@ -1219,8 +1508,25 @@ migrate_job_uid() {
   kubectl get "$job" --namespace "$NAMESPACE" -o jsonpath='{.metadata.uid}' 2>/dev/null || true
 }
 
+# The migrate Job runs on one of two paths, and what a failure has already done
+# differs between them, so the report reads the path off the Job rather than
+# off this run's flags. On an external database it is a pre-install/pre-upgrade
+# hook: helm stops before touching the api and worker, and fails. On bundled
+# PostgreSQL it is an ordinary resource applied beside the new api and worker,
+# so helm returns success and records the revision `deployed` (this installer
+# runs it without --wait), and when the revision changed the api's pod template
+# under the Recreate strategy, the pods that were serving are already gone.
+#
+# $1 is `deployed` when called after helm returned success; the report then
+# says what that status does not mean. Two readings taken before helm ran:
+# API_AVAILABLE_BEFORE, the api Deployment's available replica count, and
+# API_GENERATION_BEFORE, its metadata.generation. A generation that did not
+# move means this revision replaced no pod (the migrate Job is named per
+# revision, so even a re-run that changes nothing runs one), and the pods that
+# were serving still are.
 report_migrate() {
-  local uid succeeded failed job pod log
+  local after="${1:-}"
+  local uid succeeded failed job pod log hook strategy generation exit_code foreign=false
   uid="$(migrate_job_uid)"
   if [[ -z "$uid" || "$uid" == "$MIGRATE_UID_BEFORE" ]]; then return 0; fi
 
@@ -1237,13 +1543,27 @@ report_migrate() {
       -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=migrate" \
       --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | tail -1 || true)"
   log="$(kubectl logs "${pod:-$job}" --namespace "$NAMESPACE" --tail=-1 2>&1 || true)"
+  # The migrate CLI exits 65 (EX_DATAERR) when the database's recorded
+  # baseline is another build's. That refusal is the one no re-run clears, so
+  # the closing advice differs for it.
+  if [[ -n "$pod" ]]; then
+    exit_code="$(kubectl get "$pod" --namespace "$NAMESPACE" \
+        -o jsonpath='{.status.containerStatuses[?(@.name=="migrate")].state.terminated.exitCode}' 2>/dev/null || true)"
+    if [[ "$exit_code" == "65" ]]; then foreign=true; fi
+  fi
 
   echo "" >&2
   # A TLS handshake failure is one of several ways this fails (bad
   # credentials, a missing DDL grant, an unreachable host, a lock timeout, a
   # frozen-baseline checksum mismatch); let the log say which, the same as
   # report_preflight does for its own gate.
-  echo "  The migration hook (${job#job/}) did not pass. Its report:" >&2
+  hook="$(kubectl get "$job" --namespace "$NAMESPACE" \
+      -o jsonpath='{.metadata.annotations.helm\.sh/hook}' 2>/dev/null || true)"
+  if [[ -n "$hook" ]]; then
+    echo "  The migration hook (${job#job/}) did not pass. Its report:" >&2
+  else
+    echo "  The migration Job (${job#job/}) did not pass. Its report:" >&2
+  fi
   echo "" >&2
   echo "    kubectl logs ${job} --namespace $NAMESPACE --tail=-1" >&2
   echo "" >&2
@@ -1275,10 +1595,191 @@ report_migrate() {
     echo "  as it does to a first install." >&2
   fi
   echo "" >&2
-  echo "  Nothing was created if the hook never ran; if it ran partway, migrations" >&2
-  echo "  already applied are skipped on a re-run. Apply what the report asks for," >&2
-  echo "  then run this installer again: it reconciles the release in place and does" >&2
-  echo "  not need it removed first." >&2
+  if [[ -n "$hook" && "$foreign" == true ]]; then
+    echo "  The api and worker were not touched: helm stops at a failed hook." >&2
+    report_foreign_baseline_advice external
+    return 0
+  fi
+  if [[ -n "$hook" ]]; then
+    echo "  The api and worker were not touched: helm stops at a failed hook. If it" >&2
+    echo "  ran partway, migrations already applied are skipped on a re-run. Apply" >&2
+    echo "  what the report asks for, then run this installer again: it reconciles" >&2
+    echo "  the release in place and does not need it removed first." >&2
+    return 0
+  fi
+  if [[ "$after" == "deployed" ]]; then
+    echo "  helm lists this revision as deployed. That says helm applied the" >&2
+    echo "  manifests, not that the migration succeeded: on bundled PostgreSQL the" >&2
+    echo "  migration Job is an ordinary resource, not a hook, and this installer" >&2
+    echo "  runs helm without --wait. This run's exit status carries the failure." >&2
+    echo "" >&2
+  fi
+  if [[ "${API_AVAILABLE_BEFORE:-0}" == "0" ]]; then
+    echo "  No api pod was serving when this run started. If an earlier revision of" >&2
+    echo "  this release did serve (an upgrade that failed before this run), roll back" >&2
+    echo "  to it to restore service; helm history ${RELEASE} --namespace ${NAMESPACE}" >&2
+    if [[ "$foreign" == true ]]; then
+      echo "  lists them." >&2
+      report_foreign_baseline_advice bundled
+      return 0
+    fi
+    echo "  lists them. Otherwise apply what the report asks for, then run this" >&2
+    echo "  installer again: it reconciles the release in place and does not need it" >&2
+    echo "  removed first." >&2
+    return 0
+  fi
+  generation="$(kubectl get deployment --namespace "$NAMESPACE" \
+      -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=api" \
+      -o jsonpath='{.items[0].metadata.generation}' 2>/dev/null || true)"
+  if [[ -n "${API_GENERATION_BEFORE:-}" && "$generation" == "$API_GENERATION_BEFORE" ]]; then
+    echo "  This revision changed nothing the api runs with, so no api pod was" >&2
+    if [[ "$foreign" == true ]]; then
+      echo "  replaced and the pods that were serving still are." >&2
+      report_foreign_baseline_advice bundled
+      return 0
+    fi
+    echo "  replaced and the pods that were serving still are. Apply what the report" >&2
+    echo "  asks for, then run this installer again; migrations already applied are" >&2
+    echo "  skipped on a re-run." >&2
+    return 0
+  fi
+  strategy="$(kubectl get deployment --namespace "$NAMESPACE" \
+      -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=api" \
+      -o jsonpath='{.items[0].spec.strategy.type}' 2>/dev/null || true)"
+  if [[ "$strategy" == "Recreate" ]]; then
+    echo "  The api was already replaced: under the Recreate strategy the pods that" >&2
+    echo "  were serving stopped when helm applied this revision, and the new ones" >&2
+    echo "  refuse to start against this database, so nothing is serving." >&2
+    echo "  Roll back to restore service on the previous revision:" >&2
+  else
+    echo "  The api pods that were serving keep serving as far as the rollout" >&2
+    echo "  strategy (${strategy:-unknown}) leaves them up: the new ones refuse to start" >&2
+    echo "  against this database and never become ready. Roll back to put the" >&2
+    echo "  release back on the previous revision:" >&2
+  fi
+  echo "" >&2
+  echo "    helm rollback ${RELEASE} --namespace ${NAMESPACE}" >&2
+  if [[ "$foreign" == true ]]; then
+    report_foreign_baseline_advice bundled
+    return 0
+  fi
+  echo "" >&2
+  echo "  Then apply what the report asks for and run this installer again;" >&2
+  echo "  migrations already applied are skipped on a re-run." >&2
+}
+
+# The closing advice for a migration refused on a foreign baseline. The runner
+# applied nothing and refuses this database on every run, so running this
+# installer again is no remedy until the release names another database.
+# $1 is `external` (the hook path) or `bundled`.
+report_foreign_baseline_advice() {
+  echo "" >&2
+  echo "  The migration refused this database because its recorded baseline is" >&2
+  echo "  another build's (exit status 65). Running this installer again against" >&2
+  echo "  the same database is refused the same way: this release runs only against" >&2
+  echo "  a new, empty database, as the report above says. Keep this database for" >&2
+  echo "  the build that wrote it." >&2
+  if [[ "$1" == "external" ]]; then
+    report_foreign_baseline_urls
+  else
+    echo "" >&2
+    echo "  On bundled PostgreSQL this database is on the release's data volume" >&2
+    echo "  (kubectl get pvc --namespace ${NAMESPACE} -l app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=postgres)," >&2
+    echo "  which a re-run of this release keeps. To install this release on a new" >&2
+    echo "  database and keep this one, run this installer with a new --release name," >&2
+    echo "  or in a new --namespace: that install gets a data volume of its own." >&2
+    echo "  Do not helm uninstall this release to free the name: the chart sets no" >&2
+    echo "  keep policy on that claim, so helm deletes it, and under the usual Delete" >&2
+    echo "  reclaim policy the volume and this database go with it." >&2
+  fi
+}
+
+# Which database URLs the migrate step reads, so the advice names every one a
+# new database has to replace. The migrate CLI connects with the first of
+# DATABASE_URL_MIGRATE, DATABASE_URL_DIRECT and DATABASE_URL it is given. The
+# chart writes them from database.externalUrl (--db), secrets.databaseUrlMigrate
+# and secrets.databaseUrlDirect, each independently, and a reconcile carries
+# the last two forward; under secrets.existingSecret it writes none of them.
+report_foreign_baseline_urls() {
+  echo "" >&2
+  echo "  The migration connects with the first of DATABASE_URL_MIGRATE," >&2
+  echo "  DATABASE_URL_DIRECT and DATABASE_URL it is given, so each one this release" >&2
+  echo "  sets has to name the new database." >&2
+  if named_anywhere secrets.existingSecret; then
+    echo "  This release reads them from its own Secret (secrets.existingSecret), which" >&2
+    echo "  neither --db nor any --set writes: change them in that Secret, then run" >&2
+    echo "  this installer again." >&2
+    return 0
+  fi
+  echo "  Run this installer again with:" >&2
+  echo "" >&2
+  echo "    --db <new database URL>   (DATABASE_URL)" >&2
+  if named_anywhere secrets.databaseUrlMigrate; then
+    echo "    --set secrets.databaseUrlMigrate=<owner URL on the new database>   (DATABASE_URL_MIGRATE, which this release sets)" >&2
+  fi
+  if named_anywhere secrets.databaseUrlDirect; then
+    echo "    --set secrets.databaseUrlDirect=<direct URL to the new database>   (DATABASE_URL_DIRECT, which this release sets)" >&2
+  fi
+}
+
+# The worker runs what the api queues (gate evaluation, webhook delivery, the
+# scheduled maintenance jobs), and its strategy defaults to Recreate, so a
+# worker that cannot start leaves none of that running while the api answers
+# every request and its own rollout reports success. Called when the worker's
+# rollout did not finish; $1 is its Deployment (`deployment/<name>`). What it
+# says comes from the cluster: how many worker pods are ready now, and whether
+# this revision changed the worker's pod template (WORKER_TEMPLATE_BEFORE, read
+# before helm ran; empty when there was no worker to read). The template, not
+# the generation: an autoscaler or a replica count moves the generation
+# without changing what a worker pod runs.
+report_worker() {
+  local deploy="$1" ready template selector
+  selector="app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=worker"
+  ready="$(kubectl get "$deploy" --namespace "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+  template="$(kubectl get "$deploy" --namespace "$NAMESPACE" -o jsonpath='{.spec.template}' 2>/dev/null || true)"
+  echo "" >&2
+  echo "  The api is ready. The worker (${deploy#*/}) did not finish its rollout." >&2
+  if [[ "${ready:-0}" == "0" ]]; then
+    echo "  No worker pod is ready, so nothing runs the jobs the api queues (gate" >&2
+    echo "  evaluation, webhook delivery, scheduled maintenance). They wait in the" >&2
+    echo "  database until a worker runs." >&2
+  else
+    echo "  ${ready} worker pod(s) are ready, and the rollout of this revision did not" >&2
+    echo "  finish." >&2
+  fi
+  echo "" >&2
+  echo "  A worker's log names why it stopped. --previous reads the container that" >&2
+  echo "  last crashed; without it, the one running now:" >&2
+  echo "" >&2
+  echo "    kubectl logs ${deploy} --namespace ${NAMESPACE} --previous" >&2
+  echo "    kubectl logs ${deploy} --namespace ${NAMESPACE}" >&2
+  echo "" >&2
+  echo "  A container that never started (an image it cannot pull, a pod that" >&2
+  echo "  cannot be scheduled) has no log. Its pods' events name why, and what kept" >&2
+  echo "  one from passing its probes:" >&2
+  echo "" >&2
+  echo "    kubectl describe pod --namespace ${NAMESPACE} -l ${selector}" >&2
+  echo "" >&2
+  if [[ -z "${WORKER_TEMPLATE_BEFORE:-}" ]]; then
+    echo "  Fix what they name, then run this installer again: it reconciles the" >&2
+    echo "  release in place and does not need it removed first." >&2
+    return 0
+  fi
+  if [[ "$template" == "$WORKER_TEMPLATE_BEFORE" ]]; then
+    echo "  This revision did not change the worker's pod template, so rolling back" >&2
+    echo "  one revision starts it on nothing different. If an earlier revision ran a" >&2
+    echo "  worker, helm history ${RELEASE} --namespace ${NAMESPACE} lists the" >&2
+    echo "  revisions and helm rollback ${RELEASE} <revision> --namespace ${NAMESPACE}" >&2
+    echo "  returns to one. Otherwise fix what they name, then run this installer again." >&2
+    return 0
+  fi
+  echo "  This revision changed the worker. To put the release back on the previous" >&2
+  echo "  revision, the api with it:" >&2
+  echo "" >&2
+  echo "    helm rollback ${RELEASE} --namespace ${NAMESPACE}" >&2
+  echo "" >&2
+  echo "  Or fix what its log names and run this installer again: it reconciles the" >&2
+  echo "  release in place." >&2
 }
 
 # The one state a re-run cannot clear, and it is printed on EVERY helm failure
@@ -1286,6 +1787,122 @@ report_migrate() {
 # before it runs a single hook, so there is no gate Job for that path to find
 # and the advice would never reach the operator who needs it most: an
 # interrupted first run is exactly the case a reconciling re-run exists for.
+# The bundled PostgreSQL claims its volume from the cluster's default
+# StorageClass unless postgres.bundled.storageClassName names one, and stock EKS
+# 1.30+ has no default. The claim then sits Pending, Postgres never schedules,
+# and the API the wait below watches crash-loops on ECONNREFUSED, so the one
+# log the failure line points at names the symptom and not the cause.
+#
+# Echoes `present`, `absent <comma list of classes>` or `unknown` (the cluster
+# would not say, RBAC included). Only `absent` stops an install.
+default_storage_class_state() {
+  local rows
+  rows="$(kubectl get storageclass -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}{"\t"}{.metadata.annotations.storageclass\.beta\.kubernetes\.io/is-default-class}{"\n"}{end}' 2>/dev/null)" \
+    || { echo unknown; return 0; }
+  if printf '%s\n' "$rows" | awk -F'\t' '$2 == "true" || $3 == "true" { found = 1 } END { exit !found }'; then
+    echo present
+    return 0
+  fi
+  local names
+  names="$(printf '%s\n' "$rows" | awk -F'\t' 'NF && $1 != "" { printf "%s%s", sep, $1; sep = ", " }')"
+  echo "absent ${names:-none}"
+}
+
+# The release's bundled data claim, when it is still Pending. Only that one: a
+# backup claim on a WaitForFirstConsumer class sits Pending until its CronJob
+# first runs, which says nothing about why the API is not up.
+pending_claims() {
+  kubectl get pvc --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=postgres" \
+    -o jsonpath='{range .items[?(@.status.phase=="Pending")]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true
+}
+
+# The bundled data claim this release already holds, if any. An existing claim
+# is bound (or will be) whatever the default class is now, so it needs no check.
+bundled_claim_exists() {
+  [[ -n "$(kubectl get pvc --namespace "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=postgres" -o name 2>/dev/null)" ]]
+}
+
+# Block, flow and JSON spellings, quoted or bare; an empty value is not a name.
+declares_storage_class() {
+  grep -Eq 'storageClassName"?[[:space:]]*:[[:space:]]*["'"'"']?[A-Za-z0-9]' "$1" 2>/dev/null
+}
+
+# The scalar a block-style values file gives a dotted key (`backup.persistence.enabled`),
+# unquoted, or empty when the file names none. Flow and JSON spellings read as
+# unnamed, so a guard built on this one skips rather than refuses on them.
+yaml_scalar_at() {
+  awk -v want="$2" '
+    /^[[:space:]]*(#|$)/ { next }
+    {
+      match($0, /^[[:space:]]*/); ind = RLENGTH
+      line = substr($0, ind + 1)
+      if (line !~ /^[A-Za-z0-9_.-]+:/) next
+      key = line; sub(/:.*/, "", key)
+      val = line; sub(/^[^:]*:[[:space:]]*/, "", val)
+      while (depth > 0 && inds[depth] >= ind) depth--
+      depth++; inds[depth] = ind; keys[depth] = key
+      path = keys[1]
+      for (i = 2; i <= depth; i++) path = path "." keys[i]
+      if (path == want) {
+        sub(/[[:space:]]+#.*/, "", val)
+        gsub(/["'"'"']/, "", val)
+        sub(/[[:space:]]+$/, "", val)
+        if (val == "null" || val == "~") val = ""
+        print val; exit
+      }
+    }
+  ' "$1" 2>/dev/null || true
+}
+
+# Predicates over one values file, in the shape values_files_declare and
+# release_declares take: the key (and value) first, the file last.
+yaml_says() { [[ "$(yaml_scalar_at "$3" "$1")" == "$2" ]]; }
+yaml_names() { [[ -n "$(yaml_scalar_at "$2" "$1")" ]]; }
+
+# True when the chart will see `true` for a boolean key whose default is false:
+# this run's --set first, then its values files, then the release's own values,
+# which --reset-then-reuse-values carries forward.
+setting_true() {
+  operator_named "$1=true" && return 0
+  operator_named "$1" && return 1
+  # Helm lets the last values file win; this reads any file saying false as
+  # false, so files that disagree skip the guard rather than trip it.
+  values_files_declare yaml_says "$1" false && return 1
+  values_files_declare yaml_says "$1" true && return 0
+  values_files_declare yaml_names "$1" && return 1
+  release_declares yaml_says "$1" true
+}
+
+# True when any source this run reaches the chart through names the key.
+named_anywhere() {
+  operator_named "$1" || values_files_declare yaml_names "$1" || release_declares yaml_names "$1"
+}
+
+# The backup claim this release already holds, if any. Bound or binding, it
+# needs no class from this run.
+backup_claim_exists() {
+  [[ -n "$(kubectl get pvc --namespace "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=backup" -o name 2>/dev/null)" ]]
+}
+
+# A values file spelling `backup` in flow or JSON style, which yaml_scalar_at
+# cannot read. The backup guard skips rather than guess at one.
+declares_backup_inline() {
+  grep -Eq '"backup"[[:space:]]*:|backup:[[:space:]]*\{' "$1" 2>/dev/null
+}
+
+# True when this run renders the chart-managed backup claim with no class of its
+# own, which then takes the cluster default (templates/backup.yaml).
+backup_claim_needs_default_class() {
+  ! values_files_declare declares_backup_inline \
+    && { setting_true backup.cronJob.enabled || setting_true backup.preUpgrade.enabled; } \
+    && setting_true backup.persistence.enabled \
+    && ! named_anywhere backup.persistence.existingClaim \
+    && ! named_anywhere backup.persistence.storageClassName \
+    && ! backup_claim_exists
+}
+
 report_pending_state() {
   echo "" >&2
   echo "  If helm reported that another operation is in progress, an earlier run was" >&2
@@ -1296,6 +1913,34 @@ report_pending_state() {
   echo "    helm uninstall $RELEASE --namespace $NAMESPACE     # if it does not" >&2
 }
 
+if [[ "$BUNDLED" == "true" ]] && [[ -z "$DB_URL" ]] && ! operator_named database.externalUrl \
+  && ! operator_named postgres.bundled.storageClassName \
+  && ! values_files_declare declares_storage_class \
+  && ! release_declares declares_storage_class \
+  && ! bundled_claim_exists; then
+  SC_STATE="$(default_storage_class_state)"
+  # `absent none`: no StorageClass at all, which a cluster serving claims from
+  # hand-made volumes can have. Said, not refused.
+  if [[ "$SC_STATE" == "absent none" ]]; then
+    info "This cluster has no StorageClass. The bundled PostgreSQL's volume claim binds only if a volume without a class is waiting for it."
+  elif [[ "$SC_STATE" == absent* ]]; then
+    fatal "The bundled PostgreSQL needs a volume, and this cluster has no default StorageClass, so its claim would stay Pending and the install would time out. Name a class and re-run with it: --set postgres.bundled.storageClassName=<class>. Classes on this cluster: ${SC_STATE#absent }."
+  fi
+fi
+
+# The backup claim takes the default class the same way, and nothing waits on
+# it: the install succeeds, the claim sits Pending, and every backup Job that
+# mounts it sits Pending behind it, so no backup is ever taken and nothing says
+# so. Same states as above, same answer.
+if backup_claim_needs_default_class; then
+  SC_STATE="$(default_storage_class_state)"
+  if [[ "$SC_STATE" == "absent none" ]]; then
+    info "This cluster has no StorageClass. The backup volume claim binds only if a volume without a class is waiting for it."
+  elif [[ "$SC_STATE" == absent* ]]; then
+    fatal "Backups write to a volume claim, and this cluster has no default StorageClass, so the claim would stay Pending and no backup would ever run. Name a class and re-run with it: --set backup.persistence.storageClassName=<class>. Classes on this cluster: ${SC_STATE#absent }."
+  fi
+fi
+
 if [[ "$RELEASE_EXISTS" == true ]]; then
   info "Reconciling AGLedger..."
 else
@@ -1304,12 +1949,22 @@ fi
 echo ""
 MIGRATE_UID_BEFORE="$(migrate_job_uid)"
 PREFLIGHT_UID_BEFORE="$(preflight_job_uid)"
+API_AVAILABLE_BEFORE="$(kubectl get deployment --namespace "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=api" \
+    -o jsonpath='{.items[0].status.availableReplicas}' 2>/dev/null || true)"
+API_GENERATION_BEFORE="$(kubectl get deployment --namespace "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=api" \
+    -o jsonpath='{.items[0].metadata.generation}' 2>/dev/null || true)"
+WORKER_TEMPLATE_BEFORE="$(kubectl get deployment --namespace "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=worker" \
+    -o jsonpath='{.items[0].spec.template}' 2>/dev/null || true)"
 if ! "${HELM_CMD[@]}"; then
   report_migrate
   report_preflight
   report_pending_state
   fatal "Install failed. See the error above."
 fi
+report_preflight_warnings
 
 echo ""
 if [[ "$RELEASE_EXISTS" == true ]]; then
@@ -1324,20 +1979,117 @@ fi
 # defeat any construction anyway. Ask the cluster instead. Every chart resource
 # carries the standard instance + component labels, so this holds through a
 # rename of either.
-API_SELECTOR="app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=api"
-API_DEPLOY="$(kubectl get deployment --namespace "$NAMESPACE" -l "$API_SELECTOR" -o name 2>/dev/null | head -1)"
-API_SVC="$(kubectl get service --namespace "$NAMESPACE" -l "$API_SELECTOR" -o name 2>/dev/null | head -1)"
 
-if [[ -z "$API_DEPLOY" ]]; then
-  fatal "helm reported success, but no deployment in namespace '$NAMESPACE' carries the labels $API_SELECTOR. Check: helm status $RELEASE -n $NAMESPACE && kubectl get all -n $NAMESPACE"
-fi
+# The key generated above is in the release Secret now and nowhere on screen,
+# and the summary that prints it is not reached when the run stops short of it.
+report_unsaved_vault_key() {
+  if [[ -n "$VAULT_KEY" ]]; then
+    VAULT_KEY_SECRET="$(vault_key_secret)"
+    echo "  [!] The vault signing key this run generated is stored in Secret ${VAULT_KEY_SECRET:-<name from: kubectl get secret -n $NAMESPACE -l app.kubernetes.io/instance=$RELEASE>}." >&2
+    echo "      Save it before anything else: kubectl get secret ${VAULT_KEY_SECRET:-<name>} -n $NAMESPACE -o jsonpath='{.data.VAULT_SIGNING_KEY}' | base64 --decode" >&2
+    echo "      Running this installer again reuses that key and prints it." >&2
+  fi
+}
+
+# The release's Deployment for one component, into FOUND_DEPLOY. Not a
+# `$(kubectl ... | head -1)`: under pipefail a kubectl error there ends the run
+# with no message at all. kubectl's own error stays on screen, and the run ends
+# naming what it could not do, after the vault key lines.
+find_deployment() {
+  local component="$1" selector out
+  selector="app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=${component}"
+  if ! out="$(kubectl get deployment --namespace "$NAMESPACE" -l "$selector" -o name)"; then
+    report_unsaved_vault_key
+    fatal "helm reported success, but kubectl could not list the ${component} deployment (its error is above), so this run cannot wait for it. Check: helm status $RELEASE -n $NAMESPACE && kubectl get all -n $NAMESPACE"
+  fi
+  if [[ -z "$out" ]]; then
+    report_unsaved_vault_key
+    fatal "helm reported success, but no deployment in namespace '$NAMESPACE' carries the labels $selector. Check: helm status $RELEASE -n $NAMESPACE && kubectl get all -n $NAMESPACE"
+  fi
+  FOUND_DEPLOY="${out%%$'\n'*}"
+}
+
+API_SELECTOR="app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=api"
+find_deployment api
+API_DEPLOY="$FOUND_DEPLOY"
+API_SVC="$(kubectl get service --namespace "$NAMESPACE" -l "$API_SELECTOR" -o name 2>/dev/null | head -1 || true)"
+
+# On bundled PostgreSQL the migrate Job is an ordinary resource, so helm returns
+# while it may still be running, and until it lands the new pods refuse to start
+# and restart with a growing backoff. Timing the rollout from here would report
+# a slow migration as a failed install. Wait for the Job this run created first,
+# and say which of the two is the holdup. On the external path the Job is a hook
+# that finished before helm returned, so this reads it once and moves on.
+MIGRATE_WAIT_SECONDS="${AGLEDGER_MIGRATE_WAIT_SECONDS:-900}"
+wait_for_migrate() {
+  local uid job succeeded failed waited=0
+  uid="$(migrate_job_uid)"
+  [[ -n "$uid" && "$uid" != "$MIGRATE_UID_BEFORE" ]] || return 0
+  job="$(kubectl get job --namespace "$NAMESPACE" \
+      -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=migrate" \
+      --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | tail -1 || true)"
+  [[ -n "$job" ]] || return 0
+  while :; do
+    succeeded="$(kubectl get "$job" --namespace "$NAMESPACE" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+    [[ "${succeeded:-0}" -ge 1 ]] 2>/dev/null && return 0
+    failed="$(kubectl get "$job" --namespace "$NAMESPACE" \
+      -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)"
+    if [[ "$failed" == "True" ]]; then
+      report_migrate deployed
+      report_unsaved_vault_key
+      fatal "The migration Job ${job#*/} failed, so the API and worker refuse to start against this database; their logs name the same reason. The report above says what is serving and what to run next."
+    fi
+    # The Job waits on the bundled PostgreSQL, which cannot start on a claim
+    # that never binds; that wait never ends, so name the claim instead.
+    if [[ "$waited" -ge 60 && -n "$(pending_claims)" ]]; then
+      report_unsaved_vault_key
+      fatal "The migration Job ${job#*/} is waiting on the bundled PostgreSQL, whose volume claim is still Pending ($(pending_claims | tr '\n' ' ')). Usually no StorageClass serves it. Check: kubectl describe pvc -n $NAMESPACE, then re-run with --set postgres.bundled.storageClassName=<class>. A claim's class cannot be changed once it exists, so delete the Pending claim first; one that never bound holds nothing: kubectl delete pvc -n $NAMESPACE $(pending_claims | tr '\n' ' ')"
+    fi
+    if [[ "$waited" -ge "$MIGRATE_WAIT_SECONDS" ]]; then
+      report_unsaved_vault_key
+      fatal "The migration Job ${job#*/} is still running after ${MIGRATE_WAIT_SECONDS}s. The install is not failed: the API and worker start once it completes. Follow it with: kubectl logs -f ${job} -n ${NAMESPACE}"
+    fi
+    if [[ "$waited" -eq 0 ]]; then
+      info "Waiting for the migration Job ${job#*/}; the API and worker start once it completes."
+    fi
+    sleep 5
+    waited=$((waited + 5))
+    MIGRATE_WAITED=true
+  done
+}
+MIGRATE_WAITED=false
+wait_for_migrate
+# A pod that crashed while the migration ran sits in CrashLoopBackOff, which
+# the kubelet caps at 300s, so its next start can be that far off once the
+# migration lands. Give the rollout that long before calling it failed.
+ROLLOUT_TIMEOUT=120
+[[ "$MIGRATE_WAITED" == true ]] && ROLLOUT_TIMEOUT=360
 
 # Don't swallow the rollout status: a crashlooping image would
 # otherwise pass through silently and the script prints "Next steps:" as if
 # the install succeeded. Surface the real exit so the customer sees the bad
 # install before they try to use it.
-if ! kubectl rollout status "$API_DEPLOY" --namespace "$NAMESPACE" --timeout=120s; then
-  fatal "Pod did not become ready within 120s. Check: kubectl logs $API_DEPLOY -n $NAMESPACE --previous"
+
+if ! kubectl rollout status "$API_DEPLOY" --namespace "$NAMESPACE" --timeout="${ROLLOUT_TIMEOUT}s"; then
+  report_unsaved_vault_key
+  # A claim still Pending is the cause whatever the API log says: nothing that
+  # mounts it can start, and the API only reports the database it cannot reach.
+  PENDING="$(pending_claims)"
+  if [[ -n "$PENDING" ]]; then
+    fatal "Pod did not become ready within ${ROLLOUT_TIMEOUT}s: the bundled PostgreSQL's volume claim is still Pending ($(printf '%s' "$PENDING" | tr '\n' ' ')). Usually no StorageClass serves it. Check: kubectl describe pvc -n $NAMESPACE, then re-run with --set postgres.bundled.storageClassName=<class>. A claim's class cannot be changed once it exists, so delete the Pending claim first; one that never bound holds nothing: kubectl delete pvc -n $NAMESPACE $(pending_claims | tr '\n' ' ')"
+  fi
+  fatal "Pod did not become ready within ${ROLLOUT_TIMEOUT}s. Check: kubectl logs $API_DEPLOY -n $NAMESPACE --previous"
+fi
+
+# A ready api says nothing about the worker, which rolls on its own (Recreate by
+# default, so a worker that cannot start leaves none running). The chart always
+# renders it; at worker.replicaCount 0 its rollout is complete at once.
+find_deployment worker
+WORKER_DEPLOY="$FOUND_DEPLOY"
+if ! kubectl rollout status "$WORKER_DEPLOY" --namespace "$NAMESPACE" --timeout="${ROLLOUT_TIMEOUT}s"; then
+  report_unsaved_vault_key
+  report_worker "$WORKER_DEPLOY"
+  fatal "The worker did not become ready within ${ROLLOUT_TIMEOUT}s, so the install is not complete. The report above says what is running and where to look."
 fi
 
 echo ""
@@ -1355,6 +2107,26 @@ echo ""
 if [[ -n "$VAULT_KEY" ]]; then
   echo "    Vault signing key (save this for backup/rotation):"
   echo "       $VAULT_KEY"
+  echo ""
+elif [[ -n "$REUSED_VAULT_KEY" ]]; then
+  echo "    Vault signing key, read back from Secret ${VAULT_KEY_SECRET} (save this for backup/rotation):"
+  echo "       $REUSED_VAULT_KEY"
+  echo ""
+fi
+if [[ -n "${VAULT_KEY_PIN:-}" ]]; then
+  # The fingerprint is the pin's first 16 hex characters: both are SHA-256 of
+  # the same public key, and the fingerprint is what the Server reports.
+  echo "    Vault signing key pin (not secret; give it to anyone who verifies this install offline):"
+  echo "       $VAULT_KEY_PIN"
+  echo "    Its first 16 hex characters, ${VAULT_KEY_PIN:7:16}, are the key fingerprint: the"
+  echo "    signingKey.keyId that /health reports and the key id at /v1/verification-keys."
+  echo ""
+fi
+if [[ -n "$INSTANCE_ID" ]]; then
+  echo "    Instance id (not secret; the prefix this Server's external anchors are written under)."
+  echo "    Pin it in the values file you keep for this release, because on secrets.existingSecret"
+  echo "    the chart refuses to render without it:"
+  echo "       instanceId: \"$INSTANCE_ID\""
   echo ""
 fi
 echo "    Documentation: https://agledger.ai/docs"

@@ -119,14 +119,24 @@ The plain `docker save` route in the Procedure above is the one to use when the 
 
 ## Carry the Postgres image too
 
-A default install runs the bundled Postgres, and that image comes from Docker Hub whatever `--image` says. Save it alongside the release on the connected machine:
+A default install runs the bundled Postgres, and that image comes from Docker Hub whatever `--image` says. The Compose overlay and the chart pin it by digest; read the reference from `compose/docker-compose.postgres.yml` and save exactly that image alongside the release on the connected machine:
 
 ```bash
-docker pull postgres:18-alpine
+PG_IMAGE="$(sed -nE 's/^ +image: (postgres:.*)$/\1/p' compose/docker-compose.postgres.yml)"
+docker pull "$PG_IMAGE"
+docker tag "$PG_IMAGE" postgres:18-alpine
 docker save postgres:18-alpine | gzip > postgres-18-alpine.tar.gz
 ```
 
-Load it in the enclave before installing. `--with-monitoring` pulls four more Docker Hub images (OpenTelemetry Collector, Jaeger, Prometheus, Grafana); carry those the same way or leave the flag off. If an image is missing the installer says which one, before it starts anything.
+Load it in the enclave before installing. An image store that does not keep registry digests across `docker save` and `docker load` (Docker's classic storage driver) cannot resolve the pinned reference afterwards, and the installer then reports the image missing. Point the stack at the loaded tag with a `compose/docker-compose.override.yml`, which the scripts include:
+
+```yaml
+services:
+  postgres:
+    image: postgres:18-alpine
+```
+
+The bytes are the ones the digest named on the connected side; the override only changes how the enclave finds them. `--with-monitoring` pulls four more Docker Hub images (OpenTelemetry Collector, Jaeger, Prometheus, Grafana); carry those the same way or leave the flag off. If an image is missing the installer says which one, before it starts anything.
 
 An external database (`--external-db`) needs no database image to run. It still needs a PostgreSQL client matching the server's major version for `backup.sh`, which `upgrade.sh` runs first. When the host has no `pg_dump` of that major, the scripts run one from `postgres:<major>-alpine`. Carry that image, or point `PG_CLIENT_IMAGE_REPO` at your registry's copy of `postgres` (the scripts append the tag: `<major>-alpine` for the dump client and `18-alpine` for the version check), or install the matching client tools on the host.
 

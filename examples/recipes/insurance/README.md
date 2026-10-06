@@ -13,7 +13,7 @@ or payout is *correct*; it records what was decided, by whom, and when.
 
 This recipe was shaped by running the full pipeline cold across multiple agent
 models, at scale, on live cloud infrastructure (with live Notify delivery and
-offline chain verification), so the authority gate and the settlement hand-off hold
+offline chain verification), so the authority gate and the settlement signal hold
 up under real agent behavior.
 
 ## What you get
@@ -47,7 +47,7 @@ Settlement authority is decided by the **engine**, not asserted by the agent. Th
 `meridian-authority-band-v1` auto-gate compares the agent's `proposedAmount` against
 an operator-configured `authorityCeiling` (`denomination:max-inclusive`): within the
 ceiling settles FULFILLED; over it settles FAILED and routes to the human override
-path (`meridian-settlement-decision-v1`, a principal-gate). An agent can no longer
+path (`meridian-settlement-decision-v1`, a principal-gate). An agent cannot
 assert its way past the ceiling, and the over-authority attempt is still recorded,
 attributed, and tamper-evident. Band ceilings are operator policy: configure a
 per-band table (illustrative: junior $10k, senior $50k, manager $250k, committee
@@ -60,12 +60,13 @@ external registry, no shared signing infrastructure.
 
 ```bash
 export AGLEDGER_API_URL=https://agledger.internal.example
-export AGLEDGER_API_KEY=agl_...   # an admin/platform key with schemas:write
+export AGLEDGER_API_KEY=agl_adm_...   # an admin key with schemas:write; register.sh refuses a platform key
 ./register.sh
 ```
 
 `register.sh` POSTs each type to `POST /v1/schemas` in order and prints what landed.
-Re-running registers a new version of any type whose schema changed compatibly; an
+Re-running registers a new version of any type whose schema changed compatibly, and a type whose file is unchanged answers 200 with its current version
+and registers nothing; an
 incompatible change is rejected and reported. See `register.sh` for the
 `RECIPE_FORCE=1` reset option (destructive; scratch orgs only).
 
