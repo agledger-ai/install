@@ -4,6 +4,50 @@ This changelog tracks changes to the AGLedger installer (this repository) and, f
 
 Releases here are tagged to match the AGLedger server version they ship against.
 
+## v2.0.0 - 2026-10-05
+
+Scripts, Compose files, and Helm chart synced to AGLedger server v2.0.0.
+
+2.0 does not upgrade a 1.x install. `upgrade.sh` refuses an install whose recorded or running version is 1.x before it writes `.env`, takes a backup or stops anything, and `restore.sh --keep-version` refuses a 1.x archive before anything is stopped or dropped. On Helm with the bundled PostgreSQL, the 2.0 chart refuses to render over a release a 1.x chart installed, so `helm upgrade` fails before any pod is replaced; the check reads the release through `lookup`, which answers nothing under `helm template` or Argo CD. Install 2.0 as a new release against a new, empty database, and keep the 1.x database for the 1.x install that wrote it. After a refused upgrade, put the checkout back on the 1.x tree: a `docker compose` command run from the 2.0 tree starts 2.0 against the 1.x database.
+
+The API and worker no longer connect as the database owner. On the bundled PostgreSQL they serve as `agledger_app`, and the migration runs as the owner and gives `agledger_app` its login from `AGLEDGER_APP_ROLE_PASSWORD` on every run. `install.sh` generates that password, and the chart derives it from the owner password. With an external database, put the owner in `DATABASE_URL_MIGRATE` and `agledger_app` in `DATABASE_URL`, and set `AGLEDGER_APP_ROLE_PASSWORD` where the migration runs. Preflight warns when the runtime role owns the audit chain, since an owner passes every privilege check and the chain's append-only revokes then bind nothing.
+
+The installers print the vault signing key's pin (`sha256:` of its public key) and the verifier floor: anyone verifying a 2.0 chain offline needs `@agledger/verify` 2.0.0 or later, and passes the pin as `--trust-anchor`. `install.sh` and `upgrade.sh` stop on an `API_KEY_SECRET` or `WEBHOOK_ENCRYPTION_KEY` the Server would refuse in production before pulling images.
+
+On Kubernetes, `instanceId` (`AGLEDGER_INSTANCE_ID`) is generated on install and kept across upgrades. `serviceAccount.automountToken` defaults to false, so no pod the chart creates mounts a Kubernetes API token. Each `networkPolicy.ingressFrom` entry needs a `namespaceSelector` beside its pod label, and `networkPolicy.extraEgress` opens api and worker egress to anything beyond the shipped rules, such as an anchor store that is not public S3. A `postRestore` CronJob, which never fires on its own, runs the post-restore steps in the api image on a cluster. On the bundled PostgreSQL the migrate Job's name carries a hash of its rendered spec, so Argo CD and Flux migrate on a new image. `helm-install.sh` waits for the worker as well as the api, refuses a bundled install on a cluster with no default StorageClass, and keeps the release's image tag on a re-run without `--version`.
+
+The bundled PostgreSQL image is pinned by digest, the same reference in Compose, the chart and the backup fallback. `backup.sh` writes its archive under umask 077.
+
+The alert rules grow from 43 to 56. New alerts cover chain writes refused after a detected rewind (`AGLedgerChainWritesRefused`), entries signed outside their key's window (`AGLedgerVaultKeyWindowViolation`), anchors not landing and checkpoints falling behind, dead-lettered webhooks and subscriptions that deliver nothing, federation deliveries given up, stuck disputes, failing trusted-issuer JWKS fetches, provisioning errors and a downed cache-invalidation listener. The rules assume the direct `/metrics` scrape.
+
+Adds two example recipes: `agent-drift`, an ops loop over `GET /v1/agents/drift`, and an OIDC workload-identity variant of `insurance`.
+
+Server changes in v2.0.0:
+
+2.0 does not upgrade a 1.x database in place. The schema ships as a single baseline, `001_consolidated.sql`, and the migration runner refuses a database a 1.x release migrated before it applies anything, exiting 65 and saying to install against a new, empty database: point `DATABASE_URL` (and `DATABASE_URL_MIGRATE` and `DATABASE_URL_DIRECT` where set) at one, or start the bundled PostgreSQL from a fresh data volume. A 1.x backup restored onto 2.0 by any route is refused the same way. The API and worker refuse to start against a database that has not applied every migration their image ships.
+
+Chains, vault dumps and audit exports from a 2.0 Server verify with `@agledger/verify` 2.0.0 or later. Each key at `GET /v1/verification-keys` publishes the floor as `minVerifierVersion`.
+
+A vault signing key is trusted only through signed key statements that link it to a key a process holds outside the database: `VAULT_SIGNING_KEY`, the KMS key, its predecessor, or a `VAULT_TRUST_ANCHORS` pin. A key row the runtime database role inserts verifies no entry and is published on no key surface. To stage a new key, set `VAULT_SIGNING_KEY_PREVIOUS` (or `VAULT_SIGNING_KEY_PREVIOUS_KMS_ARN`) to the running key, which signs the succession. `VAULT_DISTRUSTED_KEYS` lists the pins of keys that leaked, each optionally with the instant from which what it signs counts for nothing. A forced retirement revokes every unexpired ephemeral cert the key minted and reports `revokedCertCount`.
+
+Error bodies carry `detail` as the one human-readable field. `message`, which repeated it, is gone from every Problem Details response, along with `migratedTo`, `docs` and `signInputTemplate`; the JSON-RPC `error.message` on `/a2a` stays. A body 400 lists every independent violation rather than the first.
+
+Vocabulary 1.7.0 removed is now refused rather than translated: an `escalated` dispute action, a `tier` field or a `PENDING_ARBITRATION` state fails body validation, and a provisioning file naming `commissionSourceField` fails as an unknown key. The nine routes 1.7.0 retired and `GET /v1/records/summary` no longer answer 410 with a pointer; they get the ordinary 400 or 404. Use `GET /v1/records/search` in place of the summary. `GET /v1/events` refuses `eventType=record.settled`.
+
+Adds `DELETE /v1/webhooks/{webhookId}/dlq/{dlqId}` and `DELETE /v1/admin/webhook-dlq/{dlqId}`, which discard a dead-lettered delivery without delivering it; on an inactive subscription this is the only way to clear an entry. `DELETE /v1/webhooks/{webhookId}` answers 200 naming the dead letters the subscription still holds, where it answered 204. The webhook ping response carries `statusCode` and `durationMs` without the `httpStatus` and `latencyMs` twins. Record reads take `?view=compact`, which drops top-level nulls and trims `nextSteps`.
+
+Keyset listings page by `nextCursor` alone and refuse `?offset=`. The agent card is served at `/.well-known/agent-card.json` only; `/.well-known/agent.json` is gone. `/a2a` answers the A2A 1.0 PascalCase methods and the A2A 0.3 slash-separated methods, and an `a2a.`-prefixed name such as `a2a.SendMessage` is METHOD_NOT_FOUND. A2A `ListTasks` filters on `status` only.
+
+Opening, adding evidence to, withdrawing and resolving a dispute require the new `disputes:write` scope, which `agent-full` and `admin-standard` carry and `admin-observer` and `agent-readonly` do not. An IdP that asserts an explicit scope list through a trusted issuer must add it.
+
+Federation messages are signed addressed to the receiving Server under `agledger.federation.v2` and require the `X-AGLedger-Recipient-Hub-Id` header. The v1 sign input is neither built nor accepted, so a 2.0 Server does not federate with a 1.x one. Every federation body requires `schemaRef`.
+
+`RATE_LIMIT_AUTH_FAILURES` (default 60, 0 turns it off) caps the refused credentials one source address, or one IPv6 /64, may present per window before its credentialed requests get 429 with no lookup; a credential that already verified from that address is not held back. `/a2a` is limited in operations rather than requests, 200 a minute by default with a batch of N costing N, set by `RATE_LIMIT_A2A_OPS`, and each state-changing action also spends its REST route's cap. `RATE_LIMIT_EXEMPT_IPS` takes CIDR blocks. Self-service API key rotation never extends a key's expiry.
+
+Production refuses an `API_KEY_SECRET` or `WEBHOOK_ENCRYPTION_KEY` shorter than 32 characters or equal to the development fallback. A numeric setting that is not a whole number in its stated range refuses boot, naming the variable, where it fell back to the default. A malformed `SSRF_ALLOW_CIDRS` stops boot, and loopback, unspecified and cloud metadata addresses are refused whatever it says. `SIEM_HTTP_URL` and `AGLEDGER_SUPPORT_BUNDLE_URL` refuse only cloud metadata, so a loopback or private-range collector needs no `SSRF_ALLOW_CIDRS` entry. `TRUST_PROXY=true` boots with a warning that clients can forge their address. Removes `AGLEDGER_LAUNCH_FROZEN` and `AGLEDGER_FEDERATION_SCHEMA_REF_POLICY`.
+
+The image trusts the current AWS RDS global CA bundle, which adds the me-west-1 root CAs.
+
 ## v1.8.0 - 2026-09-22
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.8.0.
