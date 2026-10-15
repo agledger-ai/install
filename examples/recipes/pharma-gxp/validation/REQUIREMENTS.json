@@ -1,0 +1,182 @@
+{
+  "intendedUse": "See INTENDED-USE.md. Requirements are what the recipe claims the ledger evidences. Each is satisfied by a contract type or an engine rule, and proven by the assertions a site's scripted OQ makes against its own install (OQ-PQ.md). build-matrix.py turns this file into TRACEABILITY.md.",
+  "requirements": [
+    {
+      "id": "GXP-01",
+      "text": "A complaint investigation is opened by a named QA investigator as the accountable principal, with the orchestrating automation's consent recorded on the chain before any work.",
+      "satisfiedBy": "calder-complaint-case-v1, principal gate; the propose, accept, activate handshake",
+      "oqAsserts": [
+        "QA opens the case as principal and the record is created",
+        "the orchestrator's accept lands on the chain before activation",
+        "the case reads ACTIVE"
+      ]
+    },
+    {
+      "id": "GXP-02",
+      "text": "Each dataset read is performed and signed by the automation that read it, under the case, with the source system declared before the read.",
+      "satisfiedBy": "calder-evidence-read-v1 as a delegated child: performer is the reader, parentRecordId is the case, sourceSystem is in criteria",
+      "oqAsserts": [
+        "the orchestrator delegates each read as a child with autoActivate",
+        "each child reads ACTIVE with the orchestrator as its principal and the reader as its performer"
+      ]
+    },
+    {
+      "id": "GXP-03",
+      "text": "A read that issued any write to a system of record cannot stand as evidence, and a case containing one cannot close as read-only.",
+      "satisfiedBy": "the read-only-invariant expression rule (evidence.mutating == false) plus cascade rollup on a one-shot child",
+      "oqAsserts": [
+        "a read completion with mutating true settles FAILED",
+        "the case is held by rollup after a mutating one-shot read",
+        "QA accept is refused 422 on the rolled-up failure",
+        "the QA reject verdict lands and the case reads FAILED"
+      ]
+    },
+    {
+      "id": "GXP-04",
+      "text": "The case cannot be closed while any read is still open; the close-out is admitted only once every read is terminal.",
+      "satisfiedBy": "engine cascade settlement (has_children_leaf_only)",
+      "oqAsserts": [
+        "the case completion is refused 422 while reads are open",
+        "the refusal names the open children",
+        "the case completion is admitted once every read is terminal"
+      ]
+    },
+    {
+      "id": "GXP-05",
+      "text": "The close-out carries the 211.198 decisions with their conditional fields: investigation performed or a written reason, CAPA reference when CAPA is required, report type and due date when reportable.",
+      "satisfiedBy": "calder-complaint-case-v1 completionSchema if/then conditionals",
+      "oqAsserts": [
+        "a close-out with capaRequired true and no capaRef is refused",
+        "a close-out with reportable true and no reportType or reportDueBy is refused",
+        "a close-out with no investigation and no written reason is refused (211.198(a))"
+      ]
+    },
+    {
+      "id": "GXP-06",
+      "text": "The close-out binds the source records' write stamps so an auditor can show nothing was written between read and close.",
+      "satisfiedBy": "sorWriteStampDigest on the close-out over the sourceRecords of every read; re-derived from the reads' evidence as a cross-record check",
+      "oqAsserts": [
+        "the digest on the close-out equals the digest re-derived from the stamps the reads listed",
+        "a stamp moved between read and close changes the re-derived digest"
+      ]
+    },
+    {
+      "id": "GXP-07",
+      "text": "The QA close-out is a signature with meaning, linked to the completion it approves, by a named signer at a server time.",
+      "satisfiedBy": "the principal verdict's checks object (signatureMeaning, signerName, signerRole, regulation, signedAt) preserved on the OUTCOME_REPORTED entry of the audit export",
+      "oqAsserts": [
+        "QA accept with a signature meaning settles the case FULFILLED",
+        "the audit export's OUTCOME_REPORTED entry carries the signature meaning verbatim and names the completion it signs"
+      ]
+    },
+    {
+      "id": "GXP-08",
+      "text": "An automation's proposal to manufacture is notarized under its own identity, labelled by what produced it, before any check runs.",
+      "satisfiedBy": "calder-batch-record-proposal-v1 (notarize-only, producedBy)",
+      "oqAsserts": [
+        "the proposer notarizes the proposal and it reads RECORDED",
+        "a proposal with producedBy.kind llm and no model is refused"
+      ]
+    },
+    {
+      "id": "GXP-09",
+      "text": "The release is opened by a named QA person from the control plan in the quality system, with the required checks and the plan's hash bound to the record.",
+      "satisfiedBy": "calder-batch-record-release-v1 criteria.requiredChecks and criteria.controlPlanHash",
+      "oqAsserts": [
+        "QA opens the release as principal with the control plan bound",
+        "the proposer's accept lands on the chain before activation",
+        "a release with empty requiredChecks is refused"
+      ]
+    },
+    {
+      "id": "GXP-10",
+      "text": "The precondition check is performed by a deterministic checker, delegated under the release, carrying only the control plan hash copied from the release; the checker reads the plan from the quality system.",
+      "satisfiedBy": "calder-precondition-check-v1 as a delegated child: performer is the checker, criteria carries controlPlanHash and no list",
+      "oqAsserts": [
+        "the proposer delegates the check to the checker as a child",
+        "a check child whose criteria carries a list of checks is refused at create",
+        "the child's controlPlanRef and controlPlanHash equal the release's (cross-record check)"
+      ]
+    },
+    {
+      "id": "GXP-11",
+      "text": "No release completion can be submitted while the check is open, and none can be submitted after the check failed.",
+      "satisfiedBy": "engine cascade settlement: has_children_leaf_only, and failure rollup on a one-shot child",
+      "oqAsserts": [
+        "the release completion is refused 422 while the check is open",
+        "the release completion is still refused after a failed check"
+      ]
+    },
+    {
+      "id": "GXP-12",
+      "text": "The check settles FULFILLED only when every check the plan names passed, with the same names and count, against the same control plan hash; any failed, missing, renamed or extra check, or a stale plan, settles FAILED.",
+      "satisfiedBy": "the all-required-checks-passed expression rule (evidence against evidence, plan hash against criteria)",
+      "oqAsserts": [
+        "a short passed list (fewer than the plan names) settles FAILED",
+        "the same count with one check renamed settles FAILED",
+        "a stale control plan hash settles FAILED",
+        "one failed check settles FAILED",
+        "every required check passed settles FULFILLED"
+      ]
+    },
+    {
+      "id": "GXP-13",
+      "text": "A failed check fails the release; QA can only reject it, and nothing is written to the system of record.",
+      "satisfiedBy": "cascade rollup (reject-only verdict) plus a system-of-record assertion",
+      "oqAsserts": [
+        "the release is held by rollup after the failed one-shot check",
+        "QA accept is refused 422 on the rolled-up failure",
+        "the QA reject verdict lands and the release reads FAILED",
+        "no manufacturing order or lot exists in the system of record for the proposed lot"
+      ]
+    },
+    {
+      "id": "GXP-14",
+      "text": "The release completion claims a fulfilled check by structure and binds the exact payload to be written by hash.",
+      "satisfiedBy": "checkOutcome const FULFILLED; payloadHash sha256 pattern",
+      "oqAsserts": [
+        "the release completion is admitted once the check is FULFILLED, with the payload hash bound",
+        "a release completion with checkOutcome FAILED is refused",
+        "a release completion without payloadHash is refused",
+        "a receipt without payloadHash is refused"
+      ]
+    },
+    {
+      "id": "GXP-15",
+      "text": "The QA release approval is a signature with meaning (21 CFR 11.50) linked to the completion it signs (11.70), rendered by the record's principal.",
+      "satisfiedBy": "the principal verdict's checks object preserved on the OUTCOME_REPORTED entry",
+      "oqAsserts": [
+        "QA accept with a Part 11 signature meaning settles the release FULFILLED",
+        "the audit export's OUTCOME_REPORTED entry carries the signature meaning and names the completion it signs"
+      ]
+    },
+    {
+      "id": "GXP-16",
+      "text": "What was written to the system of record is notarized by the writer with the system's own id and write stamp, and its payload hash equals the hash QA approved.",
+      "satisfiedBy": "calder-sor-write-receipt-v1; the receipt's payloadHash compared to the release completion's as a cross-record check",
+      "oqAsserts": [
+        "the writer notarizes the receipt and it reads RECORDED, with the same payload hash as the release completion",
+        "the manufacturing order exists in the system of record with the approved lot",
+        "a receipt whose releaseRef is not a UUID is refused"
+      ]
+    },
+    {
+      "id": "GXP-17",
+      "text": "Only the parent's performer can delegate a child, and no ancestor principal can be named as a child's performer.",
+      "satisfiedBy": "engine binding-of-duty and circular-delegation guards",
+      "oqAsserts": [
+        "an agent that is not the release's performer cannot create the check child (binding of duty)",
+        "the release's principal (QA) cannot be named the checker (circular delegation)"
+      ]
+    },
+    {
+      "id": "GXP-18",
+      "text": "Every record's chain verifies offline against out-of-band keys with the published verifier, and a corrupted chain is detected.",
+      "satisfiedBy": "GET /v1/records/{id}/audit-export verified with agledger-verify against GET /v1/verification-keys",
+      "oqAsserts": [
+        "every record's audit export verifies against the Server's verification keys",
+        "an export with one altered byte is reported as invalid"
+      ]
+    }
+  ]
+}

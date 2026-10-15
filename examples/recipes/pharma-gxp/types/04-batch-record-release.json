@@ -1,0 +1,120 @@
+{
+  "type": "calder-batch-record-release-v1",
+  "category": "gxp-manufacturing",
+  "defaultGateMode": "principal",
+  "displayName": "Batch record release (QA signature with meaning, held behind the precondition check)",
+  "description": "The gated parent that holds batch record creation behind two things in order: a deterministic precondition check against the systems, and a named QA person's signature. QA (principal) creates it from the proposal, copying the required checks from the product's control plan in the quality system (controlPlanRef, controlPlanHash), naming the proposer as performer, and runs propose, accept, activate so the proposer's consent is on the chain. The proposer, as the parent's performer, delegates one calder-precondition-check-v1 child to the checker automation, copying only the control plan hash (the child carries no list for a proposer to shorten); the engine admits the proposer's completion only once that child is terminal, and a FAILED child fails this record by rollup so QA can only reject. The proposer's completion names the check record, carries checkOutcome const FULFILLED, and binds the exact payload about to be written to the system of record by hash. QA's accept verdict is the signature: its checks object carries the signature meaning (21 CFR 11.50: the signer, the time, and the meaning such as reviewed or approved are on the chain entry), and the verdict is linked to the completion it signs (11.70). The expression rule is advisory in principal mode and only cross-checks the completion against the criteria; the decision is QA's.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "proposalRef",
+      "productCode",
+      "lotNumber",
+      "quantity",
+      "requiredChecks",
+      "controlPlanRef",
+      "controlPlanHash"
+    ],
+    "properties": {
+      "proposalRef": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "description": "recordId of the calder-batch-record-proposal-v1."
+      },
+      "productCode": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "lotNumber": {
+        "type": "string",
+        "description": "",
+        "pattern": "^[A-Z0-9][A-Z0-9-]{2,62}$"
+      },
+      "quantity": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "requiredChecks": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 30,
+        "items": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{1,62}$"
+        },
+        "description": "The checks the product's control plan requires before a batch record is created, copied by QA from the quality system when the release is opened. QA's authoritative record of the plan: the checker's evidence on the precondition-check child must list exactly these (a cross-record check over the two audit exports compares them), and the plan hash on both records binds the same plan."
+      },
+      "controlPlanRef": {
+        "type": "string",
+        "description": "Pointer to the control plan in the quality system (e.g. qc.test/7).",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "controlPlanHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256 of the control plan as read from the quality system when this record was opened."
+      },
+      "requestedBy": {
+        "type": "string",
+        "description": "Display name of the QA person who opened the release.",
+        "maxLength": 120
+      }
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "checkRef",
+      "checkOutcome",
+      "sorModel",
+      "lotNumber",
+      "quantity",
+      "payloadHash"
+    ],
+    "properties": {
+      "checkRef": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "description": "recordId of the calder-precondition-check-v1 child that settled FULFILLED."
+      },
+      "checkOutcome": {
+        "type": "string",
+        "const": "FULFILLED",
+        "description": "Structural: a release completion can only claim a fulfilled check. The engine separately refuses the completion while the child is open and fails this record if the child failed."
+      },
+      "sorModel": {
+        "type": "string",
+        "description": "The system-of-record model the payload creates (e.g. mrp.production).",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "lotNumber": {
+        "type": "string",
+        "description": "Engine-checked == criteria.lotNumber (advisory).",
+        "pattern": "^[A-Z0-9][A-Z0-9-]{2,62}$"
+      },
+      "quantity": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "description": "Engine-checked == criteria.quantity (advisory)."
+      },
+      "payloadHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256 of the exact payload the writer will send to the system of record once QA approves. The write receipt must carry the same hash."
+      }
+    }
+  },
+  "fieldMappings": [
+    {
+      "ruleId": "release-matches-criteria",
+      "valueType": "expression",
+      "expression": "evidence.lotNumber == criteria.lotNumber && evidence.quantity == criteria.quantity"
+    }
+  ]
+}

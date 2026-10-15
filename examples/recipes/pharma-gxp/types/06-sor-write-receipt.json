@@ -1,0 +1,71 @@
+{
+  "type": "calder-sor-write-receipt-v1",
+  "category": "gxp-manufacturing",
+  "displayName": "System-of-record write receipt (the batch record as created, notarize-only)",
+  "description": "Notarized by the writer automation after QA's approval, once the batch record exists in the system of record: the model and id created, the record name, the lot, the system's own write stamp, and the payload hash, which must equal the hash QA approved on the release record. It is the end of the chain and the thing an inspector matches against the MES: the release says what was approved and by whom, the receipt says what was written. A cross-record check over the two audit exports compares the two hashes and the order of the two entries.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "releaseRef",
+      "sorSystem",
+      "sorModel",
+      "sorRecordId",
+      "sorRecordName",
+      "lotNumber",
+      "payloadHash",
+      "writeDate",
+      "writtenAt"
+    ],
+    "properties": {
+      "releaseRef": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "description": "recordId of the calder-batch-record-release-v1 that approved this write."
+      },
+      "sorSystem": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "sorModel": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "sorRecordId": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "sorRecordName": {
+        "type": "string",
+        "description": "The record name as the system displays it (e.g. WH/MO/00007).",
+        "maxLength": 120
+      },
+      "lotNumber": {
+        "type": "string",
+        "description": "",
+        "pattern": "^[A-Z0-9][A-Z0-9-]{2,62}$"
+      },
+      "payloadHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256 of the exact payload sent. Must equal the approved release completion's payloadHash."
+      },
+      "writeDate": {
+        "type": "string",
+        "description": "The system of record's own write stamp on the created record.",
+        "maxLength": 40
+      },
+      "writtenAt": {
+        "type": "string",
+        "format": "date-time",
+        "description": "When the writer issued the call."
+      }
+    }
+  }
+}

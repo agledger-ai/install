@@ -1,0 +1,60 @@
+# pharma-gxp recipe: Notify (webhook) subscriptions.
+# A declarative list of the webhook subscriptions this recipe expects. Create each
+# one against your Server with POST /v1/webhooks (see the Webhooks guide), sending
+# each entry's fields as the body; the comment above each entry is its label for you,
+# not a field (the route refuses unknown fields). The signing secret is returned ONCE
+# at create time; capture it then, it is null on every subsequent read.
+#
+# SSRF: private / link-local / metadata IPs are blocked at connect regardless of
+# DNS; SSRF_ALLOW_CIDRS is the only escape hatch. Point each url at a public HTTPS
+# endpoint you control (or HTTP only on an LB-terminated-TLS install with
+# SSRF_ALLOW_PLAIN_HTTP set). Replace the example.com URLs with your own.
+#
+# recordTypes narrows record-scoped events to the listed contract types: type-segregated,
+# fail-closed routing done by the Server. Omit it, or use ['*'], to receive every type.
+subscriptions:
+  # The QA queue: the two principal gates a named person signs. record.gate_held is the
+  # "render your verdict now" signal; on a release it fires once the precondition check
+  # settled and the proposer bound the payload, or once a failed check rolled up (then
+  # only reject is taken, and the engine's advisoryVerdict says so).
+  # gxp-qa-queue
+  - url: https://qa-queue.example.com/agledger
+    signingAlg: ed25519       # vault-signed, offline-verifiable: this is the signature trail
+    eventTypes:
+      - record.created
+      - record.completion_submitted
+      - record.gate_held
+      - record.gate_complete
+      - record.fulfilled
+      - record.failed
+      - cascading.gate.complete   # a child failed and the parent is held: QA reads subRecordResults
+    recordTypes:
+      - calder-complaint-case-v1
+      - calder-batch-record-release-v1
+  # The automation channel: the engine-gated children. A FAILED evidence read means a
+  # reader wrote to a system of record; a FAILED precondition check names the check that
+  # failed in its gate results. Route to the team that owns the automations.
+  # gxp-automation-gates
+  - url: https://automation-events.example.com/agledger
+    signingAlg: hmac
+    eventTypes:
+      - record.delegated
+      - record.completion_submitted
+      - record.gate_complete
+      - record.fulfilled
+      - record.failed
+    recordTypes:
+      - calder-evidence-read-v1
+      - calder-precondition-check-v1
+  # The manufacturing record channel: what was proposed and what was written. The receipt
+  # carries the system-of-record id and the payload hash QA approved; route it to the
+  # batch record archive or the MES integration that reconciles the two.
+  # gxp-batch-records
+  - url: https://batch-archive.example.com/agledger
+    signingAlg: ed25519
+    eventTypes:
+      - record.created
+      - record.reference_added
+    recordTypes:
+      - calder-batch-record-proposal-v1
+      - calder-sor-write-receipt-v1
