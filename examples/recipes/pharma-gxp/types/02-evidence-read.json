@@ -1,0 +1,152 @@
+{
+  "type": "calder-evidence-read-v1",
+  "category": "gxp-quality",
+  "defaultGateMode": "auto",
+  "displayName": "Evidence read (one automation, one dataset, read-only, engine-gated)",
+  "description": "A delegated child of calder-complaint-case-v1: one automation reads one dataset and attaches what it found as evidence. The case orchestrator (the parent's performer) creates it with parentRecordId naming the reader automation as performer and autoActivate; the reader submits the completion itself, so the evidence is signed under the identity that read it. What is evidence here is the hash of what the system of record answered and the write stamps of the records read, not the reader's narrative; the summary is bounded and labelled as the reader's own words. The engine rule settles FULFILLED only when the reader reports no mutation, the source system matches the one declared at create, and the record count matches the records listed. A FAILED read fails the case by rollup, so a complaint investigation that touched a system of record cannot close as read-only.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "caseRef",
+      "sourceSystem",
+      "readScope",
+      "readOnly"
+    ],
+    "properties": {
+      "caseRef": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "description": "recordId of the calder-complaint-case-v1 this read belongs to (also the parentRecordId)."
+      },
+      "sourceSystem": {
+        "type": "string",
+        "enum": [
+          "mes",
+          "lims",
+          "erp",
+          "distribution",
+          "complaint-history",
+          "deviation",
+          "stability",
+          "training"
+        ],
+        "description": "Which system the reader is to read."
+      },
+      "readScope": {
+        "type": "string",
+        "description": "What to read, in words (e.g. 'manufacturing order and consumed lots for BATCH-2026-0917').",
+        "minLength": 1,
+        "maxLength": 500
+      },
+      "readOnly": {
+        "type": "boolean",
+        "const": true
+      }
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "sourceSystem",
+      "query",
+      "queryHash",
+      "resultHash",
+      "recordCount",
+      "sourceRecords",
+      "readAt",
+      "mutating",
+      "summary"
+    ],
+    "properties": {
+      "sourceSystem": {
+        "type": "string",
+        "enum": [
+          "mes",
+          "lims",
+          "erp",
+          "distribution",
+          "complaint-history",
+          "deviation",
+          "stability",
+          "training"
+        ],
+        "description": "Engine-checked == criteria.sourceSystem."
+      },
+      "query": {
+        "type": "string",
+        "description": "The query as sent to the source system (model and domain, SQL, or endpoint and parameters).",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "queryHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256 of the exact query bytes."
+      },
+      "resultHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256 of the exact response bytes the source system returned."
+      },
+      "recordCount": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Number of source records read. Engine-checked == len(sourceRecords)."
+      },
+      "sourceRecords": {
+        "type": "array",
+        "maxItems": 200,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "id",
+            "writeDate"
+          ],
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "Source model or table.",
+              "maxLength": 80
+            },
+            "id": {
+              "type": "string",
+              "description": "Source record id.",
+              "maxLength": 64
+            },
+            "writeDate": {
+              "type": "string",
+              "description": "The source's own last-write stamp for the record, as it reported it.",
+              "maxLength": 40
+            }
+          }
+        },
+        "description": "The records read, with the source's own write stamps, so an auditor can prove nothing was written."
+      },
+      "readAt": {
+        "type": "string",
+        "format": "date-time",
+        "description": "When the read ran."
+      },
+      "mutating": {
+        "type": "boolean",
+        "description": "Whether the automation issued any write. Engine-checked == false."
+      },
+      "summary": {
+        "type": "string",
+        "description": "The reader's own short account of what the data shows. A claim, not evidence.",
+        "maxLength": 1000
+      }
+    }
+  },
+  "fieldMappings": [
+    {
+      "ruleId": "read-only-invariant",
+      "valueType": "expression",
+      "expression": "evidence.mutating == false && evidence.sourceSystem == criteria.sourceSystem && len(evidence.sourceRecords) == evidence.recordCount"
+    }
+  ]
+}

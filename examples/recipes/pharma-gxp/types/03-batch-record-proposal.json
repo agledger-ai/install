@@ -1,0 +1,123 @@
+{
+  "type": "calder-batch-record-proposal-v1",
+  "category": "gxp-manufacturing",
+  "displayName": "Batch record proposal (an automation's intent, notarize-only)",
+  "description": "What an automation, typically an LLM-driven agent, proposes to manufacture: product, bill of materials, quantity, lot, component lots, line, and its rationale. Notarized under the proposer's own identity before anything else happens. Nothing here is evidence of readiness: producedBy says what kind of automation wrote it, and the rationale is bounded and labelled as the proposer's claim. The release gate (calder-batch-record-release-v1) references this record, and its precondition-check child is what establishes readiness against the systems.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "productCode",
+      "bomRef",
+      "quantity",
+      "proposedLot",
+      "componentLots",
+      "line",
+      "proposalHash",
+      "producedBy"
+    ],
+    "properties": {
+      "productCode": {
+        "type": "string",
+        "description": "Product code.",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "bomRef": {
+        "type": "string",
+        "description": "Bill of materials pointer in the ERP/MES (e.g. mrp.bom/1).",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "quantity": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "proposedLot": {
+        "type": "string",
+        "description": "The lot number the batch record will carry.",
+        "pattern": "^[A-Z0-9][A-Z0-9-]{2,62}$"
+      },
+      "componentLots": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 50,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "productCode",
+            "lotName",
+            "quantity"
+          ],
+          "properties": {
+            "productCode": {
+              "type": "string",
+              "description": "",
+              "maxLength": 64
+            },
+            "lotName": {
+              "type": "string",
+              "description": "",
+              "maxLength": 64
+            },
+            "quantity": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        }
+      },
+      "line": {
+        "type": "string",
+        "description": "Production line or work centre.",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "proposalHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256 of the full proposal document the automation produced."
+      },
+      "producedBy": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "llm",
+              "rule-based",
+              "human"
+            ]
+          },
+          "model": {
+            "type": "string",
+            "description": "Model identifier when kind is llm.",
+            "maxLength": 120
+          }
+        },
+        "if": {
+          "properties": {
+            "kind": {
+              "const": "llm"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "model"
+          ]
+        }
+      },
+      "rationale": {
+        "type": "string",
+        "description": "The proposer's reasoning, in its own words. A claim, not evidence.",
+        "maxLength": 2000
+      }
+    }
+  }
+}
