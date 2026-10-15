@@ -1,0 +1,156 @@
+{
+  "type": "calder-precondition-check-v1",
+  "category": "gxp-manufacturing",
+  "defaultGateMode": "auto",
+  "displayName": "Precondition check (deterministic checker against the systems, engine-gated)",
+  "description": "A delegated child of calder-batch-record-release-v1, performed by a deterministic checker automation (not an LLM) that reads the product's control plan from the quality system and runs every check it names against the systems of record: component lots on hand and inspected, bill of materials active, line clear, and whatever else the plan lists. The proposer (the parent's performer) creates it with parentRecordId, naming the checker as performer, and copies only the control plan hash from the parent: the child carries no list of checks, so there is nothing for a proposer to shorten (a prompt-only probe of six language models, https://agledger.ai/blog/six-llms-batch-record-control-plan/, had two of them drop the check they knew would fail when the list was theirs to carry). The checker's completion lists the plan as it read it, every check with its source record, what was observed, what was expected and whether it passed, and the plan hash as re-read. The engine settles FULFILLED only when the plan has at least one check, no check failed, the passed list equals the plan's list exactly (same names, same count, by structure), and the re-read plan hash equals the one on the child's criteria. A stale plan, a failed check, or a checker that reports fewer checks than it passed settles FAILED, which fails the release by rollup. What the engine cannot see is a checker that reads a shorter plan than the quality system holds, or a child whose plan reference is not the release's; a cross-record check over the two audit exports compares the checker's list and the child's plan reference and hash to the release's, and that comparison is the detective half.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "proposalRef",
+      "productCode",
+      "controlPlanRef",
+      "controlPlanHash"
+    ],
+    "properties": {
+      "proposalRef": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "description": "recordId of the calder-batch-record-proposal-v1."
+      },
+      "productCode": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "controlPlanRef": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "controlPlanHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "Copied from the parent release by the proposer. Engine-checked == evidence.controlPlanHash, which the checker computes from the plan as it re-reads it from the quality system; a copy that does not match the real plan fails the check."
+      }
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "requiredChecks",
+      "controlPlanHash",
+      "checks",
+      "passedChecks",
+      "failedChecks",
+      "checkedAt",
+      "checkerKind",
+      "evidenceDigest"
+    ],
+    "properties": {
+      "requiredChecks": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 30,
+        "items": {
+          "type": "string"
+        },
+        "description": "The check names as read from the control plan in the quality system at check time. The checker reads the plan itself; nothing here is copied from the proposer."
+      },
+      "controlPlanHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256 of the control plan as re-read at check time."
+      },
+      "checks": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 30,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "sourceSystem",
+            "sourceRef",
+            "observed",
+            "expected",
+            "passed"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "",
+              "maxLength": 64
+            },
+            "sourceSystem": {
+              "type": "string",
+              "description": "",
+              "maxLength": 32
+            },
+            "sourceRef": {
+              "type": "string",
+              "description": "The source record(s) read (model/id).",
+              "maxLength": 200
+            },
+            "observed": {
+              "type": "string",
+              "description": "What the system answered.",
+              "maxLength": 300
+            },
+            "expected": {
+              "type": "string",
+              "description": "What the control plan requires.",
+              "maxLength": 300
+            },
+            "passed": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "passedChecks": {
+        "type": "array",
+        "maxItems": 30,
+        "items": {
+          "type": "string"
+        },
+        "description": "Names of the checks that passed, in control-plan order. Engine-checked == evidence.requiredChecks (the plan as the checker read it)."
+      },
+      "failedChecks": {
+        "type": "array",
+        "maxItems": 30,
+        "items": {
+          "type": "string"
+        },
+        "description": "Names of the checks that failed. Engine-checked empty."
+      },
+      "checkedAt": {
+        "type": "string",
+        "format": "date-time",
+        "description": ""
+      },
+      "checkerKind": {
+        "type": "string",
+        "const": "deterministic",
+        "description": "Structural: the checker declares itself deterministic code. Whether it is, is a deployment fact the validation package covers."
+      },
+      "evidenceDigest": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256 over the serialized checks array."
+      }
+    }
+  },
+  "fieldMappings": [
+    {
+      "ruleId": "all-required-checks-passed",
+      "valueType": "expression",
+      "expression": "len(evidence.requiredChecks) >= 1 && len(evidence.failedChecks) == 0 && len(evidence.passedChecks) == len(evidence.requiredChecks) && evidence.passedChecks == evidence.requiredChecks && evidence.controlPlanHash == criteria.controlPlanHash"
+    }
+  ]
+}

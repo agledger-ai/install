@@ -1,0 +1,245 @@
+{
+  "type": "calder-complaint-case-v1",
+  "category": "gxp-quality",
+  "defaultGateMode": "principal",
+  "displayName": "Complaint investigation case (read-only, QA close-out)",
+  "description": "The root of a complaint investigation under 21 CFR 211.198 (drug) and 820.198 (device): one case record that every piece of evidence hangs off as a delegated child, closed by a distinct QA investigator's verdict. The QA investigator (principal, a named human) opens it naming the case orchestrator (performer); the orchestrator fans the reads out as calder-evidence-read-v1 children, one per automation per dataset, each engine-gated on the read-only invariant. The case is read-only by declaration (readOnly const true) and by construction: no child touches a system of record, and a child that reports a mutation fails its own gate and so fails the case by rollup. The orchestrator's completion is admitted only once every child is terminal; it carries the conclusion, the investigation summary hash, the CAPA and reportability decisions with their conditional fields, and a digest of the source records' write stamps re-read at close. The QA verdict (accept) closes the case; its checks object carries the signature meaning. The engine rule here is advisory only (principal mode): the human decides.",
+  "recordSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "complaintId",
+      "productCode",
+      "lotNumbers",
+      "receivedAt",
+      "complaintCategory",
+      "complaintSource",
+      "descriptionHash",
+      "distributed",
+      "readOnly"
+    ],
+    "properties": {
+      "complaintId": {
+        "type": "string",
+        "description": "The complaint identifier in the quality system.",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "productCode": {
+        "type": "string",
+        "description": "Product code as the ERP/MES names it.",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "lotNumbers": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 20,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "description": "Lot or batch numbers the complaint names."
+      },
+      "receivedAt": {
+        "type": "string",
+        "format": "date-time",
+        "description": "When the complaint was received."
+      },
+      "complaintCategory": {
+        "type": "string",
+        "enum": [
+          "contamination",
+          "particulate",
+          "labeling",
+          "potency",
+          "packaging",
+          "adverse-event-suspected",
+          "other"
+        ],
+        "description": "Complaint category."
+      },
+      "complaintSource": {
+        "type": "string",
+        "enum": [
+          "customer",
+          "distributor",
+          "internal",
+          "regulator"
+        ],
+        "description": "Who raised it."
+      },
+      "descriptionHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256 of the complaint text as received (the text itself stays in the quality system)."
+      },
+      "distributed": {
+        "type": "boolean",
+        "description": "Whether the named lots were distributed (drives reportability)."
+      },
+      "readOnly": {
+        "type": "boolean",
+        "const": true,
+        "description": "Declares the investigation touches no system of record. Every evidence child's gate enforces it."
+      },
+      "openedBy": {
+        "type": "string",
+        "description": "Display name of the QA investigator who opened the case.",
+        "maxLength": 120
+      }
+    }
+  },
+  "completionSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "investigationPerformed",
+      "evidenceRecordIds",
+      "conclusion",
+      "rootCauseCategory",
+      "summaryHash",
+      "capaRequired",
+      "reportable",
+      "sorRecordsUnchanged",
+      "sorWriteStampDigest"
+    ],
+    "properties": {
+      "investigationPerformed": {
+        "type": "boolean",
+        "description": "211.198(a): whether an investigation was performed."
+      },
+      "noInvestigationReason": {
+        "type": "string",
+        "description": "Required when investigationPerformed is false: the written reason (211.198(a)).",
+        "minLength": 10,
+        "maxLength": 1000
+      },
+      "evidenceRecordIds": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "items": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "description": "The calder-evidence-read-v1 child record ids this conclusion rests on."
+      },
+      "conclusion": {
+        "type": "string",
+        "enum": [
+          "confirmed",
+          "not-confirmed",
+          "inconclusive"
+        ]
+      },
+      "rootCauseCategory": {
+        "type": "string",
+        "enum": [
+          "manufacturing",
+          "materials",
+          "packaging-labeling",
+          "distribution-storage",
+          "use-error",
+          "undetermined",
+          "not-applicable"
+        ]
+      },
+      "summaryHash": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256 of the written investigation summary held in the quality system."
+      },
+      "capaRequired": {
+        "type": "boolean"
+      },
+      "capaRef": {
+        "type": "string",
+        "description": "Required when capaRequired: the CAPA identifier in the quality system.",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "reportable": {
+        "type": "boolean",
+        "description": "Whether the finding is reportable to a regulator (e.g. a Field Alert Report under 21 CFR 314.81(b)(1))."
+      },
+      "reportType": {
+        "type": "string",
+        "enum": [
+          "field-alert-report",
+          "bpdr",
+          "mdr",
+          "other"
+        ],
+        "description": "Required when reportable."
+      },
+      "reportDueBy": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Required when reportable: the regulatory deadline (FAR: 3 working days from receipt)."
+      },
+      "sorRecordsUnchanged": {
+        "type": "boolean",
+        "description": "Whether every source record the children read carries the same write stamp at close as it did when read."
+      },
+      "sorWriteStampDigest": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "description": "sha256 over the sorted (model, id, writeDate) tuples of every source record re-read at close. An auditor re-derives it from the children's evidence."
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "investigationPerformed": {
+              "const": false
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "noInvestigationReason"
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "capaRequired": {
+              "const": true
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "capaRef"
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "reportable": {
+              "const": true
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "reportType",
+            "reportDueBy"
+          ]
+        }
+      }
+    ]
+  },
+  "fieldMappings": [
+    {
+      "ruleId": "close-out-advisory",
+      "valueType": "expression",
+      "expression": "evidence.sorRecordsUnchanged == true && len(evidence.evidenceRecordIds) >= 1"
+    }
+  ]
+}
