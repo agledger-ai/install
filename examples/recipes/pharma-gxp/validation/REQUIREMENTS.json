@@ -43,12 +43,12 @@
     },
     {
       "id": "GXP-05",
-      "text": "The close-out carries the 211.198 decisions with their conditional fields: investigation performed or a written reason, CAPA reference when CAPA is required, report type and due date when reportable.",
+      "text": "The close-out carries the 211.198(b) decisions with their conditional fields: investigation performed or a written reason naming the responsible person, CAPA reference when CAPA is required, report type and due date when reportable.",
       "satisfiedBy": "calder-complaint-case-v1 completionSchema if/then conditionals",
       "oqAsserts": [
         "a close-out with capaRequired true and no capaRef is refused",
         "a close-out with reportable true and no reportType or reportDueBy is refused",
-        "a close-out with no investigation and no written reason is refused (211.198(a))"
+        "a close-out with no investigation and no written reason is refused (211.198(b)(3))"
       ]
     },
     {
@@ -57,6 +57,7 @@
       "satisfiedBy": "sorWriteStampDigest on the close-out over the sourceRecords of every read; re-derived from the reads' evidence as a cross-record check",
       "oqAsserts": [
         "the digest on the close-out equals the digest re-derived from the stamps the reads listed",
+        "the close-out's evidenceRecordIds equals the set of the case's read children",
         "a stamp moved between read and close changes the re-derived digest"
       ]
     },
@@ -66,7 +67,8 @@
       "satisfiedBy": "the principal verdict's checks object (signatureMeaning, signerName, signerRole, regulation, signedAt) preserved on the OUTCOME_REPORTED entry of the audit export",
       "oqAsserts": [
         "QA accept with a signature meaning settles the case FULFILLED",
-        "the audit export's OUTCOME_REPORTED entry carries the signature meaning verbatim and names the completion it signs"
+        "the audit export's OUTCOME_REPORTED entry carries the signature meaning verbatim and names the completion it signs",
+        "the entry's reporter is the QA investigator's identity, not an org admin's"
       ]
     },
     {
@@ -95,16 +97,19 @@
       "oqAsserts": [
         "the proposer delegates the check to the checker as a child",
         "a check child whose criteria carries a list of checks is refused at create",
+        "a check child whose performer is the proposer itself is caught by the cross-record check (the engine admits it)",
         "the child's controlPlanRef and controlPlanHash equal the release's (cross-record check)"
       ]
     },
     {
       "id": "GXP-11",
-      "text": "No release completion can be submitted while the check is open, and none can be submitted after the check failed.",
-      "satisfiedBy": "engine cascade settlement: has_children_leaf_only, and failure rollup on a one-shot child",
+      "text": "No release completion can be submitted while the check child is open, and none while a failed check holds the release; the engine does not require the child to exist, so the release completion's checkRef is confirmed to name a FULFILLED child of the release.",
+      "satisfiedBy": "engine cascade settlement: has_children_leaf_only, and failure rollup on a one-shot child; checkRef confirmed by QA or the cross-record check",
       "oqAsserts": [
         "the release completion is refused 422 while the check is open",
-        "the release completion is still refused after a failed check"
+        "the release completion is still refused after a failed check",
+        "a release completed with no check child, or with a check child cancelled before work, is caught by the cross-record check (the engine admits it)",
+        "the release completion's checkRef names a FULFILLED child of the release (cross-record check)"
       ]
     },
     {
@@ -121,13 +126,14 @@
     },
     {
       "id": "GXP-13",
-      "text": "A failed check fails the release; QA can only reject it, and nothing is written to the system of record.",
+      "text": "A failed check holds the release; QA can only reject it, nothing is written to the system of record, and a revision requested after the reject is visible on the chain.",
       "satisfiedBy": "cascade rollup (reject-only verdict) plus a system-of-record assertion",
       "oqAsserts": [
         "the release is held by rollup after the failed one-shot check",
         "QA accept is refused 422 on the rolled-up failure",
         "the QA reject verdict lands and the release reads FAILED",
-        "no manufacturing order or lot exists in the system of record for the proposed lot"
+        "no manufacturing order or lot exists in the system of record for the proposed lot",
+        "a revision requested on the rejected release appears on its chain"
       ]
     },
     {
@@ -147,7 +153,8 @@
       "satisfiedBy": "the principal verdict's checks object preserved on the OUTCOME_REPORTED entry",
       "oqAsserts": [
         "QA accept with a Part 11 signature meaning settles the release FULFILLED",
-        "the audit export's OUTCOME_REPORTED entry carries the signature meaning and names the completion it signs"
+        "the audit export's OUTCOME_REPORTED entry carries the signature meaning and names the completion it signs",
+        "the entry's reporter is the QA release signer's identity, not an org admin's"
       ]
     },
     {

@@ -78,20 +78,39 @@ and ERP and keeps the evidence shapes the types declare.
   count), and the re-read `controlPlanHash` equals the one on the check record's criteria.
   One failed check, a short passed list, a renamed check and a stale plan all settle FAILED.
   The child carries no list of checks, only the plan hash.
-- **Ordering, by the engine's cascade settlement.** The release's own completion is refused
-  (422 `has_children_leaf_only`) while the check child is open, and the case's while any read
-  is open. A failed child rolls up: the parent is held on an engine-synthesized completion
-  that takes only a reject verdict, and `accept` is refused 422.
+- **Ordering, by the engine's cascade settlement.** While a check child is open, the
+  release's own completion is refused (422 `has_children_leaf_only`), and the case's while
+  any read is open. A failed one-shot child rolls up: the parent is held on an
+  engine-synthesized completion that takes only a reject verdict, and `accept` is refused
+  422. The engine does not require the child to exist, and it never reads the release
+  completion's `checkRef`: a proposer that creates no check child, or cancels one before
+  work, can complete the release on its own. Ordering is deny-on-failure, not
+  required-before. QA's review, or the cross-record check below, confirms that `checkRef`
+  names a FULFILLED child of this release before QA signs.
+- **Reject is recoverable.** QA's reject lands the release or the case at FAILED, which is
+  not terminal: the principal or an org admin can request a revision, and from there the
+  proposer's own completion is graded again. A check that failed stays failed, but a
+  release rejected over it can be reopened. Your SOP decides whether a revision is ever
+  allowed on a check-failed release; the chain shows it if one was.
 - **Binding of duty and no circular delegation** (engine). Only the parent's performer may
-  create a child; naming the parent's principal (QA) as a child's performer is refused.
+  create a child; naming the parent's principal (QA) as a child's performer is refused. The
+  engine admits the performer's own id as the child's performer, so a proposer can name
+  itself the checker. Nothing in the types pins the checker's identity: record the checker
+  agent id your SOP expects, and have QA or the cross-record check compare it to the check
+  child's performer before signing.
 - **Structural claims** (schema). `readOnly` const true on the case; `checkOutcome` const
   FULFILLED on the release completion; `checkerKind` const deterministic; sha256 patterns on
   every hash; UUID patterns on every record reference; conditionals for CAPA, reportability,
-  and a written reason when no investigation was performed (211.198(a)); `model` required
+  and a written reason when no investigation was performed (211.198(b)(3), which also
+  wants the responsible person's name: put it in the reason until the type carries a field
+  for it); `model` required
   when `producedBy.kind` is `llm`.
 - **Signature meaning on the chain.** The QA verdict's `checks` object (signatureMeaning,
   signerName, signerRole, regulation, signedAt) is preserved verbatim on the signed
-  OUTCOME_REPORTED entry of the audit export, linked to the completion it signs.
+  OUTCOME_REPORTED entry of the audit export, linked to the completion it signs. The
+  `checks` object is caller-supplied text the engine stores, not validates, and an org-admin
+  key can render the verdict for the principal; the entry names the reporter, so the OQ
+  asserts the reporter is the principal's identity.
 
 ## Lessons for implementers
 
@@ -143,9 +162,10 @@ it: a control an LLM carries from one record into the next is a control it may e
 the control where no LLM carries it.
 
 The one lie left is a checker that reads a shorter plan than the quality system holds. The
-engine cannot see that from inside one record. Compare the checker's plan list to the
-release's `requiredChecks`, and the child's `controlPlanRef` and `controlPlanHash` to the
-release's, across the two audit exports as a cross-record check; a short list sits on the checker's signed completion under the checker's own identity, attributed
+engine cannot see that from inside one record. Compare, across the audit exports: that
+the release completion's `checkRef` is a FULFILLED child of the release whose performer is
+the expected checker; the checker's plan list to the release's `requiredChecks`; and the
+child's `controlPlanRef` and `controlPlanHash` to the release's. A short list sits on the checker's signed completion under the checker's own identity, attributed
 and catchable against the quality system's own plan. Keep the checker's plan source the
 quality system, and keep the checker deterministic code.
 
@@ -215,7 +235,9 @@ release assay test on the production-done trigger, and one finished historic bat
 `control_plan_ref` and `mrp.bom/<id>` for the proposal's `bomRef`.
 
 - `sor/odoo.py`: a standard-library JSON-RPC client that counts reads and writes and keeps
-  the last request and response bytes for hashing.
+  the last request and response bytes. The readers hash the canonical JSON of the records
+  they assemble and a canonical description of the query, not those raw bytes; hash the raw
+  bytes instead if your auditors want to replay the query.
 - `sor/checker.py`: the deterministic checker. `run(odoo, proposal, control_plan_ref)` reads
   the control plan, runs each named check (`bom-active`, `component-lots-on-hand`,
   `component-lots-inspected`, `line-clear`, `lot-number-unique`), refuses to sign if it
@@ -224,7 +246,10 @@ release assay test on the production-done trigger, and one finished historic bat
   skipped.
 - `sor/readers.py`: the four readers (MES, LIMS, distribution, complaint history on the
   ledger). Each returns query hash, result hash, stamps and a bounded summary as the
-  completion evidence for `calder-evidence-read-v1`.
+  completion evidence for `calder-evidence-read-v1`. The complaint-history reader searches
+  the ledger through a callable you supply; an agent key's search is scoped to that agent's
+  own records, so give it an admin-key search, and treat an empty history as a result to
+  check, not a pass.
 - `sor/writer.py`: `build_payload` so the proposer can hash the batch record before approval,
   and `write` which, after approval, creates the lot and the manufacturing order from exactly
   that payload and returns the criteria for `calder-sor-write-receipt-v1`.

@@ -83,12 +83,12 @@
       "queryHash": {
         "type": "string",
         "pattern": "^sha256:[0-9a-f]{64}$",
-        "description": "sha256 of the exact query bytes."
+        "description": "sha256 of the canonical form of the query the reader sent, as the reader declares it."
       },
       "resultHash": {
         "type": "string",
         "pattern": "^sha256:[0-9a-f]{64}$",
-        "description": "sha256 of the exact response bytes the source system returned."
+        "description": "sha256 of the canonical JSON of the records the reader assembled from the source system's answers."
       },
       "recordCount": {
         "type": "integer",
