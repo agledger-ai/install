@@ -3,7 +3,7 @@
   "category": "gxp-quality",
   "defaultGateMode": "principal",
   "displayName": "Complaint investigation case (read-only, QA close-out)",
-  "description": "The root of a complaint investigation under 21 CFR 211.198 (drug) and 820.198 (device): one case record that every piece of evidence hangs off as a delegated child, closed by a distinct QA investigator's verdict. The QA investigator (principal, a named human) opens it naming the case orchestrator (performer); the orchestrator fans the reads out as calder-evidence-read-v1 children, one per automation per dataset, each engine-gated on the read-only invariant. The case is read-only by declaration (readOnly const true) and by construction: no child touches a system of record, and a child that reports a mutation fails its own gate and so fails the case by rollup. The orchestrator's completion is admitted only once every child is terminal; it carries the conclusion, the investigation summary hash, the CAPA and reportability decisions with their conditional fields, and a digest of the source records' write stamps re-read at close. The QA verdict (accept) closes the case; its checks object carries the signature meaning. The engine rule here is advisory only (principal mode): the human decides.",
+  "description": "The root of a complaint investigation under 21 CFR 211.198: one case record that every piece of evidence hangs off as a delegated child, closed by a distinct QA investigator's verdict. The QA investigator (principal, a named human) opens it naming the case orchestrator (performer); the orchestrator fans the reads out as calder-evidence-read-v1 children, one per automation per dataset, each engine-gated on the read-only invariant. The case is read-only by declaration (readOnly const true) and by construction: no child touches a system of record, and a child that reports a mutation fails its own gate and so fails the case by rollup. The orchestrator's completion is admitted only once every child is terminal; it carries the conclusion, the investigation summary hash, the CAPA and reportability decisions with their conditional fields, and a digest of the source records' write stamps re-read at close. The QA verdict (accept) closes the case; its checks object carries the signature meaning. The engine rule here is advisory only (principal mode): the human decides.",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -108,11 +108,11 @@
     "properties": {
       "investigationPerformed": {
         "type": "boolean",
-        "description": "211.198(a): whether an investigation was performed."
+        "description": "Whether an investigation under 211.192 was performed (211.198(b))."
       },
       "noInvestigationReason": {
         "type": "string",
-        "description": "Required when investigationPerformed is false: the written reason (211.198(a)).",
+        "description": "Required when investigationPerformed is false: the written reason, and the name of the responsible person who made the determination (211.198(b)(3)).",
         "minLength": 10,
         "maxLength": 1000
       },

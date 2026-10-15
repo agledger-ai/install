@@ -34,15 +34,21 @@ Drive four cases and the negative probes, asserting each line of `TRACEABILITY.m
 
 The negative probes are the refusals the matrix lists: schema conditionals, the list on the
 check child, the short, renamed, stale and failed check completions, the missing hashes,
-binding of duty and circular delegation.
+binding of duty and circular delegation. Four more are things the engine admits and the
+cross-record check must catch: a release completed with no check child; a check child
+cancelled before work; a check child whose performer is the proposer; and a revision
+requested on a release QA rejected over a failed check.
 
 Export every record (`GET /v1/records/{id}/audit-export`), save the completion bodies beside
 the exports (the export carries evidence hashes, not evidence), verify each export with
 `agledger-verify` against `GET /v1/verification-keys`, corrupt one byte of one export and
-confirm the verifier reports it, and run the three cross-record checks, which the site writes
-(none ship): the checker's plan list and the check child's `controlPlanRef` and
-`controlPlanHash` against the release's; the close-out's `sorWriteStampDigest` re-derived from
-the reads' `sourceRecords`; and the receipt's `payloadHash` against the release completion's.
+confirm the verifier reports it, and run the cross-record checks, which the site writes (none
+ship): the release completion's `checkRef` is a FULFILLED child of the release whose performer
+is the expected checker; the checker's plan list and the check child's `controlPlanRef` and
+`controlPlanHash` equal the release's; the close-out's `sorWriteStampDigest` re-derives from
+the reads' `sourceRecords` and its `evidenceRecordIds` equals the case's children; the
+receipt's `payloadHash` equals the release completion's; and every OUTCOME_REPORTED entry's
+reporter is the principal's identity.
 
 Log one line per assertion as `<requirement id><TAB><assertion>` and regenerate the matrix
 from it:

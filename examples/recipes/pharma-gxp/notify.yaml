@@ -14,9 +14,10 @@
 # fail-closed routing done by the Server. Omit it, or use ['*'], to receive every type.
 subscriptions:
   # The QA queue: the two principal gates a named person signs. record.gate_held is the
-  # "render your verdict now" signal; on a release it fires once the precondition check
-  # settled and the proposer bound the payload, or once a failed check rolled up (then
-  # only reject is taken, and the engine's advisoryVerdict says so).
+  # "render your verdict now" signal; on a release it fires when the proposer submits the
+  # completion (the engine refuses that while a check child is open), or when a failed
+  # check rolled up (then only reject is taken, and the engine's advisoryVerdict says so).
+  # QA confirms checkRef names a FULFILLED child before signing; the engine does not.
   # gxp-qa-queue
   - url: https://qa-queue.example.com/agledger
     signingAlg: ed25519       # vault-signed, offline-verifiable: this is the signature trail
@@ -32,7 +33,7 @@ subscriptions:
       - calder-complaint-case-v1
       - calder-batch-record-release-v1
   # The automation channel: the engine-gated children. A FAILED evidence read means a
-  # reader wrote to a system of record; a FAILED precondition check names the check that
+  # reader reported a write, a source-system mismatch or a record-count mismatch; a FAILED precondition check names the check that
   # failed in its gate results. Route to the team that owns the automations.
   # gxp-automation-gates
   - url: https://automation-events.example.com/agledger
