@@ -601,5 +601,5 @@ Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.15.
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.14.
 
 
-- Initial public release. Install scripts, Docker Compose files, Helm chart, and supply-chain artifacts moved from the private `agledger-api/deploy` tree to this repository.
+- Initial public release. Install scripts, Compose files and the Helm chart moved into this repository.
 - `install.sh` resolves the default version from the live Docker Hub tag list rather than a hardcoded string, so fresh clones always install the current stable release.
