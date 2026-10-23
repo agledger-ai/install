@@ -4,6 +4,28 @@ This changelog tracks changes to the AGLedger installer (this repository) and, f
 
 Releases here are tagged to match the AGLedger server version they ship against.
 
+## v2.1.0 - 2026-10-22
+
+Scripts, Compose files, and Helm chart synced to AGLedger server v2.1.0.
+
+`backup.sh` and `restore.sh` verify an external database on `sslmode=verify-ca` or `verify-full` with the CA the Server verifies it with: `sslrootcert` from the URL, else `NODE_EXTRA_CA_CERTS` from `compose/.env`, read from the host or copied out of the Server image (the bundled AWS RDS and Aurora CA). On Kubernetes, with `config.nodeExtraCaCerts` set, the backup Job copies that CA into the dump container through a `database-ca` init container. A URL written as the install docs write it, with no `sslrootcert`, now connects where it was refused.
+
+`install.sh` and `upgrade.sh` verify a custom image whose registry serves the release signature, as an `oras cp -r` mirror does, with the same keyless check the official image gets. `install.sh`'s advice for changing the signing algorithm moves the current key to `VAULT_SIGNING_KEY_PREVIOUS` before setting the new one. The image pins the RDS global CA bundle AWS serves since 2026-10-14, which adds the three sa-west-1 root CAs. The Compose monitoring profile runs `otel/opentelemetry-collector-contrib` 0.162.0.
+
+Adds the pharma GxP example recipe: six contract types for a read-only complaint investigation and a batch record release held behind a deterministic precondition check and a QA signature.
+
+Server changes in v2.1.0:
+
+A record's `contractVersion` must name a registered version of its type, in the form `GET /v1/schemas/{type}/versions` lists it (`"1"`, `"2"`). A value that names none, such as `"v1"`, `"1.0"` or `"2024-Q1"`, is refused with 400 and the registered versions in `allowedValues`, where it used to bind the current version. This applies to `POST /v1/records`, each item of a bulk create, the A2A `create_record` intent and `POST /v1/admin/records/import`. Omit `contractVersion` to bind the current version.
+
+Migration 002 only drops and adds indexes. A 2.0.0 pod runs against it for the length of a rollout and after a rollback.
+
+`POST /v1/compliance/export` writes one read-transparency leaf per exported record under one `exportBatchId`, as `GET /v1/audit-vault/export` does, and its 201 carries the batch as `bulkExport`. On a receiving Server, the chain entry for an inbound federation message carries the message as the sender signed it (`payload.wire`), so the receiver's audit export proves what the publishing Server asserted to anyone holding its federation key.
+
+`GET /v1/admin/system-health` and the support bundle report pg-boss background migrations as `backgroundMigrations`, and system health reports the V8 heap limit and degrades when under 15% of it is free. pg-boss warnings are counted in `agledger_pgboss_warnings_total` by type.
+
+Gate expressions compare objects and arrays by structure: `==` and `contains()` no longer treat any two objects as equal. A delegation parent whose only open children are FAILED ones their principal can still revise waits on its performer. A refused bulk-create item carries the same `recoveryHint` and fields a single-record 400 does.
+
 ## v2.0.0 - 2026-10-05
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v2.0.0.
