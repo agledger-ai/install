@@ -17,8 +17,8 @@ set -euo pipefail
 # production-ready. The Compose stack binds the API to 127.0.0.1:3001 (loopback
 # only), so you reach it over an SSH tunnel (`tunnel`), optionally through a
 # bastion (`-J`); for production, set AGLEDGER_EXTERNAL_URL and front the API
-# with TLS. Enterprise (Kubernetes/Helm, external database) is the path for
-# multi-node scale and HA — https://agledger.ai/docs/install.
+# with TLS. Kubernetes/Helm on bundled PostgreSQL is covered by the same grant;
+# an external database is the Enterprise line: https://agledger.ai/docs/install.
 #
 # Requirements:
 #   Local : ssh, bash, base64.
@@ -110,9 +110,9 @@ Options (env var equivalent in parens):
 
 Deploys the Compose stack on Docker CE with bundled PostgreSQL. That is the
 substrate the free Developer Edition grant covers for production; install a key
-to license it (https://agledger.ai/register). Enterprise (Kubernetes/Helm,
-external database) is the multi-node scale/HA tier:
-https://agledger.ai/docs/install
+to license it (https://agledger.ai/register). Kubernetes/Helm on bundled
+PostgreSQL is covered by the same grant; an external database is the
+Enterprise line: https://agledger.ai/docs/install
 EOF
 }
 
@@ -284,14 +284,14 @@ if [ "$NEED_COSIGN" = 1 ]; then
   # verify its own bootstrap; the pinned digest is what closes that circle. To
   # raise the version, take COSIGN_VERSION and both digests from that release's
   # cosign_checksums.txt and change all three together.
-  COSIGN_VERSION=v3.1.3
+  COSIGN_VERSION=v3.1.4
   case "$(uname -m)" in
     x86_64|amd64)
       COSARCH=amd64
-      COSSHA=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71 ;;
+      COSSHA=424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa ;;
     aarch64|arm64)
       COSARCH=arm64
-      COSSHA=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a ;;
+      COSSHA=ade83b7aac62e131cacfe96d958948b2150cc9efec46a570a2649b8e27dedad2 ;;
     *) echo "WARN: no cosign build for $(uname -m); image verification will be skipped" >&2; COSARCH="" ;;
   esac
   if [ -n "$COSARCH" ]; then

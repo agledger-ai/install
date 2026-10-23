@@ -133,7 +133,7 @@ api:
   # control a release introduces binds only the pods carrying that release.
   # Read connectedVersions on GET /v1/admin/system-health to see which versions
   # are still attached.
-  # deploy/README.md, "Two releases against one schema".
+  # the install README, "Two releases against one schema".
   strategy:
     type: Recreate
   resources:
@@ -465,7 +465,7 @@ postgres:
     # A mirrored registry replaces the whole reference, digest included.
     image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
     # Server-side guards for the bundled instance, matched to what the Compose
-    # bundled-PG overlay (deploy/compose/docker-compose.postgres.yml) already
+    # bundled-PG overlay (compose/docker-compose.postgres.yml) already
     # sets, so the two bundled paths behave the same way. Without these the
     # bundled Helm Postgres ran stock: no statement cap and no idle-in-transaction
     # cap, where the Compose path had both.
@@ -751,7 +751,7 @@ secrets:
   # on both pod templates roll the api and the worker, each process registers
   # the key it holds and starts signing with it, and the old key stays active
   # until you retire it with
-  # POST /v1/admin/vault/signing-keys/{keyId}/retire. deploy/README.md has both
+  # POST /v1/admin/vault/signing-keys/{keyId}/retire. the install README has both
   # orders (scheduled and compromise).
   vaultSigningKeyPrevious: ""
   existingSecret: ""        # set to use a pre-existing Kubernetes Secret
@@ -858,7 +858,7 @@ marketplace:
 #
 # When KMS stops answering, a process refuses every write (503) rather than
 # write unsigned, fails its readiness probe, and resumes on its own when a
-# probe Sign is answered. deploy/monitoring/alerts ships the two rules.
+# probe Sign is answered. monitoring/alerts ships the two rules.
 signing:
   kmsKeyArn: ""             # arn:aws:kms:<region>:<account>:key/<id> (or :alias/<name>); region comes from the ARN
   kmsEndpoint: ""           # KMS endpoint override (a VPC endpoint); empty = the regional endpoint
@@ -1103,7 +1103,7 @@ hpa:
 # `helm test` runs one Pod that curls /health. An air-gapped cluster points
 # this at its registry's copy.
 tests:
-  image: curlimages/curl:8.18.0
+  image: curlimages/curl:8.23.0
 
 backup:
   cronJob:
@@ -1122,7 +1122,13 @@ backup:
   keep: 7
   # A PostgreSQL client image: the AGLedger runtime base carries no pg_dump.
   # Defaults to postgres.bundled.image. pg_dump refuses a server newer than
-  # itself, so an external PostgreSQL 18 needs an 18 client here.
+  # itself, so an external PostgreSQL 18 needs an 18 client here. The Job
+  # connects with DATABASE_URL_MIGRATE (or DATABASE_URL) as written, so an
+  # external database on sslmode=verify-ca or verify-full needs the CA the
+  # Server uses: with config.nodeExtraCaCerts set, an init container running
+  # the Server's image copies that file (the bundled RDS CA, or a CA mounted
+  # there through extraVolumes, which are rendered on it) into an emptyDir the
+  # dump reads as PGSSLROOTCERT. Nothing further to set.
   image: ""
   persistence:
     enabled: false
@@ -1170,8 +1176,8 @@ postRestore:
 # Monitoring (Prometheus Operator)
 # ---
 # All three render the SAME files the Compose stack mounts: the chart's
-# `files/alerts` and `files/dashboards` are symlinks into deploy/monitoring and
-# deploy/compose/grafana, so a rule or panel is written once and both packaging
+# `files/alerts` and `files/dashboards` are symlinks into monitoring/ and
+# compose/grafana/, so a rule or panel is written once and both packaging
 # paths get it.
 #
 # These objects need the Prometheus Operator CRDs (PrometheusRule,

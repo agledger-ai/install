@@ -136,7 +136,7 @@ every counter on the dashboard, which is now every drop-class counter the engine
 from the ones that fail loudly somewhere else (the webhook and federation DLQs, pool and rate-limit
 degradation).
 
-Nothing here is decorative: a coverage test in the API build fails if a dashboard or alert queries a metric no process registers, and if a new drop-class counter
+Nothing here is decorative: the release gate fails if a dashboard or alert queries a metric no process registers, and if a new drop-class counter
 is added without either a panel or a written reason it does not belong on one. The class is a name
 rule, `_failures_total` / `_dropped_total` / `_drops_total` / `_failed_total` / `_exhausted_total` /
 `_lost_total` / `_unmapped_total`, so a counter is covered by the guard the moment it is named that
@@ -177,7 +177,7 @@ terminates TLS for the API.
 
 ## Alerting rules
 
-`monitoring/alerts/agledger.rules.yml` ships 56 rules in seven groups: silent drops, chain integrity,
+`monitoring/alerts/agledger.rules.yml` ships 57 rules in seven groups: silent drops, chain integrity,
 partition maintenance, federation delivery, stuck work, availability/saturation, and target
 liveness.
 
@@ -215,11 +215,11 @@ from the other process, or one whose process is not running, has no series on th
 empty, and the rule cannot fire. `sum()` alone fixes only the narrower case where the terms exist on
 different label sets (the API and worker targets carry different `job` and `instance` values, and
 PromQL arithmetic matches on the full label set). If you add a term to one of these, wrap it the
-same way: the API build fails that coverage test otherwise.
+same way: the release gate fails otherwise.
 
 The rules are unit-tested, because an alert is the one artifact whose defect is
 invisible from every direction except evaluation: one that can never fire parses cleanly and loads
-`health: ok`. The fixtures live in the API repo and run under `promtool test rules`. Every rule in
+`health: ok`. Each rule has `promtool test rules` fixtures in the release gate. Every rule in
 the file is evaluated there, each with a case that must fire and a case that must not, because a
 rule that pages on the healthy reading and a rule that can never page look identical from
 everywhere except evaluation.

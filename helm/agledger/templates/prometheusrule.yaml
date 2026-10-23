@@ -1,7 +1,7 @@
 {{- include "agledger.validateValues" . -}}
 {{- if ((.Values.monitoring).prometheusRule).enabled }}
 {{- /* The rules file is the SAME file the Compose stack mounts into its
-       Prometheus: templates/../files/alerts is a symlink to deploy/monitoring/
+       Prometheus: templates/../files/alerts is a symlink to monitoring/
        alerts, so there is one copy of these rules in the repo and the two
        packaging paths cannot drift. The alert-expression coverage test in the
        API build reads that same path.

@@ -22,7 +22,7 @@ apiVersion: 1
 # container reports healthy. `editable: false` does not protect those; it only
 # refuses edits to this datasource's own connection settings. The bundled
 # stack does not intend that workflow (the shipped alert rules are evaluated
-# by Prometheus, and `deploy/monitoring/README.md` says so), and the
+# by Prometheus, and `monitoring/README.md` says so), and the
 # alternative is the crash-loop above, which costs the whole monitoring stack
 # instead of a link an operator can repoint.
 deleteDatasources:

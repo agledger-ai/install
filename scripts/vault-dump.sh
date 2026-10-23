@@ -8,8 +8,7 @@ set -euo pipefail
 # consumes: one file per audit table (audit_vault, vault_checkpoints,
 # vault_signing_keys, vault_key_statements, org_admin_reads,
 # org_admin_reads_checkpoints), each row
-# carrying its canonical COSE_Sign1 bytes. This is the customer-runnable
-# equivalent of the API repo's dev-only dump script — it runs the dump
+# carrying its canonical COSE_Sign1 bytes. It runs the dump
 # tool that already ships inside the AGLedger image (dist/scripts/dump-vault.js),
 # so no source checkout, Node.js, or pnpm is required on the host.
 #
