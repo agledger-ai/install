@@ -504,7 +504,7 @@ drop_csv_ids() {
 # Adopting the recorded version requires it to actually BE a version, for the
 # same reason: a non-concrete tag with real install state is not safe to
 # resolve either way. Falling through to Docker Hub's latest (the old
-# behaviour) silently moves an install pinned to a testbed build, an air-gap
+# behaviour) silently moves an install pinned to a custom build, an air-gap
 # mirror tag, or the .env.example `latest` placeholder never overwritten.
 # Adopting it as-is would be just as wrong the other way: it is not
 # necessarily a deliberate pin, so treating it as one and skipping resolution
@@ -541,7 +541,7 @@ install_version_decision() {
       return 0
     fi
     # Real install state exists, but the recorded tag is not shaped like a
-    # release number: a testbed build, an air-gap mirror tag, `edge`, or the
+    # release number: a custom build, an air-gap mirror tag, `edge`, or the
     # .env.example `latest` placeholder never overwritten. A plain re-run
     # cannot tell a deliberate pin from that placeholder, so it must not fall
     # through to Docker Hub's latest and move the install with no backup, no
@@ -1191,6 +1191,68 @@ pg_env_from_url() {
   done
 }
 
+# The CA a verified connection needs, resolved the way the Server resolves it.
+#
+# `pg_env_from_url` carries sslmode and sslrootcert out of the URL, and that is
+# all a URL says. The Server verifies a managed database against
+# NODE_EXTRA_CA_CERTS (the RDS bundle its image carries, or a CA mounted into
+# the container), a path inside the container that a host psql or pg_dump does
+# not have, and under sslmode=verify-ca or verify-full libpq refuses to connect
+# without a root certificate. So the CA is found here the way the Helm backup
+# Job's init container finds it: a path readable on this host is used as it
+# is, and otherwise the file is copied out of the Server's image. Exports
+# PGSSLROOTCERT. A no-op when the connection does not verify, or when nothing
+# names a CA; a refusal when one is named and neither place has it.
+#
+# Usage: pg_env_root_cert   (after load_env and pg_env_from_url, before the
+#                            first pg_client_run or pg_server_major)
+pg_env_root_cert() {
+  case "${PGSSLMODE:-}" in verify-ca|verify-full) ;; *) return 0 ;; esac
+  local path="${PGSSLROOTCERT:-}" source="sslrootcert in DATABASE_URL"
+  # libpq's own name for the OS trust store, not a file; nothing to resolve.
+  [[ "$path" == "system" ]] && return 0
+  if [[ -z "$path" ]]; then
+    path="$(get_env_value NODE_EXTRA_CA_CERTS "${COMPOSE_DIR}/.env")"
+    source="NODE_EXTRA_CA_CERTS in compose/.env"
+  fi
+  [[ -n "$path" ]] || return 0
+  if [[ -r "$path" ]]; then
+    # Absolute, since the container fallback bind-mounts it at this path and
+    # docker refuses a relative mount source.
+    PGSSLROOTCERT="$(cd "$(dirname "$path")" && pwd)/$(basename "$path")"; export PGSSLROOTCERT
+    return 0
+  fi
+  # A fresh private file, never a name another user could have planted: the
+  # connection trusts whatever this file says. Public key material only, so
+  # it is left behind for the host's tmp cleaner rather than threaded through
+  # every caller's exit trap.
+  local copy image
+  copy="$(mktemp "${TMPDIR:-/tmp}/agledger-db-ca.XXXXXX")"
+  image="${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest}}"
+  if command -v docker >/dev/null 2>&1 \
+     && docker run --rm --entrypoint cat "$image" "$path" > "$copy" 2>/dev/null \
+     && [[ -s "$copy" ]]; then
+    PGSSLROOTCERT="$copy"; export PGSSLROOTCERT
+    info "Database CA ${path} (${source}) is not on this host; using the copy in ${image}." >&2
+    return 0
+  fi
+  rm -f "$copy"
+  fatal "DATABASE_URL asks for sslmode=${PGSSLMODE}, and the CA it names, ${path} (${source}), is neither readable on this host nor in ${image}.
+  psql and pg_dump refuse a verified connection with no root certificate. Put the CA file at that path on this host, or name a path the Server image carries (the AWS RDS / Aurora bundle is at /etc/ssl/certs/rds-global-bundle.pem)." >&2
+}
+
+# The `docker run` arguments that hand a container client the verified
+# connection: the libpq variables by name, and the CA file mounted at the
+# path PGSSLROOTCERT names, since the variable alone points inside a container
+# that does not have it. `--mount` rather than `-v`: a path with a colon in it
+# is a mount spec `-v` cannot parse. Prints one argument per line.
+pg_client_docker_env_args() {
+  printf '%s\n' -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE
+  if [[ -n "${PGSSLROOTCERT:-}" && "${PGSSLROOTCERT}" != "system" && -r "${PGSSLROOTCERT}" ]]; then
+    printf '%s\n' -e PGSSLROOTCERT --mount "type=bind,source=${PGSSLROOTCERT},target=${PGSSLROOTCERT},readonly"
+  fi
+}
+
 # psql used only to ASK the server its version. Unlike pg_dump/pg_restore,
 # psql does not refuse a version it does not match, so any recent one answers
 # and this needs no host client installed. Same image the bundled database
@@ -1205,8 +1267,9 @@ pg_server_major() {
   elif command -v docker >/dev/null 2>&1; then
     local net=()
     case "${PGHOST:-}" in localhost|127.0.0.1|::1|"") net=(--network host) ;; esac
-    num="$(docker run --rm \
-      -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE \
+    local env_args=()
+    mapfile -t env_args < <(pg_client_docker_env_args)
+    num="$(docker run --rm "${env_args[@]}" \
       ${net[@]+"${net[@]}"} "$PG_QUERY_IMAGE" psql -tAc 'SHOW server_version_num' 2>/dev/null | tr -d '[:space:]')"
   fi
   [[ "$num" =~ ^[0-9]+$ ]] || return 1
@@ -1283,8 +1346,9 @@ pg_client_run() {
     localhost|127.0.0.1|::1|"") net=(--network host) ;;
   esac
 
-  docker run --rm -i \
-    -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE \
+  local env_args=()
+  mapfile -t env_args < <(pg_client_docker_env_args)
+  docker run --rm -i "${env_args[@]}" \
     ${net[@]+"${net[@]}"} "${PG_CLIENT_IMAGE_REPO:-postgres}:${server_major}-alpine" "$tool" "$@"
 }
 
@@ -2796,20 +2860,34 @@ verify_image() {
     return 0
   fi
   if [[ "$image" != "agledger/agledger" ]]; then
+    # A mirror made with `oras cp -r` carries the release's OCI referrers, so
+    # the same keyless check the official image gets runs against the mirror's
+    # own name, over the same index digest. `docker push` of a loaded image and
+    # `cosign copy` both drop those referrers, and then the registry answers
+    # "no signatures found" and the branch below reports that nothing was
+    # verified. AGLEDGER_VERIFY_BUNDLE_DIR is the other way to verify a mirror,
+    # and it never reaches this line.
+    if command -v cosign &>/dev/null && [[ -n "$RESOLVED_DIGEST" ]] \
+      && cosign verify \
+           --certificate-identity-regexp "$AGLEDGER_SIGNER_IDENTITY_REGEXP" \
+           --certificate-oidc-issuer "$AGLEDGER_SIGNER_OIDC_ISSUER" \
+           "${image}@${RESOLVED_DIGEST}" >/dev/null 2>&1; then
+      # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+      SIGNATURE_VERIFIED=true
+      UNVERIFIED_REASON=""
+      info "Image signature verified (keyless, public Rekor) from the mirror's own referrers: ${image}@${RESOLVED_DIGEST}"
+      return 0
+    fi
     UNVERIFIED_REASON="custom image, not signed by the AGLedger release pipeline"
-    # A mirrored release image reaches here with nothing verified: `docker push`
-    # of a loaded image and `cosign copy` both drop the release's OCI referrers,
-    # so the mirror serves no signature to check. AGLEDGER_REQUIRE_VERIFY asked
-    # for a refusal in exactly that case. AGLEDGER_VERIFY_BUNDLE_DIR is the way
-    # to satisfy it, and it never reaches this line.
     if [[ "${AGLEDGER_REQUIRE_VERIFY:-false}" == "true" ]]; then
-      error "AGLEDGER_REQUIRE_VERIFY=true, and '${image}' is not agledger/agledger, so this run cannot verify its signature."
-      error "Carry the release's offline-verification bundle into the enclave and point"
-      error "AGLEDGER_VERIFY_BUNDLE_DIR at it, or mirror with 'oras cp -r' so the mirror keeps the"
-      error "signature. Either way this run verifies. See air-gap/README.md."
+      error "AGLEDGER_REQUIRE_VERIFY=true, and '${image}' serves no release signature for ${ref}, so this run cannot verify it."
+      error "A mirror made by 'docker push' or 'cosign copy' drops the signature; one made with 'oras cp -r' keeps it,"
+      error "and this check then passes against the mirror (cosign installed, Rekor reachable). Otherwise carry the"
+      error "release's offline-verification bundle in and point AGLEDGER_VERIFY_BUNDLE_DIR at it. See air-gap/README.md."
       return 1
     fi
-    warn "Custom image '${image}' is not signed by the AGLedger release pipeline — skipping signature verification."
+    warn "Custom image '${image}' serves no release signature (not built by the AGLedger release pipeline, or mirrored"
+    warn "without its referrers: 'oras cp -r' keeps them) — skipping signature verification."
     return 0
   fi
   if ! command -v cosign &>/dev/null; then

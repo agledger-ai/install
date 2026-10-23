@@ -35,7 +35,7 @@ git clone --depth 1 --branch v${VERSION} https://github.com/agledger-ai/install.
 tar czf install.tar.gz install/
 ```
 
-Transfer those four files to your air-gapped environment.
+Transfer everything the two blocks above produced to your air-gapped environment: the image archive, the offline-verification archive with its `.sha256` and `.sigstore.json`, and `install.tar.gz`.
 
 Inside the air-gapped environment, load the image and push it to your internal registry:
 
@@ -184,14 +184,14 @@ The chart runs three more images, each with its own override. `postgres.bundled.
   --db postgresql://user:pass@db.internal/agledger \
   --set postgres.bundled.image=registry.internal.example.com/postgres:18-alpine \
   --set backup.image=registry.internal.example.com/postgres:18-alpine \
-  --set tests.image=registry.internal.example.com/curl:8.18.0
+  --set tests.image=registry.internal.example.com/curl:8.23.0
 ```
 
 It says on every such run that it verified nothing, and it refuses outright under `AGLEDGER_REQUIRE_VERIFY=true`: the release signatures are OCI referrers on Docker Hub, and a chart `helm pull` wrote to a `.tgz` carries none of them. Verify the image with `verify-release.sh` as above, before or after.
 
 ## Carry the offline chain verifier
 
-`@agledger/verify` is what reads a vault dump or an `/audit-export` document and checks the hash chain and the signatures, without the Server. It ships on npm only, so an enclave needs it carried in. Build the tree on the connected machine and move the tree, rather than a list of tarballs: npm resolves the versions there, and its `@agledger/verify-core` and `cborg` dependencies are pinned exactly, so a hand-picked `npm pack` set is one release away from not installing.
+`@agledger/verify` is what reads a vault dump or an `/audit-export` document and checks the hash chain and the signatures, without the Server. It ships on npm only, so an enclave needs it carried in. Build the tree on the connected machine and move the tree, rather than a list of tarballs: npm resolves the versions there. Its `cborg` dependency is pinned exactly and `@agledger/verify-core` is a caret range on the same major, so a hand-picked `npm pack` set has to match what npm would resolve for that release, and is one release away from not installing.
 
 ```bash
 mkdir agledger-verify && cd agledger-verify
@@ -211,4 +211,4 @@ Needs Node 24 or later on the host. `./scripts/vault-dump.sh` writes the dump it
 
 ## License Activation
 
-Enterprise license files can be delivered out of band. Place the `.pem` at the configured path (default `/etc/agledger/license.pem`) or set `AGLEDGER_LICENSE_KEY_FILE` to its location. No network access is required for validation.
+License files can be delivered out of band. Place the `.pem` at the configured path (default `/etc/agledger/license.pem`) or set `AGLEDGER_LICENSE_KEY_FILE` to its location. No network access is required for validation.

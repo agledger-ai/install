@@ -37,7 +37,7 @@ Da Vinci PAS / X12 278; AGLedger captures it at the seam rather than re-deriving
 ```
 
 Clean auto-adjudications (A1 certified, A3 not-required) are notarize-only and terminal:
-roughly the 90% path. The notary earns its place on the contested path: A2 (denied) and
+the common path. The notary earns its place on the contested path: A2 (denied) and
 A4 (pended) route to a medical director, whose accept/reject verdict AGLedger holds and
 signs. An appeal appends a fresh re-determination without rewriting the original chain.
 

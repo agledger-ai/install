@@ -220,7 +220,8 @@ builder and the public transparency log are what address build-machine compromis
 published live at `GET /.well-known/agledger-vault-keys.json` and `GET /v1/verification-keys`.
 Those surfaces publish only keys a signed key statement links to a key held outside the database;
 a key row written with database access alone is not published and verifies nothing. The pin the
-installer prints (`Pin: sha256:<hex>`, the SHA-256 of the key's SPKI DER) is the value to hand an
+installer prints (`sha256:<hex>`, the SHA-256 of the key's SPKI DER: `install.sh` prints it on a
+`Vault signing key pin:` line, `helm-install.sh` on the line under that heading) is the value to hand an
 auditor, and the high-assurance input for offline verification once the verifier walks key
 statements; `node dist/scripts/signing-key-digest.js` derives it again.
 
@@ -255,8 +256,8 @@ aws ecr describe-images \
 
 If the two digests match, the Marketplace image is the same bytes as the
 cryptographically verified public image's linux/amd64 manifest, and inherits its
-provenance. `scripts/mirror-ecr.sh` makes the same comparison after every mirror and
-fails when they differ.
+provenance. The release process makes the same comparison every time it copies an
+image into ECR, and fails when they differ.
 
 ## Where the vault signing key lives
 
@@ -348,7 +349,7 @@ The semantics it turns on, so you can plan against them before you need it:
   process reports the new key on its own `/health` (`signingKey.keyId`); the 422 the endpoint
   answers while the old key has appended inside the last 300 seconds is a backstop for the case
   the chain can see, and an idle process passes it while still holding the key. Both orders are in
-  `deploy/README.md` under "Changing the signing key".
+  `README.md` under "Changing the signing key".
 - **There is no revocation of what a key signed, by design.** A key is `active` or `retired`;
   there is no `compromised` status, and a retired key keeps verifying the entries it signed inside
   its published window

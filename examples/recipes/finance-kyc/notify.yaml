@@ -5,7 +5,7 @@
 # not a field (the route refuses unknown fields). The
 # signing secret is returned ONCE at create time, so capture it then; it is null on
 # every subsequent read. The same subscriptions can be provisioned as config-as-code
-# instead: deploy/examples/provisioning/webhooks/example.yaml carries eventTypes and
+# instead: examples/provisioning/webhooks/example.yaml carries eventTypes and
 # recordTypes under those same names.
 #
 # The two notice legs are DELIBERATELY routed to different audiences. That is the

@@ -6,12 +6,12 @@ set -euo pipefail
 # =============================================================================
 # Usage:
 #   ./scripts/install.sh
-#   ./scripts/install.sh --version 0.15.6
-#   ./scripts/install.sh --non-interactive --version 0.15.6 --with-monitoring
+#   ./scripts/install.sh --version 2.0.0
+#   ./scripts/install.sh --non-interactive --version 2.0.0 --with-monitoring
 #   ./scripts/install.sh --external-db --non-interactive
-#   ./scripts/install.sh --image your-registry.com/agledger --version 0.15.6
+#   ./scripts/install.sh --image your-registry.com/agledger --version 2.0.0
 #
-# Supported: Ubuntu 22.04+, macOS 14+ (amd64 only — Apple Silicon via Rosetta)
+# Supported: Ubuntu 22.04+, macOS 14+ (amd64 and arm64 images are published)
 # =============================================================================
 
 # The install inputs the operator set in the environment, read before
@@ -203,7 +203,7 @@ esac
 # establishes.
 if [[ -n "$CUSTOM_IMAGE" ]]; then
   if [[ "$CUSTOM_IMAGE" == *@* ]]; then
-    fatal "--image takes a repository, not a digest ref (${CUSTOM_IMAGE}). Pass the repository (e.g. ${CUSTOM_IMAGE%%@*}) with --version; the installer resolves the digest itself and pins compose/.env to it. (Signature verification covers the official agledger/agledger image only — a custom registry is pinned, not verified.)"
+    fatal "--image takes a repository, not a digest ref (${CUSTOM_IMAGE}). Pass the repository (e.g. ${CUSTOM_IMAGE%%@*}) with --version; the installer resolves the digest itself and pins compose/.env to it. (A custom registry is pinned either way, and verified only where it serves the release signature: a mirror made with 'oras cp -r', or AGLEDGER_VERIFY_BUNDLE_DIR.)"
   fi
   image_last_segment="${CUSTOM_IMAGE##*/}"
   if [[ "$image_last_segment" == *:* && "$image_last_segment" != *@* ]]; then
@@ -515,7 +515,7 @@ case "$VERSION_SOURCE" in
     #     like a version but is a floating tag, so playing it back with
     #     --version does not restore what is running, it resolves to whatever
     #     Docker Hub's latest tag means TODAY - the opposite of a no-op.
-    #   - anything else non-release: a deliberate pin (a testbed build, an
+    #   - anything else non-release: a deliberate pin (a custom build, an
     #     air-gap mirror tag) this installer cannot tell from the placeholder.
     # The first two have no tag worth playing back, so both point at reading
     # the version actually running instead.
@@ -550,7 +550,7 @@ case "$VERSION_SOURCE" in
       fatal "Refusing to resolve a version for an install pinned to the floating 'latest' tag."
     fi
     error "This install's recorded AGLEDGER_VERSION is '${RECORDED_TAG}', which is not a release"
-    error "number, so this installer cannot tell a deliberate pin (a testbed build, an"
+    error "number, so this installer cannot tell a deliberate pin (a custom build, an"
     error "air-gap mirror tag) from the .env.example placeholder ('latest') never"
     error "overwritten. A plain re-run cannot resolve that safely, so it refuses rather"
     error "than silently moving the install to whatever Docker Hub currently calls latest."
@@ -851,11 +851,14 @@ if [[ -f "$ENV_FILE" ]]; then
     if [[ "$FIPS_FLAG" == true && "$EXISTING_IS_DEFAULT_ALG" == "true" ]]; then
       error "--fips was requested, but ${ENV_FILE} holds an Ed25519 signing key."
       error "The FIPS provider carries no EdDSA, so this Server would boot unable to sign."
-      error "Rotate to ES256 first; entries already written keep verifying under the retired key:"
+      error "Rotate to ES256 first; entries already written keep verifying under the old key:"
       error "  1. docker run --rm ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION} dist/scripts/generate-signing-key.js --algorithm es256"
-      error "  2. put the new VAULT_SIGNING_KEY and AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true in ${ENV_FILE}"
-      error "  3. cd ${COMPOSE_DIR} && docker compose up -d --force-recreate   (the restart performs the rotation)"
-      error "  4. confirm: curl -s http://localhost:${API_HOST_PORT}/v1/verification-keys"
+      error "  2. in ${ENV_FILE}, move the current VAULT_SIGNING_KEY to VAULT_SIGNING_KEY_PREVIOUS, then set the new"
+      error "     VAULT_SIGNING_KEY and AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true (without the previous key the new"
+      error "     one is unanchored and the Server signs nothing)"
+      error "  3. cd ${COMPOSE_DIR} && docker compose up -d --force-recreate   (stages the new key; nothing is retired)"
+      error "  4. retire the old key and remove VAULT_SIGNING_KEY_PREVIOUS, as README.md \"Switching an install that"
+      error "     already has a chain\" describes"
       error "Then re-run with --fips."
       fatal "Refusing to activate FIPS against a key the provider cannot use."
     fi
@@ -868,11 +871,13 @@ if [[ -f "$ENV_FILE" ]]; then
       fi
       warn "To change the algorithm on an install that already has a chain, rotate rather than reinstall:"
       warn "  1. docker run --rm ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION} dist/scripts/generate-signing-key.js --algorithm ${AGLEDGER_SIGNING_ALGORITHM}"
-      warn "  2. put the new VAULT_SIGNING_KEY and AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true in ${ENV_FILE}"
-      warn "  3. cd ${COMPOSE_DIR} && docker compose up -d --force-recreate   (the restart is what rotates: boot reconciles"
-      warn "     the key registry to the configured key, retiring the previous one)"
-      warn "  4. confirm: curl -s ${API_URL:-http://localhost:${API_HOST_PORT}}/v1/verification-keys"
-      warn "Entries already written keep verifying under the retired key; only new entries use the new one."
+      warn "  2. in ${ENV_FILE}, move the current VAULT_SIGNING_KEY to VAULT_SIGNING_KEY_PREVIOUS, then set the new"
+      warn "     VAULT_SIGNING_KEY and AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG=true (without the previous key the new"
+      warn "     one is unanchored and the Server signs nothing)"
+      warn "  3. cd ${COMPOSE_DIR} && docker compose up -d --force-recreate   (stages the new key; nothing is retired)"
+      warn "  4. retire the old key and remove VAULT_SIGNING_KEY_PREVIOUS, as README.md \"Switching an install that"
+      warn "     already has a chain\" describes"
+      warn "Entries already written keep verifying under the old key; only new entries use the new one."
       warn "For a clean ${AGLEDGER_SIGNING_ALGORITHM} install instead, start from an empty directory."
     fi
   fi
@@ -1083,9 +1088,10 @@ if [[ "$HAS_SIGNING_KEY" != true ]]; then
   info "Generating VAULT_SIGNING_KEY (${SIGNING_ALGORITHM})..."
   # Run the digest-pinned ref (falls back to tag only when no digest resolved).
   # These are the bytes that mint the install's root signing key, so whether
-  # they were verified is the whole question — and on a cosign-less host or a
-  # custom image they were not. The step that reports the pin says which it
-  # was; this line must not claim more than that one does.
+  # they were verified is the whole question — and on a cosign-less host, or a
+  # custom image that serves no release signature, they were not. The step that
+  # reports the pin says which it was; this line must not claim more than that
+  # one does.
   VAULT_SIGNING_KEY_OUTPUT=$(docker run --rm "${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}}" \
     dist/scripts/generate-signing-key.js --algorithm "$SIGNING_ALGORITHM" 2>/dev/null) \
     || fatal "Failed to generate VAULT_SIGNING_KEY. Is the image available? Try: docker pull ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}"

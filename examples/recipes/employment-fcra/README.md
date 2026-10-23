@@ -1,6 +1,6 @@
 # Employment / FCRA adverse action: AGLedger vertical recipe
 
-A set of contract types for notarizing an FCRA-compliant employment background-screening flow: an
+A set of contract types for notarizing an employment background-screening flow built around the FCRA adverse-action steps: an
 external consumer reporting agency (CRA) renders the background-check adjudication, a human runs
 the EEOC individualized assessment, and, when the outcome is adverse, the recipe drives the FCRA
 two-step with a mandatory waiting period: pre-adverse notice, wait, final adverse action. It is a

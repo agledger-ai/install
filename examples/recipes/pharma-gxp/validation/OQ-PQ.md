@@ -91,5 +91,5 @@ the PQ record.
 ## Change control
 
 A change to a type (`types/*.json`), a rule, the checker, the readers or the writer re-runs
-the OQ in full. A change to the Server version re-runs the OQ and records the image digest
-it ran against (`GET /health/ready` reports the Server version).
+the OQ in full. A change to the Server version re-runs the OQ and records the Server version
+(`GET /health/ready` reports it) and the image digest the install pinned.

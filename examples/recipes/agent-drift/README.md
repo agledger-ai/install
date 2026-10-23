@@ -17,7 +17,7 @@ There are no contract types to register. The loop writes its decisions as
 
 | File | What it is |
 |------|------------|
-| `drift-triage.py` | The deterministic half. About 150 lines of standard-library Python, no SDK. Pages the fleet, selects the agents that moved, pulls the per-type series and record history for each, and writes one JSON dossier per tick. |
+| `drift-triage.py` | The deterministic half. Under 200 lines of standard-library Python, no SDK. Pages the fleet, selects the agents that moved, pulls the per-type series and record history for each, and writes one JSON dossier per tick. |
 | `OPS-AGENT.md` | The judging half: the brief you hand to whichever model or person decides what each mover means, including the exact call that writes the decision to the ledger. |
 
 ## The loop

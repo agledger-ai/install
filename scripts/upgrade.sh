@@ -131,14 +131,14 @@ foreign_database_hint() {
   # here (the version gate refuses it), so the recorded version is usually
   # unknown or 2.x: .env still naming this release line over a 1.x dump a
   # restore brought back, and that tree is not the one that wrote it.
-  local cur="${CURRENT_VERSION:-unknown}" wrote="that release"
+  local cur="${CURRENT_VERSION:-unknown}" wrote="v<version>"
   cur="${cur#v}"
   [[ "${cur%%.*}" == "1" ]] && wrote="v${cur}"
   error "Upgrade stopped: the migration refused this database, because another build migrated it (a 1.x"
   error "release, or a pre-release build of this line; the migration's own text above says which)."
   error "Nothing was migrated, and re-running this script cannot finish it. Bring the install back on"
-  error "the deploy/ tree of the release that wrote the database:"
-  error "  check out the deploy/ tree of ${wrote} over this one, keeping compose/.env and backup/"
+  error "the tag of the release that wrote the database:"
+  error "  git checkout ${wrote}    # compose/.env and backup/ are untracked, so they stay"
   error "  (cd ${COMPOSE_DIR} && docker compose up -d)"
   error "Running docker compose from THIS tree starts ${TARGET_VERSION} against that database instead."
   error "To run ${TARGET_VERSION}, install it on a new, empty database from its own checkout."
@@ -327,7 +327,9 @@ info "Target version:  ${TARGET_VERSION}"
 # (.env repairs, the backup, the worker stop, a Postgres the new compose file
 # recreates), and the migration would refuse the database at the end of them
 # anyway. What is running is still 1.x's containers, so the one thing to undo
-# is the tree a later `docker compose` would read.
+# is the checkout a later `docker compose` would read: its compose file wires
+# the API and worker to log in as agledger_app, which a 1.x database holds with
+# a placeholder password.
 CURRENT_MAJOR="${CURRENT_VERSION#v}"; CURRENT_MAJOR="${CURRENT_MAJOR%%.*}"
 TARGET_MAJOR="${TARGET_VERSION#v}"; TARGET_MAJOR="${TARGET_MAJOR%%.*}"
 if [[ "$CURRENT_MAJOR" == "1" && "$TARGET_MAJOR" =~ ^[0-9]+$ ]] && (( 10#$TARGET_MAJOR >= 2 )); then
@@ -335,8 +337,9 @@ if [[ "$CURRENT_MAJOR" == "1" && "$TARGET_MAJOR" =~ ^[0-9]+$ ]] && (( 10#$TARGET
   error "a 1.x release migrated. Nothing was changed: .env, the database and every container are as they were."
   error "To run ${TARGET_VERSION}, install it on a new, empty database from its own checkout (a new directory,"
   error "so a new compose project and a new data volume), and keep this install for its data."
-  error "Put this checkout back on the v${CURRENT_VERSION#v} deploy/ tree before running any docker compose"
-  error "command in it: from this tree, compose starts ${TARGET_VERSION} against the 1.x database."
+  error "Before running any docker compose command here, put this checkout back on the v${CURRENT_VERSION#v} tag"
+  error "(git checkout v${CURRENT_VERSION#v}). This tree's compose file recreates the containers .env pins with"
+  error "${TARGET_VERSION}'s wiring, which logs in as a role the 1.x database does not let in, so they fail to start."
   exit 1
 fi
 
