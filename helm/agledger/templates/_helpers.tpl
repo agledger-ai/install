@@ -604,7 +604,7 @@ Two modes per subdirectory:
 {{/*
 Backup pod template — shared by the CronJob and the pre-upgrade hook Job.
 
-Produces the SAME archive shape deploy/scripts/restore.sh reads:
+Produces the SAME archive shape scripts/restore.sh reads:
 `backup-<UTC timestamp>.tar.gz` holding `<timestamp>/db.dump` (pg_dump custom
 format), `<timestamp>/vault-public-keys.csv` and `<timestamp>/backup-metadata`
 (its `created_at`, the instant the dump started). A Kubernetes backup a customer
@@ -641,6 +641,39 @@ spec:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   {{- end }}
+  {{- if $root.Values.config.nodeExtraCaCerts }}
+  initContainers:
+    {{- /* The Server's image is where config.nodeExtraCaCerts resolves: the
+           AWS RDS / Aurora bundle it carries at /etc/ssl/certs, or a CA the
+           operator mounts there through extraVolumes, which are rendered on
+           this container for that reason. Copied into an emptyDir the dump
+           container reads as PGSSLROOTCERT, so the backup verifies the
+           database with exactly the file the Server does and the install
+           docs' CA setting covers it with nothing more to set. Node rather
+           than a shell: the copy is the one thing it does, and the runtime
+           image's node needs no permission flags for it. */}}
+    - name: database-ca
+      image: {{ include "agledger.image" $root }}
+      imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      command: ["/nodejs/bin/node", "-e", "require('node:fs').copyFileSync(process.argv[1], '/database-ca/root.pem')", {{ $root.Values.config.nodeExtraCaCerts | quote }}]
+      volumeMounts:
+        - name: database-ca
+          mountPath: /database-ca
+        {{- with $root.Values.extraVolumeMounts }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
+  {{- end }}
   containers:
     - name: dump
       {{- /* A PostgreSQL client image, not the AGLedger image: the runtime base
@@ -673,6 +706,18 @@ spec:
               optional: true
         - name: KEEP
           value: {{ $keep | quote }}
+        {{- if $root.Values.config.nodeExtraCaCerts }}
+        {{- /* The CA bundle the Server verifies the database against, under
+               libpq's name for it. An external database on sslmode=verify-ca
+               or verify-full refuses psql and pg_dump without it, since this
+               is a PostgreSQL client image and NODE_EXTRA_CA_CERTS reaches
+               only the Node processes. The database-ca init container below
+               copies it out of the Server's image, where the path resolves
+               (the bundled RDS CA, or one extraVolumes mount there). An
+               sslrootcert inside the URL itself wins over this. */}}
+        - name: PGSSLROOTCERT
+          value: /database-ca/root.pem
+        {{- end }}
       command: ["/bin/sh", "-eu", "-c"]
       args:
         - |
@@ -698,7 +743,8 @@ spec:
           CREATED_AT=$(psql -d "$DB" -Atc "SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')" | tr -d '[:space:]')
           case "$CREATED_AT" in
             [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
-            *) echo "ERROR: could not read the database's clock before the dump. No backup was kept."
+            *) echo "ERROR: psql could not connect to the database, or it did not answer the clock query; its message is above. No backup was kept."
+               echo "       On an external database with sslmode=verify-ca or verify-full, set config.nodeExtraCaCerts to the CA the Server verifies it with; this Job reads the same file."
                rm -rf "$WORK"
                exit 1 ;;
           esac
@@ -809,6 +855,11 @@ spec:
         - name: backups
           mountPath: /backups
         {{- end }}
+        {{- if $root.Values.config.nodeExtraCaCerts }}
+        - name: database-ca
+          mountPath: /database-ca
+          readOnly: true
+        {{- end }}
       resources:
         {{- toYaml ($backup.resources | default (dict "requests" (dict "memory" "128Mi" "cpu" "100m") "limits" (dict "memory" "512Mi"))) | nindent 8 }}
   volumes:
@@ -819,6 +870,14 @@ spec:
     - name: backups
       persistentVolumeClaim:
         claimName: {{ $persist.existingClaim | default (printf "%s-backups" (include "agledger.fullname" $root)) }}
+    {{- end }}
+    {{- if $root.Values.config.nodeExtraCaCerts }}
+    - name: database-ca
+      emptyDir:
+        sizeLimit: 1Mi
+    {{- with $root.Values.extraVolumes }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
     {{- end }}
   {{- with $backup.nodeSelector }}
   nodeSelector:

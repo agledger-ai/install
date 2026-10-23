@@ -104,6 +104,9 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   # Credentials move into the environment, never argv, and the client version
   # is reconciled with the server's before the dump runs.
   pg_env_from_url "${DATABASE_URL}" || die "DATABASE_URL is not a postgres:// URL."
+  # A verified connection needs the CA the Server verifies with; see the
+  # function for where it is found.
+  pg_env_root_cert
   BACKUP_CREATED_AT="$(pg_client_run psql -Atc "${BACKUP_CLOCK_SQL}" 2>/dev/null | tr -d '[:space:]')" || true
   [[ "${BACKUP_CREATED_AT}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
     || die "Could not read the database's clock (SELECT now()) before the dump, so the backup cannot record when it was taken. No backup was kept."

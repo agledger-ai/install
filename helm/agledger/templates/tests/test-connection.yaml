@@ -11,7 +11,7 @@ spec:
   automountServiceAccountToken: false
   containers:
     - name: curl
-      image: {{ dig "image" "curlimages/curl:8.18.0" (.Values.tests | default dict) | quote }}
+      image: {{ dig "image" "curlimages/curl:8.23.0" (.Values.tests | default dict) | quote }}
       command:
         - sh
         - -c

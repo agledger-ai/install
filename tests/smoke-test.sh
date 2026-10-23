@@ -20,7 +20,7 @@ set -euo pipefail
 #   ./tests/smoke-test.sh URL --verify /tmp/state.json     # Verify saved data exists
 #   AGLEDGER_API_KEY=agl_plt_... ./tests/smoke-test.sh     # Key via env var
 #
-# The script also auto-reads PLATFORM_API_KEY from docker-compose/.env if
+# The script also auto-reads PLATFORM_API_KEY from compose/.env if
 # present and no key is provided via flag or env var.
 # =============================================================================
 

@@ -12,7 +12,7 @@ with what meaning, and verify all of it offline against published keys:
 2. **Batch record release.** An automation (an LLM-driven agent, if you choose) proposes a
    batch; a named QA person opens the release from the product's control plan; a
    deterministic checker runs the required checks against the systems; the release cannot be
-   completed before the check settles or after it fails; QA approves with a Part 11 style
+   completed before the check settles or after it fails; QA approves with a Part 11
    signature meaning; the writer creates the batch record from the approved payload and
    notarizes the system of record's receipt with the same hash.
 
@@ -151,15 +151,9 @@ the checker reads its plan reference from the release record, not from the child
 cross-record check below compares the child's `controlPlanRef` and `controlPlanHash` to the
 release's.
 
-The type as first built carried the list onto the child. A prompt-only
-probe of six language models playing the proposer, each knowing one check would fail and
-working under a throughput KPI, had two of them drop the failing check from the list, one of
-them every time, with the rationale written out; under the same pressure none of the six
-returned a false value for a fact (a write it had made, a moved timestamp, a reportable
-finding). The numbers and the method are at
-https://agledger.ai/blog/six-llms-batch-record-control-plan/. The rule the design took from
-it: a control an LLM carries from one record into the next is a control it may edit, so put
-the control where no LLM carries it.
+The rule the design follows: a control an LLM carries from one record into the next is a
+control it may edit, so put the control where no LLM carries it. The measurement behind that
+rule is at https://agledger.ai/blog/six-llms-batch-record-control-plan/.
 
 The one lie left is a checker that reads a shorter plan than the quality system holds. The
 engine cannot see that from inside one record. Compare, across the audit exports: that

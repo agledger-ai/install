@@ -66,8 +66,8 @@ services:
       # whole branch is discarded, breaking every external-database install.
       # (The overlay avoids `:?` for a different reason, in its own comment:
       # parse-time resolution would kill `down`/`ps`/`logs` too.) Both are
-      # pinned by install-preflight guards in the API build that run
-      # real `docker compose config`.
+      # pinned by the release gate, which runs real
+      # `docker compose config`.
       # DATABASE_URL_DIRECT sits between the two: it bypasses a transaction-mode
       # connection pooler, and migrations need that (one session advisory lock
       # across every migration's transaction, plus session timeouts). An owner
@@ -233,7 +233,7 @@ services:
   # --- Monitoring (optional, enable with --profile monitoring) ---
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.161.0
+    image: otel/opentelemetry-collector-contrib:0.163.2
     profiles: [monitoring]
     # Same restart policy the app services carry in docker-compose.prod.yml. The
     # app is configured to export at this collector permanently, so a collector
@@ -274,7 +274,7 @@ services:
     # itself that this stack scrapes.
 
   jaeger:
-    image: jaegertracing/jaeger:2.21.0
+    image: jaegertracing/jaeger:2.22.0
     profiles: [monitoring]
     restart: unless-stopped
     ports:
@@ -298,7 +298,7 @@ services:
       retries: 3
 
   prometheus:
-    image: prom/prometheus:v3.14.0
+    image: prom/prometheus:v3.15.1
     profiles: [monitoring]
     restart: unless-stopped
     command:
@@ -355,7 +355,7 @@ services:
       retries: 3
 
   grafana:
-    image: grafana/grafana:13.2.2
+    image: grafana/grafana:13.2.4
     profiles: [monitoring]
     restart: unless-stopped
     environment:

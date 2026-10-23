@@ -94,4 +94,4 @@ Pick `--window` to match the cadence of the question, not of the cron:
   want.
 
 Windows are whole days (engine minimum 1), so an hourly loop cannot see
-hour-over-hour change; it sees the same day-granular series eleven more times.
+hour-over-hour change; it sees the same day-granular series on every run until the day rolls over.

@@ -2130,5 +2130,5 @@ if [[ -n "$INSTANCE_ID" ]]; then
   echo ""
 fi
 echo "    Documentation: https://agledger.ai/docs"
-echo "    Upgrade to Enterprise: https://agledger.ai/pricing"
+echo "    Licensing: https://agledger.ai/pricing"
 echo ""

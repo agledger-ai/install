@@ -32,7 +32,10 @@ def canon(obj):
 
 class Odoo:
     def __init__(self, url=None, db=None, login=None, password=None):
-        self.url = (url or os.environ.get("ODOO_URL", "http://127.0.0.1:18069")).rstrip("/") + "/jsonrpc"
+        base = (url or os.environ.get("ODOO_URL", "http://127.0.0.1:18069")).rstrip("/")
+        if not base.startswith(("http://", "https://")):
+            raise ValueError("ODOO_URL must be an http or https URL, got %r" % base)
+        self.url = base + "/jsonrpc"
         self.db = db or os.environ.get("ODOO_DB", "gxp")
         self.login = login or os.environ.get("ODOO_LOGIN", "admin")
         self.password = password or os.environ.get("ODOO_PASSWORD", "gxp-admin")
@@ -50,6 +53,7 @@ class Odoo:
         body = canon({"jsonrpc": "2.0", "method": "call", "id": self._id,
                       "params": {"service": service, "method": method, "args": list(args)}})
         req = urllib.request.Request(self.url, body, {"Content-Type": "application/json"})
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- self.url is the operator's ODOO_URL, refused in __init__ unless its scheme is http or https
         with urllib.request.urlopen(req, timeout=120) as r:
             raw = r.read()
         self.last_request, self.last_response = body, raw

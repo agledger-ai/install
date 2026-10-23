@@ -330,7 +330,7 @@ groups:
         # The DEFERRAL alarm, and the one AGLedgerSiemStreamHalted does not
         # cover. The watermark is min(xact_start) over every backend with no
         # write filter, so ANY long transaction on this database holds the
-        # ceiling back: pg_dump in deploy/scripts/backup.sh keeps one open for
+        # ceiling back: pg_dump in scripts/backup.sh keeps one open for
         # the whole dump, and so do a long anti-wraparound vacuum, a psql
         # session left idle-in-transaction, and the SIEM poller's own drain
         # transaction. The route then answers a well-formed EMPTY 200 that a
@@ -1224,6 +1224,26 @@ groups:
           description: >-
             {{ $value | printf "%.0f" }} jobs ready to run and not taken for 15m. Either the
             worker is down or it cannot keep up.
+
+      - alert: AGLedgerWorkerHandlerOverrun
+        # A handler that outran its queue's expireInSeconds. pg-boss fails the
+        # batch, aborts job.signal and holds the worker until the handler
+        # returns, so the overrun is not running beside its own retry, and
+        # emits this warning once per overrunning batch. Every handler here
+        # carries a deadline inside its queue's expiry (OUTBOUND_REQUEST_DEADLINE_MS
+        # for the HTTP ones), so one firing is a handler that ignored its
+        # signal, not load.
+        expr: sum by (type) (increase(agledger_pgboss_warnings_total{type="handler_overrun"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgerworkerhandleroverrun"
+          summary: "A worker handler outran its queue expiry"
+          description: >-
+            {{ $value | printf "%.0f" }} handler overruns in 15m. pg-boss failed each batch and
+            held the worker until the handler returned. Every handler carries a deadline inside
+            its expiry, so this is a handler ignoring its signal, not load.
 
       - alert: AGLedgerWorkerJobsFailing
         expr: |

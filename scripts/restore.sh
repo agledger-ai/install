@@ -161,7 +161,7 @@ usage() {
 restore_serving_version() {
   local flag="${1#v}" file="$2" env="$3" chosen
   # A compose/.env naming something that is not a release (`latest`, a
-  # testbed tag) is not a record of one, so a concrete --version overrides it
+  # custom-build tag) is not a record of one, so a concrete --version overrides it
   # rather than conflicting with it; otherwise the refusal below would send the
   # operator to --version and --version back to the refusal.
   if [[ -n "${flag}" && -n "${file}" ]] && is_concrete_version "${file}"; then
@@ -412,6 +412,9 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   # libpq's defaults instead.
   RESTORE_URL="${DATABASE_URL_MIGRATE:-${DATABASE_URL}}"
   pg_env_from_url "${RESTORE_URL}" || die "DATABASE_URL_MIGRATE is not a postgres:// URL."
+  # A verified connection needs the CA the Server verifies with, for the host
+  # psql below and for a container pg_restore alike.
+  pg_env_root_cert
 
   # The two URLs must name the same database on the same server. Only the name
   # was ever compared, and the name is the half that matches by accident: the
@@ -796,7 +799,7 @@ fi
 # row back, and exits 1, leaving the chain present with the trigger that protects
 # it absent.
 #
-# The grant lapses on its own. deploy/README.md makes this argument for
+# The grant lapses on its own. README.md makes this argument for
 # upgrade.sh ("a role dropped and recreated by a rotation policy comes back
 # without its agledger_app membership"), and a restore is the stronger case, not
 # the weaker one: it routinely runs against a REBUILT server whose roles were

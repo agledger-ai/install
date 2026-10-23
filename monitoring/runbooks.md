@@ -27,8 +27,8 @@ Admin calls are `curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_UR
 Logs, on Compose:
 
 ```bash
-docker compose -f deploy/compose/docker-compose.yml logs --tail=200 agledger-api
-docker compose -f deploy/compose/docker-compose.yml logs --tail=200 agledger-worker
+docker compose -f compose/docker-compose.yml logs --tail=200 agledger-api
+docker compose -f compose/docker-compose.yml logs --tail=200 agledger-worker
 ```
 
 Logs, on Kubernetes. The rendered workload names depend on your release name and
@@ -323,7 +323,7 @@ SELECT pid, usename, state, xact_start, left(query, 80)
 ```
 
 Do: the watermark is `min(xact_start)` over every backend with no write filter, so a read-only
-transaction holds it just as hard as a writer. `deploy/scripts/backup.sh` keeps one open for the
+transaction holds it just as hard as a writer. `scripts/backup.sh` keeps one open for the
 whole dump, and a long anti-wraparound vacuum or an idle-in-transaction `psql` does the same. End the
 transaction and export resumes. If it is a backup, it will end on its own.
 
@@ -904,7 +904,7 @@ The `key` column is what carries `partition-management`; `name` is the maintenan
 scheduled task shares. Then:
 
 ```bash
-docker compose -f deploy/compose/docker-compose.yml ps agledger-worker
+docker compose -f compose/docker-compose.yml ps agledger-worker
 ```
 
 Do: every worker boot queues one partition-management run, so a restarted worker publishes the
@@ -1398,6 +1398,33 @@ one slow endpoint, which `GET /v1/admin/webhooks/health` will name.
 
 Silence: during a known burst, such as a bulk import.
 
+## AGLedgerWorkerHandlerOverrun
+
+A worker handler ran past its queue's `expireInSeconds`. pg-boss failed the batch, aborted the
+job's signal and held that worker until the handler returned, so the overrun did not run beside its
+own retry. Every handler in this release carries a deadline inside its queue's expiry, so this is a
+handler that ignored its signal rather than a load problem.
+
+Check which queue, from the worker log:
+
+```promql
+increase(agledger_pgboss_warnings_total{type="handler_overrun"}[1h])
+```
+
+```text
+kubectl logs deploy/agledger-worker | grep '"pg-boss warning"' | grep handler_overrun
+```
+
+The warning carries the queue name. The job it failed went back through the queue's retry budget,
+and a job dead-lettered by it shows under `AGLedgerWebhooksDeadLettered` or
+`AGLedgerFederationDeadLettered`.
+
+Do: find the handler on that queue and the call in it that has no deadline. A worker holding its
+slot for an abandoned handler takes no new work on that slot, so a steady rate here starves the
+queue the way a missing worker does.
+
+Silence: never. One firing is a defect report.
+
 ## AGLedgerWorkerJobsFailing
 
 More than 10% of worker jobs have failed for ten minutes. Retries are counted as failures each time,
@@ -1440,7 +1467,7 @@ means no cycle has completed since the worker started.
 Then the worker log for the throw itself:
 
 ```bash
-docker compose -f deploy/compose/docker-compose.yml logs --tail=500 agledger-worker | grep -i maintenance
+docker compose -f compose/docker-compose.yml logs --tail=500 agledger-worker | grep -i maintenance
 ```
 
 Do: what the failure costs depends on the task, and the name says which.
@@ -1516,7 +1543,7 @@ three hours.
 Check which records, and why:
 
 ```bash
-docker compose -f deploy/compose/docker-compose.yml logs --tail=1000 agledger-worker \
+docker compose -f compose/docker-compose.yml logs --tail=1000 agledger-worker \
   | grep 'rolling a FAILED child past its deadline up onto its parent threw'
 ```
 
@@ -1783,7 +1810,7 @@ Check the worker's own health port, which is separate from the API's and is not 
 host by either packaged install (`WORKER_HEALTH_PORT`, default 3001):
 
 ```bash
-docker compose -f deploy/compose/docker-compose.yml exec agledger-worker \
+docker compose -f compose/docker-compose.yml exec agledger-worker \
   /nodejs/bin/node -e "fetch('http://localhost:3001/health/ready').then(r=>r.text()).then(console.log)"
 
 kubectl port-forward -n <ns> "$(kubectl get deploy -n <ns> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=worker -o name | head -1)" 3001:3001 &
@@ -1835,7 +1862,7 @@ changes(agledger_process_start_time_seconds[1h])
 then the container exit reason:
 
 ```bash
-docker compose -f deploy/compose/docker-compose.yml ps
+docker compose -f compose/docker-compose.yml ps
 kubectl get pods -l app.kubernetes.io/instance=<release>
 kubectl describe pod <pod>
 ```

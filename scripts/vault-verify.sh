@@ -8,8 +8,7 @@ set -euo pipefail
 # chain: every entry's chain_position is sequential, payload_hash matches the
 # SHA-256 of its COSE_Sign1 envelope, the genesis entry has no previous_hash,
 # and each previous_hash links to the prior entry. Exits 0 if intact, 1 if any
-# break is found. This is the customer-runnable equivalent of the monorepo dev
-# dev-only verify script — it runs the checker that already ships inside the
+# break is found. It runs the checker that already ships inside the
 # AGLedger image (dist/scripts/verify-vault.js), so no source checkout, Node.js,
 # or pnpm is required on the host.
 #
