@@ -1,0 +1,57 @@
+name: Bug report
+description: "The installer, Compose files or Helm chart do not work as documented."
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not paste API keys, tokens, private keys, or anything from your own records. Replace them with placeholders.
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Install method
+      options:
+        - Docker Compose
+        - Helm
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS, and the Kubernetes distribution and version if you use Helm.
+    validations:
+      required: true
+  - type: input
+    id: server-version
+    attributes:
+      label: AGLedger Server version
+      description: The `version` field of `GET /health` on your Server.
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest code, command or configuration that shows it.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Error output
+      description: The full error, with secrets replaced.
+      render: text
