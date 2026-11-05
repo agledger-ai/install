@@ -371,7 +371,7 @@ Commands: `bootstrap install upgrade status health key logs tunnel shell uninsta
 
 ## Upgrading
 
-Refresh the install scripts first, then upgrade:
+Refresh the install scripts first, then upgrade (if `git pull` stops with "divergent branches", see the 2026-11-05 note at the top of `CHANGELOG.md`):
 
 ```bash
 git pull
