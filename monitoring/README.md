@@ -121,11 +121,11 @@ rows it does not return. Compare the panel against the same window's record grow
 a number is high: a sweep that takes 90ms at 20 rows and 70ms at 2000 is doing exactly what it
 should.
 
-The rest do not follow that rule and should not be read as if they did: `idempotency-cleanup`
-and `oidc-jti-cleanup` delete for up to a time budget, so their duration tracks the backlog until it
-reaches that budget and `agledger_maintenance_sweep_behind_total` is their reading; `rate-limit-cleanup` and
-`webhook-secret-grace-cleanup` issue one unbounded statement over everything expired, so their
-duration tracks how much expired since the last run, and `partition-management` is DDL that returns
+The rest do not follow that rule and should not be read as if they did: the idempotency-key and
+admin-token cleanups delete for up to a time budget, so their duration tracks the backlog until it
+reaches that budget and `agledger_maintenance_sweep_behind_total` is their reading; the rate-limit and
+webhook-secret grace cleanups issue one unbounded statement over everything expired, so their
+duration tracks how much expired since the last run, and partition maintenance is DDL that returns
 no page at all. For those the useful reading is against their own history, not against the record
 count.
 

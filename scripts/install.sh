@@ -414,9 +414,12 @@ for spec in "${PORTS_TO_PUBLISH[@]}"; do
 "
 
   if host_port_in_use "$port" && ! host_port_held_by_this_project "$port"; then
+    warn "Port ${port} (${label}): in use"
     PORT_CONFLICTS+=("${port_var}=${port} (${label})")
     CONFLICTING_PORTS+=("$port")
     CONFLICTING_PORTS_LIST="${CONFLICTING_PORTS_LIST}${port} "
+  else
+    info "Port ${port} (${label}): free"
   fi
 done
 
@@ -1529,6 +1532,12 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   # These checks connect as the migration role; the runtime role is checked
   # once the migration has run (the preflight gate below).
   MIGRATE_URL="${DATABASE_URL_MIGRATE:-${DATABASE_URL}}"
+  # The checks connect the way the api, worker and migrate containers do, so
+  # they take the same CA: NODE_EXTRA_CA_CERTS, plus the file behind it when it
+  # is a mount from this host.
+  CA_ARGS=()
+  # Read loop rather than `mapfile`, for bash 3.2 (see CONFIG_GAPS below).
+  while IFS= read -r ca_arg; do CA_ARGS+=("${ca_arg}"); done < <(node_ca_docker_args)
   if [[ -n "${DATABASE_URL_MIGRATE:-}" ]]; then
     CONNECT_VAR=DATABASE_URL_MIGRATE
     info "Testing database connectivity as the migration role (DATABASE_URL_MIGRATE); DATABASE_URL is checked after migrating..."
@@ -1539,6 +1548,7 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   DB_TEST_OUTPUT=$(docker run --rm \
     -e DATABASE_URL="${MIGRATE_URL}" \
     -e ALLOW_DB_WITHOUT_SSL="${ALLOW_DB_WITHOUT_SSL:-false}" \
+    ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
     --entrypoint /nodejs/bin/node \
     "${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}}" \
     -e "
@@ -1550,6 +1560,14 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
     " 2>&1) || {
     error "Cannot connect to external database."
     error "Output: ${DB_TEST_OUTPUT}"
+    CA_SHOWN="$(node_extra_ca_certs_value)"
+    if [[ "${DB_TEST_OUTPUT}" == *certificate* || "${DB_TEST_OUTPUT}" == *self-signed* || "${DB_TEST_OUTPUT}" == *"issuer certificate"* ]]; then
+      error "The database's certificate did not chain to a CA this check trusts. ${CONNECT_VAR} is verified against"
+      error "the Node CA store plus NODE_EXTRA_CA_CERTS (${CA_SHOWN:-not set}), and sslmode=require is verified too, with the hostname."
+      error "Set NODE_EXTRA_CA_CERTS in compose/.env to the CA that signed the database's certificate, as a path"
+      error "inside the containers: /etc/ssl/certs/rds-global-bundle.pem for RDS or Aurora, or a file you mount"
+      error "from this host in compose/docker-compose.override.yml (./db-ca.pem:/certs/ca.pem:ro)."
+    fi
     fatal "Fix ${CONNECT_VAR} in .env and re-run."
   }
   PG_VERSION_STR=$(echo "$DB_TEST_OUTPUT" | grep '^PG_VERSION=' | head -1 | cut -d= -f2- || true)
@@ -1570,6 +1588,7 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   LISTEN_OUTPUT=$(docker run --rm \
     -e DATABASE_URL="${MIGRATE_URL}" \
     -e ALLOW_DB_WITHOUT_SSL="${ALLOW_DB_WITHOUT_SSL:-false}" \
+    ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
     --entrypoint /nodejs/bin/node \
     "${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}}" \
     -e "
@@ -1601,6 +1620,7 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   PRIV_OUTPUT=$(docker run --rm \
     -e DATABASE_URL="${MIGRATE_URL}" \
     -e ALLOW_DB_WITHOUT_SSL="${ALLOW_DB_WITHOUT_SSL:-false}" \
+    ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
     --entrypoint /nodejs/bin/node \
     "${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}}" \
     -e "
@@ -1702,10 +1722,15 @@ else
   if [[ ${#COMPOSE_IMAGES[@]} -eq 0 ]]; then
     fatal "Could not pull the stack's images, and could not read which images it runs. See the output above."
   fi
+  # One image Compose cannot pull (a Server image that exists only in this
+  # host's store, say) interrupts the pulls still running beside it, so an
+  # image absent here was not necessarily unpullable. Pull each absent one on
+  # its own before naming it.
   MISSING_IMAGES=()
   for compose_image in "${COMPOSE_IMAGES[@]}"; do
     [[ -n "$compose_image" ]] || continue
-    docker image inspect "$compose_image" >/dev/null 2>&1 || MISSING_IMAGES+=("$compose_image")
+    docker image inspect "$compose_image" >/dev/null 2>&1 && continue
+    docker pull "$compose_image" >/dev/null 2>&1 || MISSING_IMAGES+=("$compose_image")
   done
   if [[ ${#MISSING_IMAGES[@]} -gt 0 ]]; then
     error "Could not pull, and these images the stack runs are not in this host's image store:"
@@ -1966,6 +1991,7 @@ mint_platform_key() {
   init_output=$(docker run --rm \
     --env-file "$init_env" \
     -e NODE_OPTIONS= \
+    ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
     --network "${compose_network}" \
     "${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}}" \
     dist/scripts/init.js --non-interactive 2>&1) || true

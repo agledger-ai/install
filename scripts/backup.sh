@@ -88,6 +88,15 @@ BACKUP_PATH="${BACKUP_ROOT}/${BACKUP_PROJECT}-${TIMESTAMP}"
 mkdir -p "${BACKUP_PATH}"
 log "Backup directory: ${BACKUP_PATH}"
 
+# The staging directory only ever holds the files the tarball is made from, and
+# the tarball is the product, so every exit removes the directory (a failed run
+# leaves no empty one) along with the CA copy taken out of the image.
+on_backup_exit() {
+  rm -rf "${BACKUP_PATH}"
+  pg_root_cert_cleanup
+}
+trap on_backup_exit EXIT
+
 # --- PostgreSQL backup ---
 
 log "Backing up PostgreSQL..."
@@ -107,9 +116,23 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   # A verified connection needs the CA the Server verifies with; see the
   # function for where it is found.
   pg_env_root_cert
-  BACKUP_CREATED_AT="$(pg_client_run psql -Atc "${BACKUP_CLOCK_SQL}" 2>/dev/null | tr -d '[:space:]')" || true
-  [[ "${BACKUP_CREATED_AT}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-    || die "Could not read the database's clock (SELECT now()) before the dump, so the backup cannot record when it was taken. No backup was kept."
+  CLOCK_ERR_FILE="$(mktemp)"
+  BACKUP_CREATED_AT="$(pg_client_run psql -Atc "${BACKUP_CLOCK_SQL}" 2>"${CLOCK_ERR_FILE}" | tr -d '[:space:]')" || true
+  if ! [[ "${BACKUP_CREATED_AT}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    CLOCK_ERR="$(head -c 600 "${CLOCK_ERR_FILE}" | tr '\n' ' ')"
+    rm -f "${CLOCK_ERR_FILE}"
+    log "The database did not answer: ${CLOCK_ERR}"
+    # The last line is the one a reader or a log alert keys on, so it names a
+    # connection that never opened rather than a clock that would not read.
+    if grep -qiE 'certificate verify failed|unable to get local issuer|self-signed certificate|does not match host name|root certificate file' <<< "${CLOCK_ERR}"; then
+      CA_USED="${PGSSLROOTCERT:-~/.postgresql/root.crt, the libpq default}"
+      die "Could not connect to the database: its TLS certificate does not verify against the CA this run used (${CA_USED}, sslmode=${PGSSLMODE:-?}). Name the CA that signed the database's certificate with sslrootcert=<host path> in DATABASE_URL, or NODE_EXTRA_CA_CERTS. No backup was kept."
+    elif [[ -n "${CLOCK_ERR//[[:space:]]/}" ]]; then
+      die "The database answered SELECT now() with an error (on the line above), so the backup could not start. No backup was kept."
+    fi
+    die "Could not read the database's clock (SELECT now()) before the dump, so the backup cannot record when it was taken. No backup was kept."
+  fi
+  rm -f "${CLOCK_ERR_FILE}"
   pg_client_run pg_dump -Fc > "${BACKUP_PATH}/db.dump"
 else
   log "Using compose postgres service."
@@ -137,14 +160,15 @@ fi
 # Read after the dump has finished, so a physical copy of this database taken
 # before then (a snapshot, a point-in-time restore, a clone) is behind it.
 if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
-  WAL_LSN="$(pg_client_run psql -Atc "$(wal_position_sql)" 2>/dev/null | tr -d '[:space:]')" || true
+  NEXT_XID="$(pg_client_run psql -Atc "$(next_xid_sql)" 2>/dev/null | tr -d '[:space:]')" || true
 else
-  WAL_LSN="$("${COMPOSE[@]}" exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -Atc "$(wal_position_sql)" 2>/dev/null | tr -d '[:space:]')" || true
+  NEXT_XID="$("${COMPOSE[@]}" exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -Atc "$(next_xid_sql)" 2>/dev/null | tr -d '[:space:]')" || true
 fi
-if ! is_wal_lsn "${WAL_LSN}"; then
-  log "WARN: the database did not report its WAL position, so this archive records no wal_lsn. A"
-  log "      restore of it lists the credentials to compare instead of re-applying revocations."
-  WAL_LSN=""
+if ! is_next_xid "${NEXT_XID}"; then
+  log "WARN: the database did not report its next transaction id, so this archive records no next_xid."
+  log "      A restore of it lists the credentials to compare instead of re-applying revocations, so a"
+  log "      credential revoked after this backup is live again after that restore until you disable it."
+  NEXT_XID=""
 fi
 
 # The dump is checked before anything reports success on it. A backup is only
@@ -211,7 +235,7 @@ METADATA_FILE="${BACKUP_PATH}/backup-metadata"
   echo "# AGLedger backup metadata. Written by backup.sh, read by restore.sh."
   echo "created_at=${BACKUP_CREATED_AT}"
   echo "database_token=${DATABASE_TOKEN}"
-  echo "wal_lsn=${WAL_LSN}"
+  echo "next_xid=${NEXT_XID}"
   echo "compose_project=${BACKUP_PROJECT}"
   echo "agledger_version=$(get_env_value AGLEDGER_VERSION "${COMPOSE_DIR}/.env")"
   echo "agledger_image_pin=$(get_env_value AGLEDGER_IMAGE_PIN "${COMPOSE_DIR}/.env")"

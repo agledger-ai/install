@@ -1059,6 +1059,17 @@ keygen_pull_failure() {
   printf '%s%s' "$reason" "${message:+: $message}"
 }
 
+# The pin of a base64 DER private key: the SHA-256 of its SPKI, as
+# generate-signing-key.js prints it. Empty when openssl cannot derive it.
+vault_key_pin_of() {
+  local hex
+  command -v openssl >/dev/null 2>&1 || return 0
+  hex="$(printf '%s' "$1" | openssl base64 -d -A 2>/dev/null \
+    | openssl pkey -inform DER -pubout -outform DER 2>/dev/null | openssl dgst -sha256 -r 2>/dev/null | cut -d' ' -f1 || true)"
+  [[ "$hex" =~ ^[0-9a-f]{64}$ ]] && printf 'sha256:%s' "$hex"
+  return 0
+}
+
 VAULT_KEY=""
 # Display only, never passed to helm: --set-file would copy the key into the
 # release's stored values, which the chart's lookup exists to keep it out of.
@@ -1074,6 +1085,7 @@ elif release_holds_vault_key; then
   if [[ -n "$VAULT_KEY_SECRET" ]]; then
     REUSED_VAULT_KEY="$(kubectl get secret "$VAULT_KEY_SECRET" --namespace "$NAMESPACE" \
       -o jsonpath='{.data.VAULT_SIGNING_KEY}' 2>/dev/null | base64 --decode 2>/dev/null || true)"
+    [[ -n "$REUSED_VAULT_KEY" ]] && VAULT_KEY_PIN="$(vault_key_pin_of "$REUSED_VAULT_KEY")"
   fi
 else
   info "Generating ${SIGNING_ALGORITHM} vault signing key..."
@@ -1958,10 +1970,19 @@ API_GENERATION_BEFORE="$(kubectl get deployment --namespace "$NAMESPACE" \
 WORKER_TEMPLATE_BEFORE="$(kubectl get deployment --namespace "$NAMESPACE" \
     -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=worker" \
     -o jsonpath='{.items[0].spec.template}' 2>/dev/null || true)"
-if ! "${HELM_CMD[@]}"; then
+# helm's stderr is kept as well as shown, to tell a claim whose storageClassName
+# the chart cannot change in place from every other failed install.
+HELM_ERR="${SECRET_DIR}/helm.err"
+HELM_RC=0
+"${HELM_CMD[@]}" 2>"$HELM_ERR" || HELM_RC=$?
+cat "$HELM_ERR" >&2
+if [[ "$HELM_RC" -ne 0 ]]; then
   report_migrate
   report_preflight
   report_pending_state
+  if grep -qi 'PersistentVolumeClaim' "$HELM_ERR" && grep -qi 'spec is immutable' "$HELM_ERR" && [[ -n "$(pending_claims)" ]]; then
+    fatal "Install failed: a volume claim's spec cannot be changed once it exists, and this release's bundled PostgreSQL claim ($(pending_claims | tr '\n' ' ')) is still Pending, so a new storageClassName cannot reach it. A claim that never bound holds nothing: delete it, then run this installer again with the same arguments: kubectl delete pvc -n $NAMESPACE $(pending_claims | tr '\n' ' ')"
+  fi
   fatal "Install failed. See the error above."
 fi
 report_preflight_warnings
@@ -1988,6 +2009,11 @@ report_unsaved_vault_key() {
     echo "  [!] The vault signing key this run generated is stored in Secret ${VAULT_KEY_SECRET:-<name from: kubectl get secret -n $NAMESPACE -l app.kubernetes.io/instance=$RELEASE>}." >&2
     echo "      Save it before anything else: kubectl get secret ${VAULT_KEY_SECRET:-<name>} -n $NAMESPACE -o jsonpath='{.data.VAULT_SIGNING_KEY}' | base64 --decode" >&2
     echo "      Running this installer again reuses that key and prints it." >&2
+    if [[ -n "${VAULT_KEY_PIN:-}" ]]; then
+      echo "      Its pin (not secret; give it to anyone who verifies this install offline): ${VAULT_KEY_PIN}" >&2
+    fi
+  elif [[ -n "${REUSED_VAULT_KEY:-}" && -n "${VAULT_KEY_PIN:-}" ]]; then
+    echo "  [!] The vault signing key pin of the key this release already holds (not secret; give it to anyone who verifies this install offline): ${VAULT_KEY_PIN}" >&2
   fi
 }
 

@@ -11,7 +11,25 @@ set -euo pipefail
 # Works with both bundled PostgreSQL and external databases.
 #
 # Usage: ./scripts/support-bundle.sh
+#
+# Options:
+#   -h, --help   Print this and exit.
 # =============================================================================
+
+# The header block above, with the comment markers taken off (the same reader
+# backup.sh uses).
+usage() {
+  awk '/^# ={10,}/ { rules++ }
+       NR >= 4     { sub(/^# ?/, ""); print }
+       rules == 3  { exit }' "${BASH_SOURCE[0]}"
+}
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; printf 'Unknown argument: %s\n' "$1" >&2; exit 1 ;;
+  esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

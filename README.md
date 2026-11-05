@@ -2,7 +2,7 @@
 
 Install scripts, Docker Compose files, and Helm chart for [AGLedger](https://agledger.ai).
 
-AGLedger is a cryptographic notary for automated work. An agent notarizes what it is about to do, then notarizes what was done. Both are signed and hash-chained. For workloads where the deliverable is measurable (procurement, finance, compliance), an optional gated mode adds a receipt + verdict phase. AGLedger does not inspect or judge deliverable content; it records what was claimed and when, signed and chainable.
+AGLedger is a signed ledger for automated work. An agent records what it is about to do, then records what was done. Both are signed and hash-chained. For workloads where the deliverable is measurable (procurement, finance, compliance), an optional gated mode adds a receipt + verdict phase. AGLedger does not inspect or judge deliverable content; it records what was claimed and when, signed and chainable.
 
 This repository contains only the deployment packaging. The server image is distributed on [Docker Hub](https://hub.docker.com/r/agledger/agledger) and the Helm chart on OCI at `oci://registry-1.docker.io/agledger/agledger-chart`.
 
@@ -448,8 +448,8 @@ them from the backup directory.
 
 Each run writes one timestamped tarball holding a `pg_dump` custom-format dump of the whole database
 (`db.dump`) and a CSV export of the signing-key registry's **public** keys. Private signing keys are
-never in the database and never in a backup. Webhook signing secrets are: `webhook_subscriptions.secret`
-and `previous_secret` are AES-256-GCM ciphertext under `WEBHOOK_ENCRYPTION_KEY` (or `API_KEY_SECRET`
+never in the database and never in a backup. Webhook signing secrets are: each subscription's current
+and previous secret are AES-256-GCM ciphertext under `WEBHOOK_ENCRYPTION_KEY` (or `API_KEY_SECRET`
 when that is unset), so a backup together with `.env` decrypts every subscription's secret. Neither is `compose/.env`, which holds `VAULT_SIGNING_KEY`
 and `API_KEY_SECRET` (and the federation key, if you added one): back it up
 separately, under the controls you apply to the keys themselves. A restore onto a host with a
@@ -869,7 +869,7 @@ It checks the signature and all three attestations, asserts the malware scan rep
 
 ## Licensing
 
-**Running AGLedger in production requires a license. The Developer Edition license is free, so get one.** Register at [agledger.ai](https://agledger.ai) and you have it in a minute: no credit card, no account, and the key validates offline with no phone-home.
+**Running AGLedger in production requires a license. A Developer Edition License Key covers it, so get one.** Register at [agledger.ai](https://agledger.ai) and you have it in a minute: no credit card, no account, and the key validates offline with no phone-home.
 
 Unlicensed use is permitted for evaluation, development, and testing only, and only for the Evaluation Period the license sets. The Developer Edition key is what grants production rights and the written terms that come with them, and it is what keeps an install licensed once that period ends.
 

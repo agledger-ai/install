@@ -21,8 +21,8 @@ built, scanned and verified.
 
 ## Supported Versions
 
-Supported Versions are the current major version and one prior major version (N and N-1), as
-defined in the Support Terms. The Security Update Support Period, and what each edition is
+For Enterprise Edition Licensees, Supported Versions are the current major version and one prior
+major version (N and N-1), as defined in the Support Terms. The Security Update Support Period, and what each edition is
 contractually owed, are stated in the Software License Agreement published at
 <https://agledger.ai/license> (sections 6.2 and 6.4) and in the Support Terms.
 
@@ -61,17 +61,17 @@ through the API.
 
 Scheduled sweeps delete only short-lived operational rows. None of them carries record content:
 
-| Table | What the sweep removes |
+| Data | What the sweep removes |
 |---|---|
-| `idempotency_keys` | expired keys, plus in-flight claims a crashed request left behind |
-| `oidc_consumed_jtis` | rows whose admin bearer token has expired |
-| `rate_limits` | expired windows, and only when `RATE_LIMIT_STORE=postgresql` |
-| `federation_nonces` | replay-protection nonces past their window |
-| `federation_idempotency` | the peer request/response cache past its window |
-| pg-boss job tables | completed jobs, under pg-boss's own retention |
+| Idempotency keys | expired keys, plus in-flight claims a crashed request left behind |
+| Consumed admin-token identifiers (replay protection) | entries whose admin bearer token has expired |
+| Rate-limit counters | expired windows, and only when `RATE_LIMIT_STORE=postgresql` |
+| Federation replay-protection nonces | nonces past their window |
+| Federation request/response cache | cached peer exchanges past their window |
+| Background job history | completed jobs, under the job queue's own retention |
 
-Webhook signing secrets are a column rather than a row: the rotation sweep clears
-`previous_secret` once the grace window closes.
+A rotated webhook signing secret is kept beside the new one for a grace window, so receivers can
+switch over; the sweep clears the previous secret once that window closes.
 
 ## Encrypted mode: what is sealed, and what destroying the key does
 
@@ -145,8 +145,8 @@ flagged image never reaches the registry:
   tests provider behaviour rather than arch parity, which the boot gate above
   already covers on both arches.
 
-Source code is additionally checked by Semgrep (SAST) before each release and by
-Dependabot (dependency updates) continuously.
+Source code is checked with Semgrep (SAST), and dependency updates run continuously
+(Dependabot).
 
 ## Release Verification
 
@@ -207,8 +207,7 @@ The SBOM, OpenVEX document, and the signed conformance corpus are attached to ev
 [GitHub Release on this public repo](https://github.com/agledger-ai/install/releases)
 for direct download (`agledger-<version>-sbom.cdx.json`,
 `agledger-<version>-vex.openvex.json`, `agledger-<version>-conformance-corpus.tar.gz`
-+ `.sha256` + `.sigstore.json`), alongside
-`agledger-<version>-offline-verification.tar.gz` + `.sha256` + `.sigstore.json`,
++ `.sha256` + `.sigstore.json`) and, from v1.8.0, `agledger-<version>-offline-verification.tar.gz` + `.sha256` + `.sigstore.json`,
 which carries the signature and attestation bundles and the Sigstore trust root
 for a host with no network. That archive is the trust anchor an air-gapped check
 hangs from, so verify its own `cosign verify-blob` while a network is still
