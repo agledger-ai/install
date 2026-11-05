@@ -4,6 +4,24 @@ This changelog tracks changes to the AGLedger installer (this repository) and, f
 
 Releases here are tagged to match the AGLedger server version they ship against.
 
+## v2.2.0 - 2026-11-05
+
+Scripts, Compose files, and Helm chart synced to AGLedger server v2.2.0.
+
+`backup.sh` and the chart's backup Job record the cluster's 64-bit next transaction id (`next_xid`) in place of `wal_lsn`, which a server that does not report `pg_current_wal_lsn` (Aurora among them) left empty, so a restore from such a backup replayed no revocations. `restore.sh` runs any non-latest image tag the install records, a mirrored or `v`-prefixed one included, prints the failed revocation read under its WARN, and on a same-cluster restore reapplies the pg-boss default privileges as the runtime role. A failed external-database clock read in `backup.sh` names its cause: the CA the run used when the certificate does not verify, otherwise the libpq error.
+
+`install.sh` runs on macOS (bash 3.2) past the external-database check, bounds its host port probe at 2 seconds, verifies the database against the CA the containers use, and pulls each image absent from the host on its own after a failed compose pull, refusing only an image that is neither present nor pullable. `init` masks a `DATABASE_URL` password given as a query parameter. The NetworkPolicy note `helm install` prints says the policy is enforced only where the cluster's CNI enforces NetworkPolicy. The bundled PostgreSQL pin moves to the current `postgres:18-alpine` index.
+
+Server changes in v2.2.0:
+
+Migration 003 adds `federation_key_statements`, a signed history of this Server's federation signing keys. A 2.1.0 pod runs against it for the length of a rollout and after a rollback. The history is served unauthenticated at `GET /.well-known/agledger-federation-keys.json`, so a receiver in another company can verify entries sealed under an earlier key. To change the federation key, boot the new `AGLEDGER_FEDERATION_SIGNING_KEY` with the old one in `AGLEDGER_FEDERATION_SIGNING_KEY_PREVIOUS`; holding only the old key's digest, set `AGLEDGER_FEDERATION_SIGNING_KEY_PREVIOUS_SPKI_SHA256`. Boot refuses a previous key that cannot sign the succession.
+
+Co-sign counter-signatures and protocol acks are signed under their own domains (`agledger.federation.co-sign.v1`, `agledger.federation.ack.v1`). Co-sign between a 2.2.0 Server and an earlier peer fails in both directions until both run 2.2.0; their other federation legs keep working. A failed co-sign is recorded on the peer row and the leg. A 401 from a peer stays on the retry ladder instead of failing the record, since a re-handshake cures it.
+
+A record with no completion phase serves `gateMode`, `maxRevisions` and `maxDisputes` as null on every record body and on `GET /v1/records/{id}/gate-status`. A principal-mode record whose type has no gate rules is held for the principal with one `GATE_HELD` entry and nothing evaluated. The signed `DISPUTE_EVIDENCE` entry carries `payloadHash`, and `GET /v1/records/{id}/audit-export?evidence=true` inlines each filed payload. An `OVERTURNED` dispute that re-renders the verdict as accept replaces `lastVerdictReason`.
+
+A create that pins `contractVersion` to a DISABLED version is refused with 422 naming the version and the ACTIVE alternatives. `POST /v1/schemas` numbers a new version after the highest the type holds, so a type whose versions are all DISABLED no longer collides. The rationale on revision, accept, reject and verdict may be given as `notes`, `reason` or `message`; different texts under two names are refused. `SIEM_FORMAT` other than `ocsf` or `raw` refuses boot. `/openapi.json` validates as OpenAPI 3.0.3.
+
 ## v2.1.0 - 2026-10-22
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v2.1.0.
