@@ -245,11 +245,15 @@ Running on OpenShift?
 {{- if .Values.networkPolicy.enabled }}
 
 NetworkPolicy: the API admits port 3000 only from the pods below, each matched
-in the namespaces named beside it{{ if .Values.networkPolicy.ingressCIDRs }}, and from the address ranges below{{ end }}. An
-ingress controller or Prometheus anywhere else is dropped at the network layer,
-which reads as a 502/504 or a down target with nothing in the pod logs. Change
+in the namespaces named beside it{{ if .Values.networkPolicy.ingressCIDRs }}, and from the address ranges below{{ end }}, when the
+cluster's CNI enforces NetworkPolicy (Calico, Cilium, or the EKS VPC CNI with
+its network policy support turned on, which is off by default). On a
+CNI that does not enforce it, the policy is accepted and ignored, and nothing
+below restricts who reaches the API. Where it is enforced, an ingress
+controller or Prometheus anywhere else is dropped at the network layer, which
+reads as a 502/504 or a down target with nothing in the pod logs. Change
 them in networkPolicy.ingressFrom, networkPolicy.ingressCIDRs (an ALB with
-target-type ip connects from VPC addresses, not from a pod){{ if ((.Values.monitoring).serviceMonitor).enabled }} and monitoring.serviceMonitor.scrapeFrom{{ end }}:
+target-type ip connects from VPC addresses, not from a pod; give it the load balancer's subnet CIDRs, since a whole-VPC CIDR also admits every pod where pods take VPC addresses){{ if ((.Values.monitoring).serviceMonitor).enabled }} and monitoring.serviceMonitor.scrapeFrom{{ end }}:
 {{- range .Values.networkPolicy.ingressFrom }}
   - pods {{ toJson ((.podSelector) | default dict) }} in namespaces {{ toJson ((.namespaceSelector) | default dict) }}
 {{- end }}

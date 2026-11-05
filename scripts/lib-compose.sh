@@ -874,6 +874,7 @@ federation_hub_id_action() {
 #   keep      the file carries a password. Never regenerate: Postgres applies
 #             POSTGRES_PASSWORD only when initializing an EMPTY data
 #             directory, so a fresh one authenticates against nothing (28P01).
+#             Also the answer for --external-db, which reads none.
 #   generate  no password, and no volume has been initialized with one.
 #   refuse    no password, but a data volume exists (or might). Generating
 #             would lock the operator out of their own database; the caller
@@ -909,9 +910,10 @@ pg_password_action() {
     return
   fi
 
-  # An external database has no bundled volume to conflict with.
+  # An external database runs on DATABASE_URL; nothing reads POSTGRES_PASSWORD,
+  # so there is nothing to generate.
   if [[ "$external_flag" == "true" ]]; then
-    echo generate
+    echo keep
     return
   fi
 
@@ -1191,6 +1193,75 @@ pg_env_from_url() {
   done
 }
 
+# The CA path the containers receive: an exported NODE_EXTRA_CA_CERTS wins (it
+# is what compose substitutes), then compose/.env.
+node_extra_ca_certs_value() {
+  if [[ -n "${NODE_EXTRA_CA_CERTS:-}" ]]; then
+    printf '%s' "$NODE_EXTRA_CA_CERTS"
+  else
+    get_env_value NODE_EXTRA_CA_CERTS "${COMPOSE_DIR}/.env"
+  fi
+}
+
+# The file on THIS host behind a CA path. NODE_EXTRA_CA_CERTS names a path inside
+# the containers, so the file is looked for where the containers get it first:
+# the host side of a bind mount in the operator's compose override file whose
+# target is that path (`./db-ca.pem:/certs/ca.pem:ro`), which the containers
+# read whatever a host file at the same path holds. Then, unless $2 is
+# `mounted`, where an operator puts it: the path itself (a relative one against
+# the current directory, then compose/).
+# Prints the absolute host path and returns 0, or returns 1.
+ca_host_path() {
+  local path="$1" only="${2:-}" cand override line src target
+  [[ -n "$path" ]] || return 1
+  override="$(compose_override_file)"
+  if [[ -n "$override" ]]; then
+    while IFS= read -r line; do
+      line="${line#"${line%%[![:space:]]*}"}"
+      [[ "$line" == -* ]] || continue
+      line="${line#-}"
+      line="${line#"${line%%[![:space:]]*}"}"
+      line="${line%%#*}"
+      line="${line%"${line##*[![:space:]]}"}"
+      line="${line#[\"\']}"
+      line="${line%[\"\']}"
+      src="${line%%:*}"
+      target="${line#*:}"
+      target="${target%%:*}"
+      [[ "$target" == "$path" && -n "$src" ]] || continue
+      [[ "$src" == /* ]] || src="${COMPOSE_DIR}/${src}"
+      if [[ -f "$src" && -r "$src" ]]; then
+        printf '%s/%s' "$(cd "$(dirname "$src")" && pwd)" "$(basename "$src")"
+        return 0
+      fi
+    done < "${COMPOSE_DIR}/${override}"
+  fi
+  [[ "$only" == mounted ]] && return 1
+  cand="$path"
+  [[ -f "$cand" && -r "$cand" ]] || { [[ "$path" != /* ]] && cand="${COMPOSE_DIR}/${path}"; }
+  if [[ -f "$cand" && -r "$cand" ]]; then
+    printf '%s/%s' "$(cd "$(dirname "$cand")" && pwd)" "$(basename "$cand")"
+    return 0
+  fi
+  return 1
+}
+
+# The `docker run` arguments that give a throwaway container the CA setting the
+# Server containers have: NODE_EXTRA_CA_CERTS at the container path, and, when
+# the compose override mounts a file there, a read-only mount of that file. A
+# host file at the same path is not mounted, since the Server containers do not
+# see one: without an override mount they read the path inside the image (the
+# RDS bundle). Prints one argument per line; nothing when no CA is set.
+node_ca_docker_args() {
+  local path host
+  path="$(node_extra_ca_certs_value)"
+  [[ -n "$path" ]] || return 0
+  printf '%s\n' -e "NODE_EXTRA_CA_CERTS=${path}"
+  if [[ "$path" == /* ]] && host="$(ca_host_path "$path" mounted)"; then
+    printf '%s\n' --mount "type=bind,source=${host},target=${path},readonly"
+  fi
+}
+
 # The CA a verified connection needs, resolved the way the Server resolves it.
 #
 # `pg_env_from_url` carries sslmode and sslrootcert out of the URL, and that is
@@ -1212,20 +1283,26 @@ pg_env_root_cert() {
   # libpq's own name for the OS trust store, not a file; nothing to resolve.
   [[ "$path" == "system" ]] && return 0
   if [[ -z "$path" ]]; then
-    path="$(get_env_value NODE_EXTRA_CA_CERTS "${COMPOSE_DIR}/.env")"
-    source="NODE_EXTRA_CA_CERTS in compose/.env"
+    # The exported variable first: a Kubernetes host restoring through a
+    # forwarded port has no compose/.env.
+    path="$(node_extra_ca_certs_value)"
+    if [[ -n "${NODE_EXTRA_CA_CERTS:-}" ]]; then
+      source="NODE_EXTRA_CA_CERTS in the environment"
+    else
+      source="NODE_EXTRA_CA_CERTS in compose/.env"
+    fi
   fi
   [[ -n "$path" ]] || return 0
-  if [[ -r "$path" ]]; then
-    # Absolute, since the container fallback bind-mounts it at this path and
-    # docker refuses a relative mount source.
-    PGSSLROOTCERT="$(cd "$(dirname "$path")" && pwd)/$(basename "$path")"; export PGSSLROOTCERT
+  # Absolute, since the container fallback bind-mounts it at this path and
+  # docker refuses a relative mount source.
+  local host
+  if host="$(ca_host_path "$path")"; then
+    PGSSLROOTCERT="$host"; export PGSSLROOTCERT
     return 0
   fi
   # A fresh private file, never a name another user could have planted: the
-  # connection trusts whatever this file says. Public key material only, so
-  # it is left behind for the host's tmp cleaner rather than threaded through
-  # every caller's exit trap.
+  # connection trusts whatever this file says. Public key material only.
+  # Callers remove it in their EXIT trap through pg_root_cert_cleanup.
   local copy image
   copy="$(mktemp "${TMPDIR:-/tmp}/agledger-db-ca.XXXXXX")"
   image="${AGLEDGER_IMAGE_PIN:-${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest}}"
@@ -1233,12 +1310,22 @@ pg_env_root_cert() {
      && docker run --rm --entrypoint cat "$image" "$path" > "$copy" 2>/dev/null \
      && [[ -s "$copy" ]]; then
     PGSSLROOTCERT="$copy"; export PGSSLROOTCERT
+    PG_ROOT_CERT_COPY="$copy"
     info "Database CA ${path} (${source}) is not on this host; using the copy in ${image}." >&2
     return 0
   fi
   rm -f "$copy"
-  fatal "DATABASE_URL asks for sslmode=${PGSSLMODE}, and the CA it names, ${path} (${source}), is neither readable on this host nor in ${image}.
-  psql and pg_dump refuse a verified connection with no root certificate. Put the CA file at that path on this host, or name a path the Server image carries (the AWS RDS / Aurora bundle is at /etc/ssl/certs/rds-global-bundle.pem)." >&2
+  local tried="the current directory ${PWD}"
+  [[ "$path" == /* ]] || tried="${tried} and ${COMPOSE_DIR}"
+  fatal "DATABASE_URL asks for sslmode=${PGSSLMODE}, and the CA it names, ${path} (${source}), is not readable on this host (looked in ${tried}, and in the bind mounts of the compose override file) and is not in ${image}.
+  psql and pg_dump refuse a verified connection with no root certificate. Name the CA file on this host with sslrootcert=<host path> in DATABASE_URL (for a CA mounted into the containers, the host side of that mount), put the file at that path on this host, or name a path the Server image carries (the AWS RDS / Aurora bundle is at /etc/ssl/certs/rds-global-bundle.pem)." >&2
+}
+
+# Removes the CA copy pg_env_root_cert took out of the image, if it took one.
+PG_ROOT_CERT_COPY=""
+pg_root_cert_cleanup() {
+  [[ -n "${PG_ROOT_CERT_COPY:-}" ]] && rm -f "$PG_ROOT_CERT_COPY"
+  return 0
 }
 
 # The `docker run` arguments that hand a container client the verified
@@ -1267,8 +1354,9 @@ pg_server_major() {
   elif command -v docker >/dev/null 2>&1; then
     local net=()
     case "${PGHOST:-}" in localhost|127.0.0.1|::1|"") net=(--network host) ;; esac
-    local env_args=()
-    mapfile -t env_args < <(pg_client_docker_env_args)
+    local env_args=() env_arg
+    # Read loop rather than `mapfile`, which bash 3.2 (macOS) does not have.
+    while IFS= read -r env_arg; do env_args+=("${env_arg}"); done < <(pg_client_docker_env_args)
     num="$(docker run --rm "${env_args[@]}" \
       ${net[@]+"${net[@]}"} "$PG_QUERY_IMAGE" psql -tAc 'SHOW server_version_num' 2>/dev/null | tr -d '[:space:]')"
   fi
@@ -1346,8 +1434,9 @@ pg_client_run() {
     localhost|127.0.0.1|::1|"") net=(--network host) ;;
   esac
 
-  local env_args=()
-  mapfile -t env_args < <(pg_client_docker_env_args)
+  local env_args=() env_arg
+  # Read loop rather than `mapfile`, which bash 3.2 (macOS) does not have.
+  while IFS= read -r env_arg; do env_args+=("${env_arg}"); done < <(pg_client_docker_env_args)
   docker run --rm -i "${env_args[@]}" \
     ${net[@]+"${net[@]}"} "${PG_CLIENT_IMAGE_REPO:-postgres}:${server_major}-alpine" "$tool" "$@"
 }
@@ -1403,22 +1492,31 @@ pg_dump_magic_ok() {
 # re-run after a restore that failed partway all answer differently, although
 # their rows descend from the same install. A physical copy (a storage
 # snapshot, a provider point-in-time restore, a clone, a copied data volume)
-# keeps both values, so the archive also records wal_lsn (wal_position_sql),
-# and a database whose WAL position is still before it is a copy taken before
+# keeps both values, so the archive also records next_xid (next_xid_sql), and a
+# database whose next transaction id is still before it is a copy taken before
 # the backup. The same SQL is in the chart's backup Job and in
 # post-restore.js --export-revocations, character for character.
 database_token_sql() {
   printf '%s\n' "SELECT (pg_control_system()).system_identifier::text || ':' || oid::text FROM pg_database WHERE datname = current_database()"
 }
 
-# The cluster's WAL position, taken once the dump has finished. It only moves
-# forward on one cluster, so the database the backup was dumped from is at or
-# past it from then on, and a physical copy taken before it is still behind.
-wal_position_sql() {
-  printf '%s\n' "SELECT pg_current_wal_lsn()::text"
+# The cluster's next transaction id (64-bit, so it carries its epoch and does
+# not wrap), taken once the dump has finished. It only moves forward on one
+# cluster, so the database the backup was dumped from is at or past it from
+# then on, and a physical copy taken before it is still behind. Every server
+# reports it, whatever its wal_level.
+next_xid_sql() {
+  printf '%s\n' "SELECT pg_snapshot_xmax(pg_current_snapshot())::text"
 }
 
-# Whether $1 has the shape wal_position_sql answers with.
+# Whether $1 has the shape next_xid_sql answers with: decimal digits with no
+# leading zero, since xid8 input reads a leading 0 as octal.
+is_next_xid() {
+  [[ "${1:-}" =~ ^(0|[1-9][0-9]*)$ ]]
+}
+
+# Whether $1 has the shape of the wal_lsn (pg_current_wal_lsn) an archive
+# written before next_xid was recorded carries in its place.
 is_wal_lsn() {
   [[ "${1:-}" =~ ^[0-9A-F]+/[0-9A-F]+$ ]]
 }
@@ -1592,8 +1690,17 @@ valid_host_port() {
 # this check exists only to make friendlier, not to guarantee.
 host_port_in_use() {
   local port="$1"
+  # A host that drops loopback connections instead of refusing them (WSL2 behind
+  # a relay) holds a connect for minutes, so the probe is bounded to 2 seconds
+  # where `timeout` exists. Without it (stock macOS) the bare probe is all there
+  # is. A timed-out probe exits non-zero, which reads as "nothing answers".
   # The subshell owns the descriptor, so it is closed on return either way.
-  (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
+  if command -v timeout >/dev/null 2>&1; then
+    # shellcheck disable=SC2016  # the child bash expands $1, not this one
+    timeout 2 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1"' _ "$port" 2>/dev/null
+  else
+    (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
+  fi
 }
 
 # True when the port is held by a container of THIS compose project, i.e. by

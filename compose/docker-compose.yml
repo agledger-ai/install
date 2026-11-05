@@ -363,7 +363,7 @@ services:
       # password.
       # install.sh generates one into .env under --with-monitoring; an operator
       # enabling the profile by hand sets it themselves.
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
       GF_USERS_ALLOW_SIGN_UP: 'false'
       # Grafana's defaults.ini ships all four of these on, and each is an
       # outbound call this stack has no use for: usage counters to

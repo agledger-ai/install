@@ -122,7 +122,9 @@ A FAILED record is revisable until its deadline passes or its submission budget 
 a revisable failure is not terminal to the cascade: the parent waits on it. Create every
 evidence read and every precondition check with `maxSubmissions: 1` and a `deadline`, so a
 failed read or a failed check is final and fails the parent at once. Without them the parent
-sits ACTIVE reading `awaitingActor: system` with nothing to act. Your org must run
+sits ACTIVE reading `awaitingActor: performer`, in the performer's `?actionable=true` listing,
+because the failed child's principal is the parent's performer and can still send the child back
+for rework; the parent does not fail until that child's deadline passes or its budget is spent. Your org must run
 `enforcement.maxSubmissionsMode: enforced` (the default) for the cap to count. The served
 guide says the same in the first bullet of its "Cascade settlement" section; read that bullet
 before designing any one-shot check as a child.

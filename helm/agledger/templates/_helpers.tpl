@@ -680,7 +680,7 @@ spec:
              carries no pg_dump. pg_dump refuses a server NEWER than itself, so
              this tracks the bundled version and an external Postgres 18 needs
              an 18 client here. */}}
-      image: {{ $backup.image | default ((($root.Values).postgres).bundled).image | default "postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873" }}
+      image: {{ $backup.image | default ((($root.Values).postgres).bundled).image | default "postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5" }}
       imagePullPolicy: {{ $root.Values.image.pullPolicy }}
       securityContext:
         readOnlyRootFilesystem: true
@@ -773,14 +773,14 @@ spec:
             exit 1
           fi
 
-          # The WAL position once the dump has finished: a physical copy of
-          # this database taken before then (a snapshot, a point-in-time
-          # restore, a clone) is behind it, and restore.sh reads no
-          # revocations out of one. Empty when the server will not say.
-          WAL_LSN=$(psql -d "$DB" -Atc "SELECT pg_current_wal_lsn()::text" 2>/dev/null | tr -d '[:space:]') || WAL_LSN=""
-          case "$WAL_LSN" in
-            *[!0-9A-F/]*|'') echo "WARN: the database did not report its WAL position; this archive records no wal_lsn."
-                             WAL_LSN="" ;;
+          # The next transaction id once the dump has finished: a physical
+          # copy of this database taken before then (a snapshot, a
+          # point-in-time restore, a clone) is behind it, and restore.sh reads
+          # no revocations out of one. Empty when the server will not say.
+          NEXT_XID=$(psql -d "$DB" -Atc "SELECT pg_snapshot_xmax(pg_current_snapshot())::text" 2>/dev/null | tr -d '[:space:]') || NEXT_XID=""
+          case "$NEXT_XID" in
+            *[!0-9]*|''|0?*) echo "WARN: the database did not report its next transaction id; this archive records no next_xid. A restore of it replays no revocations, so a credential revoked after this backup is live again until it is disabled."
+                         NEXT_XID="" ;;
           esac
 
           # The keys restore.sh reads. No version record: the Helm release, not
@@ -789,7 +789,7 @@ spec:
             echo "# AGLedger backup metadata. Written by the chart's backup Job, read by restore.sh."
             echo "created_at=${CREATED_AT}"
             echo "database_token=${DATABASE_TOKEN}"
-            echo "wal_lsn=${WAL_LSN}"
+            echo "next_xid=${NEXT_XID}"
           } > "${WORK}/backup-metadata"
 
           # Public keys only. Private key material is never in the database.

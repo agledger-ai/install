@@ -159,13 +159,19 @@ usage() {
 #   conflict <version>  --version disagrees with the release compose/.env names
 #   none [<value>]      nothing names a release; <value> is what was named instead
 restore_serving_version() {
-  local flag="${1#v}" file="$2" env="$3" chosen
-  # A compose/.env naming something that is not a release (`latest`, a
-  # custom-build tag) is not a record of one, so a concrete --version overrides it
-  # rather than conflicting with it; otherwise the refusal below would send the
-  # operator to --version and --version back to the refusal.
-  if [[ -n "${flag}" && -n "${file}" ]] && is_concrete_version "${file}"; then
-    if [[ "${file#v}" != "${flag}" ]]; then
+  local flag="$1" file="$2" env="$3" chosen
+  # A tag install.sh and upgrade.sh wrote (a release number, or a custom or
+  # mirrored build tag) is an image to run. Only an empty value and the floating
+  # `latest` are not: they name no particular bytes. A leading `v` is dropped
+  # from a --version release number, since the published image tags carry none;
+  # a tag the install records is run as written, since the stack already runs
+  # it, and is compared with --version without its `v`.
+  flag="$(serving_tag_normalize "${flag}")"
+  # A compose/.env naming `latest` is not a record of a release, so a concrete
+  # --version overrides it rather than conflicting with it; otherwise the refusal
+  # below would send the operator to --version and --version back to the refusal.
+  if [[ -n "${flag}" && -n "${file}" && "${file}" != latest ]]; then
+    if [[ "$(serving_tag_normalize "${file}")" != "${flag}" ]]; then
       printf 'conflict %s\n' "${file}"
       return 0
     fi
@@ -173,11 +179,15 @@ restore_serving_version() {
     file=""
   fi
   chosen="${file:-${flag:-${env}}}"
-  if is_concrete_version "${chosen}"; then
+  if [[ -n "${chosen}" && "${chosen}" != latest ]]; then
     printf 'ok %s\n' "${chosen}"
   else
     printf 'none %s\n' "${chosen}"
   fi
+}
+
+serving_tag_normalize() {
+  if is_concrete_version "$1"; then printf '%s' "${1#v}"; else printf '%s' "$1"; fi
 }
 
 # Whether one URL is enough for this database. $1 is whether DATABASE_URL_MIGRATE
@@ -301,8 +311,8 @@ case "${SERVING_STATE}" in
     ;;
   *)
     if [[ -n "${SERVING_ARG:-}" ]]; then
-      log "The release named for this restore is '${SERVING_ARG}', which is not a release number, so this"
-      log "  restore has no image to run its migration in."
+      log "The release named for this restore is '${SERVING_ARG}', which is the floating tag and names no"
+      log "  particular image, so this restore has no image to run its migration in."
     else
       log "No release is named for this restore, so it has no image to run its migration in:"
       log "  ${COMPOSE_DIR}/.env names no AGLEDGER_VERSION (a host restoring into a cluster has none),"
@@ -314,6 +324,7 @@ case "${SERVING_STATE}" in
     log ""
     log "  Name the release this install runs and re-run with it:"
     log "    $0 --version <X.Y.Z> ..."
+    log "  (or the image tag the install runs, when it is a custom or mirrored one)"
     log "  On Kubernetes that is the Helm release's app version:"
     log "    helm list -n <namespace> -f '^<release>\$' -o json | jq -r '.[0].app_version'"
     refuse_untouched
@@ -415,6 +426,7 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   # A verified connection needs the CA the Server verifies with, for the host
   # psql below and for a container pg_restore alike.
   pg_env_root_cert
+  trap pg_root_cert_cleanup EXIT
 
   # The two URLs must name the same database on the same server. Only the name
   # was ever compared, and the name is the half that matches by accident: the
@@ -491,6 +503,12 @@ on_restore_exit() {
     fi
   fi
   rm -rf "${RESTORE_TMP}"
+  pg_root_cert_cleanup
+  # A cluster restore's one-off containers create the default network of the
+  # project it owns, and compose leaves it behind when nothing is brought up.
+  if [[ "${CLUSTER_RESTORE:-false}" == true ]]; then
+    docker network rm "${COMPOSE_PROJECT_NAME}_default" >/dev/null 2>&1 || true
+  fi
 }
 trap on_restore_exit EXIT
 
@@ -928,18 +946,28 @@ REVOCATIONS_EXPORTED=0
 REVOCATION_SOURCE_NOTE=""
 BACKUP_CREATED_AT="$(get_env_value created_at "${RESTORE_DIR}/backup-metadata" 2>/dev/null || true)"
 BACKUP_DATABASE_TOKEN="$(get_env_value database_token "${RESTORE_DIR}/backup-metadata" 2>/dev/null || true)"
+BACKUP_NEXT_XID="$(get_env_value next_xid "${RESTORE_DIR}/backup-metadata" 2>/dev/null || true)"
+# An archive written before next_xid was recorded carries the WAL position in
+# its place, and is checked against that. A next_xid that is there but
+# malformed is not passed over for it.
 BACKUP_WAL_LSN="$(get_env_value wal_lsn "${RESTORE_DIR}/backup-metadata" 2>/dev/null || true)"
+BACKUP_POSITION_ARGS=()
+if is_next_xid "${BACKUP_NEXT_XID}"; then
+  BACKUP_POSITION_ARGS=(--next-xid "${BACKUP_NEXT_XID}")
+elif [[ -z "${BACKUP_NEXT_XID}" ]] && is_wal_lsn "${BACKUP_WAL_LSN}"; then
+  BACKUP_POSITION_ARGS=(--wal-lsn "${BACKUP_WAL_LSN}")
+fi
 : > "${REVOCATIONS_FILE}"
 
-if ! is_database_token "${BACKUP_DATABASE_TOKEN}" || ! is_wal_lsn "${BACKUP_WAL_LSN}"; then
+if ! is_database_token "${BACKUP_DATABASE_TOKEN}" || [[ ${#BACKUP_POSITION_ARGS[@]} -eq 0 ]]; then
   REVOCATION_OUTCOME=unproven
-  REVOCATION_SOURCE_NOTE="The archive does not record both database_token and wal_lsn, so nothing can show which database it was dumped from, or that the one about to be replaced carried on from it: it was written by a backup.sh or chart backup Job that did not record them, or by one whose database would not report them."
+  REVOCATION_SOURCE_NOTE="The archive does not record both database_token and next_xid, so nothing can show which database it was dumped from, or that the one about to be replaced carried on from it: it was written by a backup.sh or chart backup Job that did not record them, or by one whose database would not report them (backup.sh and the Job print a WARN naming the value they could not read)."
 fi
 
 if [[ "${REVOCATION_OUTCOME}" == unavailable ]]; then
   log "Reading revocations made after the backup out of the database about to be replaced..."
   log "  The backup was dumped from database ${BACKUP_DATABASE_TOKEN} (cluster system identifier:OID); any other holds none of them."
-  SINCE_ARGS=(--database-token "${BACKUP_DATABASE_TOKEN}" --wal-lsn "${BACKUP_WAL_LSN}")
+  SINCE_ARGS=(--database-token "${BACKUP_DATABASE_TOKEN}" "${BACKUP_POSITION_ARGS[@]}")
   [[ -n "${BACKUP_CREATED_AT}" ]] && SINCE_ARGS+=(--since "${BACKUP_CREATED_AT}")
   # NODE_OPTIONS cleared on every one-off `node` this script runs: it reaches every
   # node process in the container, `run` inherits the service's `env_file: .env`,
@@ -991,8 +1019,13 @@ if [[ "${REVOCATION_OUTCOME}" == unavailable ]]; then
       log "  post-restore.js --list-active-credentials prints against your own record of revocations."
     fi
   else
-    log "WARN: could not read revocations out of the current database (see above). If this host has no"
+    log "WARN: could not read revocations out of the current database. If this host has no"
     log "      previous database, that is expected; the closing notes say what to compare instead."
+    log "      The read printed:"
+    # Everything but the revocation lines themselves, which went to the file
+    # the replay reads; the log is removed with the rest of the scratch space.
+    while IFS= read -r export_line; do log "        ${export_line}"; done \
+      < <(grep -v '^REVOCATION ' "${RESTORE_TMP}/revocations-export.log" 2>/dev/null | tail -20 || true)
     : > "${REVOCATIONS_FILE}"
   fi
 fi
@@ -1083,6 +1116,12 @@ pg_restore_from_dump() {
     log "      applied — see the GRANT/REVOKE lines above. This is normal when restoring onto a"
     log "      server that does not carry the same roles (a cross-server DR, or a single-role"
     log "      install). The runtime-role check below decides whether this Server can serve."
+    if grep -q 'permission denied to change default privileges' "${RESTORE_TMP}/pg_restore.log"; then
+      log "      The ALTER DEFAULT PRIVILEGES errors are a different cause: the restoring role may not act as"
+      log "      the role they name (agledger_app), as with a managed-database owner role such as RDS's. The"
+      log "      pgboss ones are reapplied below when that role can SET ROLE to the runtime role; every other"
+      log "      schema's default privileges are set by the migration that follows."
+    fi
     return 0
   fi
 
@@ -1190,7 +1229,7 @@ if [[ "${TRIGGER_COUNT}" == "0" ]]; then
   log "      audit_vault, every monthly audit_vault_* partition, vault_checkpoints,"
   log "      scitt_entries, org_admin_reads, org_admin_reads_checkpoints,"
   log "      org_admin_read_sequences, org_admin_read_export_manifests,"
-  log "      vault_signing_keys and vault_key_statements."
+  log "      vault_signing_keys, vault_key_statements and federation_key_statements."
   log ""
   log "      Layer 1 (the row-level DML triggers) is unaffected: UPDATE, DELETE and TRUNCATE on"
   log "      those tables are still refused. So are the signed checkpoints and, where enabled,"
@@ -1303,6 +1342,36 @@ END $$;
 PGBOSS_OWNER_SQL
   then
     log "pgboss schema is owned by \"${RUNTIME_ROLE}\" again."
+    # pg-boss installs its default privileges as the runtime role, so the dump
+    # records them FOR that role, and a restoring role that is not allowed to act
+    # as it is refused them by pg_restore. Reapplied here as the runtime role,
+    # which the ownership transfer above has just shown this role can act as.
+    if psql -qX -v ON_ERROR_STOP=1 -d "${TARGET_DB}" -v role="${RUNTIME_ROLE}" >/dev/null 2>"${PGBOSS_OWNER_ERR}" <<'PGBOSS_ACL_SQL'
+SELECT set_config('agledger.pgboss_owner', :'role', false);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'pgboss') THEN
+    RETURN;
+  END IF;
+  EXECUTE format('SET LOCAL ROLE %I', current_setting('agledger.pgboss_owner'));
+  ALTER DEFAULT PRIVILEGES IN SCHEMA pgboss GRANT ALL ON TABLES TO agledger_app;
+  ALTER DEFAULT PRIVILEGES IN SCHEMA pgboss GRANT ALL ON SEQUENCES TO agledger_app;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'agledger_monitor') THEN
+    ALTER DEFAULT PRIVILEGES IN SCHEMA pgboss GRANT SELECT ON TABLES TO agledger_monitor;
+  END IF;
+END $$;
+PGBOSS_ACL_SQL
+    then
+      log "pgboss default privileges are in place for \"${RUNTIME_ROLE}\"."
+    else
+      log "WARN: could not reapply the pgboss default privileges as \"${RUNTIME_ROLE}\":"
+      sed 's/^/      /' "${PGBOSS_OWNER_ERR}" >&2
+      log "      Tables pg-boss creates later in pgboss are then not granted to agledger_app or"
+      log "      agledger_monitor by default. Connect as \"${RUNTIME_ROLE}\" and run, in ${TARGET_DB}:"
+      log "        ALTER DEFAULT PRIVILEGES IN SCHEMA pgboss GRANT ALL ON TABLES TO agledger_app;"
+      log "        ALTER DEFAULT PRIVILEGES IN SCHEMA pgboss GRANT ALL ON SEQUENCES TO agledger_app;"
+      log "        ALTER DEFAULT PRIVILEGES IN SCHEMA pgboss GRANT SELECT ON TABLES TO agledger_monitor;"
+    fi
   else
     log ""
     log "WARN: could not return pgboss schema ownership to \"${RUNTIME_ROLE}\"."
@@ -1334,6 +1403,18 @@ PGBOSS_OWNER_SQL
     log ""
   fi
 fi
+
+# How to see what can authenticate. A cluster host has no Compose stack: the
+# post-restore Job prints the list itself when it was handed no revocations.
+list_active_credentials_hint() {
+  if [[ "${CLUSTER_RESTORE:-false}" == true ]]; then
+    log "    the post-restore Job runs post-restore.js --list-active-credentials itself when it replays no"
+    log "    revocations, and prints the list in its log:"
+    log "      kubectl logs -n \"\$NS\" job/${POST_RESTORE_JOB:-agledger-post-restore}"
+  else
+    log "    ${COMPOSE[*]} run --rm --no-deps -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api dist/scripts/post-restore.js --list-active-credentials"
+  fi
+}
 
 # The commands that finish a cluster restore: the chart's post-restore Job,
 # fed the input this run wrote, run with the release's own configuration. The
@@ -1474,7 +1555,7 @@ post_restore_notes() {
       else
         log "REVOCATIONS MADE AFTER THE BACKUP WERE READ (${REVOCATIONS_EXPORTED}) BUT NOT RE-APPLIED, and no copy of them"
         log "  was kept. List what can authenticate and disable what you had revoked:"
-        log "    ${COMPOSE[*]} run --rm --no-deps -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api dist/scripts/post-restore.js --list-active-credentials"
+        list_active_credentials_hint
       fi
       ;;
     *)
@@ -1482,8 +1563,6 @@ post_restore_notes() {
       # one the backup was dumped from holds none of its revocations, and one
       # nothing could compare may not, which is the position of having none
       # to read. The headline says which was established.
-      local db_env=""
-      [[ "${CLUSTER_RESTORE:-false}" == true ]] && db_env="DATABASE_URL='<runtime-role URL>' "
       case "${revocation_note}" in
         other_database)
           log "THE DATABASE THIS RESTORE REPLACED DID NOT CARRY ON FROM THIS BACKUP'S STATE, so it held no"
@@ -1516,7 +1595,7 @@ post_restore_notes() {
       fi
       log "  Any credential revoked after the backup authenticates again until you disable it. List what"
       log "  can authenticate:"
-      log "    ${db_env}${COMPOSE[*]} run --rm --no-deps -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api dist/scripts/post-restore.js --list-active-credentials"
+      list_active_credentials_hint
       log "  and compare it against your own record of revocations (the SIEM stream carries"
       log "  ADMIN_KEY_REVOKED, ACCOUNT_DEACTIVATED and federation.peer_revoked), then disable through"
       log "  PATCH /v1/admin/api-keys/{keyId} with {\"isActive\": false}."

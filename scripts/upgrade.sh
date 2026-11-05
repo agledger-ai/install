@@ -928,8 +928,12 @@ HEALTH_RESPONSE=$("${COMPOSE[@]}" exec -e NODE_OPTIONS= agledger-api /nodejs/bin
 # fallback moves into the expansion.
 HEALTH_VERSION=$(echo "$HEALTH_RESPONSE" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 HEALTH_VERSION="${HEALTH_VERSION:-unknown}"
-if [[ "$HEALTH_VERSION" == "$TARGET_VERSION" ]]; then
+# A custom or mirrored tag (rc-<sha>, a registry's own naming) names no version,
+# so there is nothing to compare the served one against.
+if [[ "$HEALTH_VERSION" == "${TARGET_VERSION#v}" ]]; then
   info "/health/ready reports version: ${HEALTH_VERSION}"
+elif [[ "$HEALTH_VERSION" != "unknown" ]] && ! is_concrete_version "$TARGET_VERSION"; then
+  info "/health/ready reports version ${HEALTH_VERSION}, running image tag ${TARGET_VERSION}"
 elif [[ "$HEALTH_VERSION" != "unknown" ]]; then
   warn "/health/ready reports version ${HEALTH_VERSION}, expected ${TARGET_VERSION}"
 else
