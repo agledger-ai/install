@@ -52,9 +52,11 @@ tables grow for the life of the install. Sizing and archival are yours: snapshot
 detach partitions with your own tooling. `audit_vault` refuses a row `DELETE` or `UPDATE`
 outright, and a `TRUNCATE` or a partition drop is refused unless the session sets
 `agledger.allow_audit_drop`, so an accidental prune is not available either. The partition-drop
-half of that guard is a `sql_drop` event trigger, which Postgres only lets a superuser create: on
-a managed database whose migrate role has no superuser-equivalent grant, it is absent and the
-row-level and `TRUNCATE` guards are what remain.
+half of that guard is a `sql_drop` event trigger, which Postgres only lets a superuser create, so
+the migration needs a superuser or the provider's equivalent role (`rds_superuser`,
+`cloudsqlsuperuser`, `azure_pg_admin`), and both installers check for it before they install.
+A superuser can still drop or disable the trigger afterwards; the signed checkpoints are what
+detect a chain changed that way.
 
 There is no erasure endpoint. A record, its chain entries and its events cannot be deleted
 through the API.
@@ -359,7 +361,7 @@ The semantics it turns on, so you can plan against them before you need it:
 - **External anchors are what bound the window.** Anchors are written create-only (`If-None-Match`)
   and, under Object Lock, as versions nothing can delete; a second write to an anchored position is
   refused and reported as a fork, and a store that does not honour conditional writes is named in
-  the anchor posture (`GET /v1/admin/vault/anchors/reconcile`). Anchors written before the exposure
+  the anchor posture (`POST /v1/admin/vault/anchors/reconcile`). Anchors written before the exposure
   are therefore ground truth an attacker holding the key cannot rewrite, so they split your
   history into a span that is provably intact and a span you have to corroborate from outside the
   chain. Turn anchoring on (`VAULT_ANCHOR_ENABLED=true`; `VAULT_ANCHOR_INTERVAL_MINUTES` sets the
