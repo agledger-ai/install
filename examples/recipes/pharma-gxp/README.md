@@ -61,14 +61,16 @@ and ERP and keeps the evidence shapes the types declare.
   `docker-compose.yml` stand up Odoo; `seed-sor.py` creates the fixtures; `checker.py` is the
   deterministic precondition checker; `readers.py` are the four dataset readers;
   `writer.py` builds the batch record payload and writes it after approval; `odoo.py` is the
-  standard-library JSON-RPC client they share, which counts reads and writes.
+  standard-library JSON-RPC client they share, which counts reads and writes; `ADAPTER.md`
+  is the interface those four implement, for a port to your own MES, LIMS and ERP.
 - `oq/`: the scripted OQ. `run.sh` runs it end to end: `drive.py` drives both workflows and
   five cases the engine admits, `probes.py` sends the bodies that must be refused,
   `verify.py` runs the published verifier over every export, and `crosscheck.py` compares
   the records to each other from the exports alone. Standard-library Python.
 - `validation/`: `INTENDED-USE.md`, `REQUIREMENTS.json` (nineteen requirements, each with the
   type or engine rule that satisfies it and what an OQ asserts), `TRACEABILITY.md` built from
-  it, and `OQ-PQ.md`.
+  it, `OQ-PQ.md`, `READING-THE-EXPORT.md` (an inspector's guide to verifying and reading
+  the audit exports) and `ALCOA-PLUS.md`.
 
 ## Controls in this recipe
 
@@ -214,11 +216,11 @@ and whether anything else wrote to the system in the window is the system's own 
 - **A parent that is not ACTIVE takes no children.** In a scripted OQ, create every child
   before any of them completes, or the first failure rolls the parent out of ACTIVE and the
   rest are refused 400 for a reason that has nothing to do with the probe.
-- **The export carries evidence hashes, not evidence.** A cross-record check needs the
-  completion bodies from somewhere; save them beside the exports when you run the workflow.
-  `oq/drive.py` saves them as `completions.json`, and `oq/crosscheck.py` holds each body it
-  reads to the `evidenceHash` on the chain (SHA-256 over the RFC 8785 canonical JSON of the
-  body), so an edited body is reported, not compared.
+- **Take the export with `?evidence=true`.** By default an export carries each completion's
+  `evidenceHash` and not the body, and a cross-record check needs the bodies. With
+  `?evidence=true` each completion entry carries the body beside the signed hash;
+  `agledger-verify` and `oq/crosscheck.py` both hold it to that hash (SHA-256 over the
+  RFC 8785 canonical JSON of the body), so an edited body is reported, not compared.
   The engine-synthesized rollup completion, by contrast, is on the chain in full on the
   GATE_HELD entry.
 - **A cancel means two things.** A child cancelled before it is activated is neutral to its

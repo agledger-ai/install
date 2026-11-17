@@ -71,7 +71,6 @@ RUN = str(int(time.time()))[-6:]
 C = Claims(RECIPE)
 claim, expect = C.claim, C.expect
 MANIFEST = {"run": RUN, "cases": {}}
-COMPLETIONS = {"_byRecord": {}}          # evidence bodies by completion id: an export carries only their hash
 
 
 def mk_agent(name):
@@ -106,11 +105,7 @@ def handshake(rid, principal, performer):
 
 
 def complete(rid, key, evidence):
-    s, b = L.post("/v1/records/%s/completions" % rid, {"evidence": evidence}, key=key)
-    if s == 201 and b.get("id"):
-        COMPLETIONS[b["id"]] = evidence
-        COMPLETIONS["_byRecord"][rid] = b["id"]
-    return s, b
+    return L.post("/v1/records/%s/completions" % rid, {"evidence": evidence}, key=key)
 
 
 def verdict(rid, signer, completion_id, decision, meaning, role, name, regulation, notes):
@@ -454,13 +449,12 @@ for case_id, c in MANIFEST["cases"].items():
     s, b = L.get("/v1/records/%s/sub-records" % root, params={"limit": 100})
     c["children"] = [r["id"] for r in b.get("data", [])]
     for rid in [root] + c["children"] + [c[k] for k in ("proposal", "receipt") if c.get(k)]:
-        s, b = L.get("/v1/records/%s/audit-export" % rid)
+        s, b = L.get("/v1/records/%s/audit-export" % rid, params={"evidence": "true"})  # each completion's body beside its signed hash
         expect("audit export of %s" % rid, s, 200)
         json.dump(b, open(os.path.join(OUT, "%s.audit-export.json" % rid), "w"))
         exported += 1
 json.dump(MANIFEST, open(os.path.join(OUT, "case-manifest.json"), "w"), indent=1)
-json.dump(COMPLETIONS, open(os.path.join(OUT, "completions.json"), "w"), indent=1)
 C.append(os.path.join(OUT, "oq.log"))
-print("  %d audit exports, case-manifest.json, completions.json, verification-keys.json and oq.log in %s" % (exported, OUT))
+print("  %d audit exports, case-manifest.json, verification-keys.json and oq.log in %s" % (exported, OUT))
 print("\ndrive: %s (%d failed)" % ("PASS" if C.failed == 0 else "FAIL", C.failed))
 sys.exit(0 if C.failed == 0 else 1)

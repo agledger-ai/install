@@ -1,0 +1,18 @@
+# ALCOA+ and the ledger
+
+What the recipe's records give for each ALCOA+ attribute, where an inspector finds it in an
+audit export, and what remains the site's to show. The ledger holds the record of who did
+what and what the systems answered; the batch record and the laboratory data stay in the
+systems of record.
+
+| Attribute | What the ledger records | Where in the export | Stays with the site |
+|---|---|---|---|
+| Attributable | Every entry is signed by the Server and names the key that acted (`actorId`), the agent or org that owns it (`actorOwnerId`) and its role. Each read, check, proposal, signature and write receipt is made under its own identity. | The actor fields on each entry; `reporterId` and `reporterType` on the verdict entry. Display names are not signature-covered; the ids are. | Binding each credential to one person or one piece of validated code (key custody or OIDC under your SOP). `signerName` in the verdict is text the caller supplied. |
+| Legible | Records are JSON with declared schemas; the export labels every entry, and the verifier prints a plain summary. | `humanReadableLabel`, `payload`, and the completion body when the export is taken with `?evidence=true`. | The written investigation summary and the complaint text, which the ledger holds only as hashes. |
+| Contemporaneous | Each entry carries the Server's time and a position in the record's chain, written when the action was taken. | `createdAt` and `chainPosition`. Caller-supplied times (`signedAt`, `checkedAt`, `readAt`, `writtenAt`) sit beside them and can be compared. | Time synchronisation of the Server host and of the systems of record. |
+| Original | The completion body is bound by hash at submission, and the source records are named with the system's own ids and write stamps. | `evidenceHash` on COMPLETION_SUBMITTED; `sourceRecords` on a read; `sourceRef` on each check; `sorRecordId` and `writeDate` on the receipt. | The original data: the ledger points at it and does not copy it. |
+| Accurate | The engine refuses a body that does not match its schema and settles each gated record by its rule; the cross-record check compares records to each other. | `structuralValidation`, the rule results on GATE_COMPLETE, and the output of `oq/crosscheck.py`. | Whether the systems' answers were right. A wrong control plan passes a wrong check. |
+| Complete | Refused, failed and rejected steps stay on the chain beside the ones that passed: an INVALID completion, a FAILED check, a reject verdict, a revision request. | Every entry of every record in the case; `exportMetadata.totalEntries`, and `expectedEntries` once the Server has signed a checkpoint. | That every record of the case was exported (the case manifest lists them), and anything done outside the ledger. |
+| Consistent | Each entry carries the hash of the one before it, and the engine orders the steps: no release completion while a check is open, none after one failed. | `integrity.previousHash`; the order of entries across the release and its check. | The SOP that says a release is never opened with `gateMode: auto` and never revised over a failed check. |
+| Enduring | Records and their chains are kept in the Server's database; an export is a self-contained file. | The export file and the verification keys kept with it. | Backup, retention period and archive of the database and of the exports. |
+| Available | An export can be taken at any time by a key with read access and verified with no route to the Server. | `GET /v1/records/{id}/audit-export`; `agledger-verify`. | Who holds a read key, and access to the systems of record for the data the hashes point at. |
