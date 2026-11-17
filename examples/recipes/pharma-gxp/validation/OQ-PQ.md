@@ -20,7 +20,7 @@ It runs five steps and exits non-zero if any fails or any requirement is left un
 
 | Step | Script | What it does |
 |---|---|---|
-| Drive | `oq/drive.py` | Provisions one agent per role, drives the eight cases below against the Server and Odoo, and saves the bundle: every record's audit export, the completion bodies, the case manifest and the verification keys. |
+| Drive | `oq/drive.py` | Provisions one agent per role and the writer's read-only key, drives the nine cases below against the Server and Odoo, and saves the bundle: every record's audit export, the completion bodies, the case manifest and the verification keys. |
 | Probe | `oq/probes.py` | Sends the bodies the types and the engine must refuse. No system of record needed. |
 | Verify | `oq/verify.py` | Runs `agledger-verify` over every export against the saved keys, refusing keys embedded in an export, then alters one character of one export and confirms it is reported. |
 | Cross-check | `oq/crosscheck.py` | Compares the records to each other from the bundle alone, with no call to the Server. |
@@ -42,19 +42,22 @@ The four workflow cases, and what is asserted in each:
    opens the release from the control plan; the proposer delegates the check to the checker;
    `checker.py` runs against Odoo and the check settles FULFILLED; the proposer completes the
    release with the payload hash; QA accepts with a Part 11 signature meaning; `writer.py`
-   writes the batch record; the writer notarizes the receipt; the manufacturing order exists
-   in Odoo with the approved lot.
+   refuses a payload altered after approval, then re-reads the release and writes the batch
+   record; the writer notarizes the receipt; the manufacturing order exists in Odoo with
+   the approved lot.
 4. **Release D, a failed component lot.** As C on the failed lot. The check settles FAILED,
-   the release is held, QA accept is refused, QA reject lands, and nothing was written to
-   Odoo for the proposed lot.
+   the release is held, QA accept is refused, QA reject lands, the writer refuses, and
+   nothing was written to Odoo for the proposed lot.
 
-The probes are the refusals the matrix lists: schema conditionals, the list on the check
-child, the short, renamed and stale check completions, the missing hashes, binding of duty
-and circular delegation.
+The probes are the refusals the matrix lists: schema conditionals, a release with no named
+checker, proposal hash or maximum check age, the list on the check child, the short,
+renamed and stale check completions, a comma in a check name, the missing hashes, binding
+of duty and circular delegation.
 
-Four more cases are things the engine admits, which the cross-record check has to catch.
-The driver runs each to the point where QA would be asked to sign, and the cross-check
-passes only if it flags each with the finding the case exists to raise:
+Five more cases are things the engine admits, which the cross-record check has to catch.
+The driver runs E to H to the point where QA would be asked to sign, and I through QA's
+accept to the writer, which has to refuse. The cross-check passes only if it flags each
+with the finding the case exists to raise:
 
 | Case | What the proposer does | Finding |
 |---|---|---|
@@ -62,6 +65,7 @@ passes only if it flags each with the finding the case exists to raise:
 | F | Creates the check child without `autoActivate`, cancels it, completes the release | `checkRef` |
 | G | Names itself the checker and performs the check | `checker` |
 | H | (QA) requests a revision on a release rejected over a failed check | `revision` |
+| I | Completes the release after the check has passed the age the release allows (one minute; the run waits 65 seconds) | `age` |
 
 ### The cross-record checks
 
@@ -72,11 +76,15 @@ case: the close-out's `evidenceRecordIds` equals the case's children; its
 signature meaning, names the completion it signs, and was rendered by the principal under
 its own key. For a release: the completion's `checkRef` is a FULFILLED precondition check
 that is a child of the release, settled before the completion was submitted; its performer
-is the checker the manifest expects; the child's `controlPlanRef` and `controlPlanHash`, and
-the plan as the checker read it, equal the release's; the receipt's `payloadHash` equals the
+is the checker the release names (`checkerAgentId`); the check was no older than
+`maxCheckAgeMinutes` at the release completion, at QA's accept and at the receipt; the
+release's `proposalHash`, product, lot and quantity equal the proposal record's, and the
+check names the same proposal; the child's `controlPlanRef` and `controlPlanHash`, and the
+plan as the checker read it, equal the release's; the receipt's `payloadHash` equals the
 approved one and was written after the verdict; and no revision was requested over a failed
-check. The `checkRef`, `checker` and `plan` checks need only the proposer's completion, so
-the same script runs before QA signs.
+check. The `checkRef`, `checker`, `plan` and `proposal` checks need only the proposer's
+completion, and `age` is measured to whatever has happened so far, so the same script runs
+before QA signs.
 
 The script's header gives the bundle format. It is independent of the system of record: a
 bundle written by your own orchestration is checked the same way.

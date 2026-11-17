@@ -112,9 +112,15 @@
       },
       "noInvestigationReason": {
         "type": "string",
-        "description": "Required when investigationPerformed is false: the written reason, and the name of the responsible person who made the determination (211.198(b)(3)).",
+        "description": "Required when investigationPerformed is false: the written reason an investigation was not necessary (211.198(b)(3)).",
         "minLength": 10,
         "maxLength": 1000
+      },
+      "noInvestigationDecidedBy": {
+        "type": "string",
+        "description": "Required when investigationPerformed is false: the name of the responsible person who made that determination (211.198(b)(3)).",
+        "minLength": 2,
+        "maxLength": 120
       },
       "evidenceRecordIds": {
         "type": "array",
@@ -200,7 +206,8 @@
         },
         "then": {
           "required": [
-            "noInvestigationReason"
+            "noInvestigationReason",
+            "noInvestigationDecidedBy"
           ]
         }
       },

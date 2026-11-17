@@ -43,12 +43,13 @@
     },
     {
       "id": "GXP-05",
-      "text": "The close-out carries the 211.198(b) decisions with their conditional fields: investigation performed or a written reason naming the responsible person, CAPA reference when CAPA is required, report type and due date when reportable.",
+      "text": "The close-out carries the 211.198(b) decisions with their conditional fields: investigation performed or a written reason and the name of the responsible person who decided, CAPA reference when CAPA is required, report type and due date when reportable.",
       "satisfiedBy": "calder-complaint-case-v1 completionSchema if/then conditionals",
       "oqAsserts": [
         "a close-out with capaRequired true and no capaRef is refused",
         "a close-out with reportable true and no reportType or reportDueBy is refused",
-        "a close-out with no investigation and no written reason is refused (211.198(b)(3))"
+        "a close-out with no investigation and no written reason is refused (211.198(b)(3))",
+        "a close-out with no investigation and no named responsible person is refused (211.198(b)(3))"
       ]
     },
     {
@@ -82,22 +83,25 @@
     },
     {
       "id": "GXP-09",
-      "text": "The release is opened by a named QA person from the control plan in the quality system, with the required checks and the plan's hash bound to the record.",
-      "satisfiedBy": "calder-batch-record-release-v1 criteria.requiredChecks and criteria.controlPlanHash",
+      "text": "The release is opened by a named QA person from the control plan in the quality system, with the required checks, the plan's hash, the proposal's hash, the checker QA expects and the maximum age of the check bound to the record.",
+      "satisfiedBy": "calder-batch-record-release-v1 criteria: requiredChecks, controlPlanHash, proposalHash, checkerAgentId, maxCheckAgeMinutes; the proposal binding compared as a cross-record check",
       "oqAsserts": [
         "QA opens the release as principal with the control plan bound",
         "the proposer's accept lands on the chain before activation",
-        "a release with empty requiredChecks is refused"
+        "a release with empty requiredChecks is refused",
+        "a release that names no checker, no proposal hash or no maximum check age is refused",
+        "the release's proposalHash, product, lot and quantity equal the proposal record's, and the check names the same proposal (cross-record check)"
       ]
     },
     {
       "id": "GXP-10",
-      "text": "The precondition check is performed by a deterministic checker, delegated under the release, carrying only the control plan hash copied from the release; the checker reads the plan from the quality system.",
-      "satisfiedBy": "calder-precondition-check-v1 as a delegated child: performer is the checker, criteria carries controlPlanHash and no list",
+      "text": "The precondition check is performed by the deterministic checker the release names, delegated under the release, carrying only the control plan hash copied from the release; the checker reads the plan from the quality system.",
+      "satisfiedBy": "calder-precondition-check-v1 as a delegated child: criteria carries controlPlanHash and no list; its performer compared to the release's checkerAgentId as a cross-record check",
       "oqAsserts": [
         "the proposer delegates the check to the checker as a child",
         "a check child whose criteria carries a list of checks is refused at create",
         "a check child whose performer is the proposer itself is caught by the cross-record check (the engine admits it)",
+        "the check's performer, and the agent that completed it, is the checker the release names (cross-record check)",
         "the child's controlPlanRef and controlPlanHash equal the release's (cross-record check)"
       ]
     },
@@ -114,12 +118,13 @@
     },
     {
       "id": "GXP-12",
-      "text": "The check settles FULFILLED only when every check the plan names passed, with the same names and count, against the same control plan hash; any failed, missing, renamed or extra check, or a stale plan, settles FAILED.",
-      "satisfiedBy": "the all-required-checks-passed expression rule (evidence against evidence, plan hash against criteria)",
+      "text": "The check settles FULFILLED only when every check the plan names passed, with the same names and count, against the same control plan hash; any failed, missing, renamed or extra check, or a stale plan, settles FAILED, and a check name cannot contain a comma.",
+      "satisfiedBy": "the all-required-checks-passed expression rule (evidence against evidence, plan hash against criteria); the name pattern on the completion's lists",
       "oqAsserts": [
         "a short passed list (fewer than the plan names) settles FAILED",
         "the same count with one check renamed settles FAILED",
         "a stale control plan hash settles FAILED",
+        "a check name with a comma is refused and the check does not settle",
         "one failed check settles FAILED",
         "every required check passed settles FULFILLED"
       ]
@@ -183,6 +188,18 @@
       "oqAsserts": [
         "every record's audit export verifies against the Server's verification keys",
         "an export with one altered byte is reported as invalid"
+      ]
+    },
+    {
+      "id": "GXP-19",
+      "text": "The batch record is written only for a release that reads FULFILLED on the ledger at the time of the write, from the payload QA approved, on a check no older than the release allows.",
+      "satisfiedBy": "sor/writer.py re-reads the release, its completion and its check before it writes; criteria.maxCheckAgeMinutes, with the check's age compared as a cross-record check",
+      "oqAsserts": [
+        "the writer refuses to write for a release that is not FULFILLED",
+        "the writer refuses a payload whose hash is not the one QA approved",
+        "the writer refuses to write when the check is older than the release allows",
+        "a release completed on a check older than the release allows is caught by the cross-record check (the engine admits it)",
+        "the check was within the allowed age when the release was completed, signed and written (cross-record check)"
       ]
     }
   ]

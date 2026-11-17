@@ -57,9 +57,10 @@
         "minItems": 1,
         "maxItems": 30,
         "items": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{1,62}$"
         },
-        "description": "The check names as read from the control plan in the quality system at check time. The checker reads the plan itself; nothing here is copied from the proposer."
+        "description": "The check names as read from the control plan in the quality system at check time. The checker reads the plan itself; nothing here is copied from the proposer. Names are lower-case letters, digits and hyphens, as on the release: the engine compares the two lists as joined strings, so a name may not contain a comma."
       },
       "controlPlanHash": {
         "type": "string",
@@ -84,8 +85,8 @@
           "properties": {
             "name": {
               "type": "string",
-              "description": "",
-              "maxLength": 64
+              "description": "The check name as the control plan gives it.",
+              "pattern": "^[a-z0-9][a-z0-9-]{1,62}$"
             },
             "sourceSystem": {
               "type": "string",
@@ -117,7 +118,8 @@
         "type": "array",
         "maxItems": 30,
         "items": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{1,62}$"
         },
         "description": "Names of the checks that passed, in control-plan order. Engine-checked == evidence.requiredChecks (the plan as the checker read it)."
       },
@@ -125,7 +127,8 @@
         "type": "array",
         "maxItems": 30,
         "items": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{1,62}$"
         },
         "description": "Names of the checks that failed. Engine-checked empty."
       },

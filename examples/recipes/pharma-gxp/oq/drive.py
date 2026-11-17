@@ -2,7 +2,7 @@
 """Drive both workflows against your AGLedger Server and the system of record, and save the
 bundle `crosscheck.py` reads.
 
-Eight cases. Four are the workflows as the recipe means them:
+Nine cases. Four are the workflows as the recipe means them:
 
   A  complaint, read-only: QA opens the case, the orchestrator delegates four reads, each
      reader signs its own evidence, the close-out is refused while a read is open and
@@ -11,18 +11,21 @@ Eight cases. Four are the workflows as the recipe means them:
      rollup, QA's accept is refused and the reject lands.
   C  release on a passed component lot: proposal, release opened from the control plan,
      check delegated to the checker, release completion refused while the check is open,
-     check FULFILLED, payload hash bound, QA accepts, the writer creates the batch record
-     and notarizes the receipt.
+     check FULFILLED, payload hash bound, QA accepts, the writer refuses an altered
+     payload, creates the batch record from the approved one and notarizes the receipt.
   D  release on a failed component lot: the check settles FAILED, the release is held, QA
-     can only reject, nothing is written.
+     can only reject, the writer refuses, nothing is written.
 
-Four are things the engine admits and the cross-record check has to catch. Each stops at
-the proposer's completion, where QA would be asked to sign, and is then rejected:
+Five are things the engine admits and the cross-record check has to catch. E to H stop at
+the proposer's completion, where QA would be asked to sign, and are then rejected:
 
   E  a release completed with no check child (its checkRef names case C's check)
   F  a release whose check child the proposer cancelled before it was activated
   G  a release whose check child the proposer performed itself
   H  a release rejected over a failed check, then sent back for revision
+
+  I  a release that allows a check one minute old, completed and accepted after the check
+     passed that age (the run waits 65 seconds): the writer refuses to write
 
 Every assertion is one of the `oqAsserts` lines in `validation/REQUIREMENTS.json`. Those
 that hold are appended to the OQ log as `<requirement id><TAB><assertion>`, the format
@@ -30,8 +33,8 @@ that hold are appended to the OQ log as `<requirement id><TAB><assertion>`, the 
 
     python3 oq/drive.py [--out oq-bundle]
 
-Env: AGLEDGER_API_URL, AGLEDGER_API_KEY (an admin key: it provisions one agent per role and
-runs the complaint-history search), ODOO_URL, ODOO_DB, ODOO_LOGIN, ODOO_PASSWORD (defaults
+Env: AGLEDGER_API_URL, AGLEDGER_API_KEY (an admin key: it provisions one agent per role,
+mints the writer's read-only key and runs the complaint-history search), ODOO_URL, ODOO_DB, ODOO_LOGIN, ODOO_PASSWORD (defaults
 match sor/setup.sh). Needs the types registered (register.sh) and the system of record up
 (sor/setup.sh); it runs sor/seed-sor.py itself. Run it against a test install: it creates
 agents, records and one manufacturing order per run. Exit 0 iff every assertion holds, 2
@@ -67,7 +70,7 @@ L = Ledger()
 RUN = str(int(time.time()))[-6:]
 C = Claims(RECIPE)
 claim, expect = C.claim, C.expect
-MANIFEST = {"run": RUN, "expected": {}, "cases": {}}
+MANIFEST = {"run": RUN, "cases": {}}
 COMPLETIONS = {"_byRecord": {}}          # evidence bodies by completion id: an export carries only their hash
 
 
@@ -161,7 +164,29 @@ QA_REL = mk_agent("calder-qa-release")            # a person: principal of the r
 PROP = mk_agent("calder-batch-proposer")          # automation: performer of the release, delegates the check
 CHECKER = mk_agent("calder-precondition-checker")
 WRITER = mk_agent("calder-erp-writer")
-MANIFEST["expected"] = {"checkerAgentId": CHECKER["id"]}
+# The writer is a party to no release, and an agent key reads only its own records: it re-reads the release
+# through a read-only key (admin-observer: records and completions, no action).
+s, k = L.post("/v1/admin/api-keys", {"ownerId": ORG, "ownerType": "org", "role": "admin", "scopeProfile": "admin-observer"})
+if s != 201:
+    raise SystemExit("could not mint the writer's read-only key: %s %s" % (s, json.dumps(k)[:300]))
+WRITER_READ_KEY = k["apiKey"]
+
+
+def writer_read(path):
+    return L.get(path, key=WRITER_READ_KEY)
+
+
+def writer_refuses(payload, rel):
+    """The writer raises Refused, having issued no write, and no order names the release in the system of record."""
+    o = Odoo()
+    try:
+        wr.write(o, payload, rel, writer_read)
+    except wr.Refused as e:
+        print("    writer: %s" % e)
+        return (o.writes, len(o.search_read("mrp.production", [["origin", "ilike", rel]], ["id"]))) == (0, 0)
+    return False
+
+
 MANIFEST["server"] = {"url": L.base, "version": VERSION}
 
 
@@ -261,7 +286,7 @@ def complaint_case(case_id, lots, mutate_in=None):
 
 
 # ----------------------------------------------------------------------------- release flow
-def open_release(case_id, proposed_lot, component_lot, clean):
+def open_release(case_id, proposed_lot, component_lot, clean, max_age=60):
     """Proposal and release, to the point where the proposer would delegate the check. `clean` is whether this
     case's assertions go to the OQ log (cases C and D) or are only steps the case depends on (the probes)."""
     proposal = {"productCode": PRODUCT, "bomRef": BOM_REF, "quantity": 10, "proposedLot": proposed_lot,
@@ -272,8 +297,9 @@ def open_release(case_id, proposed_lot, component_lot, clean):
     prop_id = b["id"]
     notarized = (s, b.get("status")) == (201, "RECORDED")
     required, plan_hash = precheck.read_control_plan(Odoo(), PLAN_REF)  # QA's read of the control plan in the quality system
-    crit = {"proposalRef": prop_id, "productCode": PRODUCT, "lotNumber": proposed_lot, "quantity": 10,
-            "requiredChecks": required, "controlPlanRef": PLAN_REF, "controlPlanHash": plan_hash, "requestedBy": "QA Release"}
+    crit = {"proposalRef": prop_id, "proposalHash": proposal["proposalHash"], "productCode": PRODUCT, "lotNumber": proposed_lot, "quantity": 10,
+            "requiredChecks": required, "controlPlanRef": PLAN_REF, "controlPlanHash": plan_hash,
+            "checkerAgentId": CHECKER["id"], "maxCheckAgeMinutes": max_age, "requestedBy": "QA Release"}
     s, b = create(QA_REL["key"], {"type": TYPES["release"], "principalAgentId": QA_REL["id"], "performerAgentId": PROP["id"],
                                   "gateMode": "principal", "criteria": crit, "correlationId": proposed_lot})
     rel = b["id"]
@@ -335,6 +361,7 @@ def batch_release(case_id, proposed_lot, component_lot, revise=False):
             claim("GXP-13", "QA accept is refused 422 on the rolled-up failure", s3, 422)
             claim("GXP-13", "the QA reject verdict lands and the release reads FAILED", (s4, b4.get("recordStatus")), (200, "FAILED"))
             claim("GXP-13", "no manufacturing order or lot exists in the system of record for the proposed lot", (len(lots), len(orders)), (0, 0))
+            claim("GXP-19", "the writer refuses to write for a release that is not FULFILLED", writer_refuses(payload, rel), True)
         else:
             expect("failed check, release rejected by QA, nothing written", (st, s4, b4.get("recordStatus"), len(lots), len(orders)), ("FAILED", 200, "FAILED", 0, 0))
             s5, b5 = L.post("/v1/records/%s/revision" % rel, {"reason": "OQ probe: a revision requested on a release rejected over a failed check"}, key=QA_REL["key"])
@@ -351,8 +378,9 @@ def batch_release(case_id, proposed_lot, component_lot, revise=False):
     s, v = verdict(rel, QA_REL, b.get("id"), "accept", "approved", "qa-release", "QA Release", "21 CFR 11.50",
                    "Reviewed the precondition check %s. Approved: the batch record may be created." % check_id)
     claim("GXP-15", "QA accept with a Part 11 signature meaning settles the release FULFILLED", (s, v.get("recordStatus")), (200, "FULFILLED"))
+    claim("GXP-19", "the writer refuses a payload whose hash is not the one QA approved", writer_refuses(dict(payload, product_qty=payload["product_qty"] + 1), rel), True)
     ow = Odoo()
-    receipt = wr.write(ow, payload, rel)  # only after the accept verdict, and exactly the payload whose hash QA approved
+    receipt = wr.write(ow, payload, rel, writer_read)  # re-reads the release first, then sends exactly the payload whose hash QA approved
     s, b = create(WRITER["key"], {"type": TYPES["receipt"], "principalAgentId": WRITER["id"], "criteria": receipt, "correlationId": proposed_lot})
     claim("GXP-16", "the writer notarizes the receipt and it reads RECORDED, with the same payload hash as the release completion",
           (s, b.get("status"), receipt["payloadHash"]), (201, "RECORDED", rel_ev["payloadHash"]))
@@ -389,6 +417,24 @@ def probe_release(case_id, proposed_lot, probe, borrowed_check=None):
     MANIFEST["cases"][case_id].update({"verdict": "reject", "probe": probe})
 
 
+def stale_release(case_id, proposed_lot):
+    """Case I: the check is honest and passes, and is older than the release allows by the time it is relied on."""
+    print("\n== CASE %s: probe, stale-check ==" % case_id)
+    proposal, prop_id, rel, plan_hash, payload = open_release(case_id, proposed_lot, "SOLV-2026-0142", clean=False, max_age=1)
+    s, b = delegate_check(rel, prop_id, plan_hash, CHECKER)
+    check_id = b["id"]
+    s, b = complete(check_id, CHECKER["key"], precheck.run(Odoo(), proposal, PLAN_REF))
+    expect("the check settles FULFILLED", (admitted(s, b), status(check_id)), (True, "FULFILLED"))
+    print("    waiting 65 seconds: the release allows a check one minute old")
+    time.sleep(65)
+    s, b = complete(rel, PROP["key"], release_evidence(check_id, proposed_lot, payload))
+    expect("the engine admits the release completion on the stale check", (admitted(s, b), status(rel)), (True, "PROCESSING"))
+    s, v = verdict(rel, QA_REL, b.get("id"), "accept", "approved", "qa-release", "QA Release", "21 CFR 11.50", "OQ probe (stale-check): approved without the cross-record check.")
+    expect("the engine admits QA's accept", (s, v.get("recordStatus")), (200, "FULFILLED"))
+    claim("GXP-19", "the writer refuses to write when the check is older than the release allows", writer_refuses(payload, rel), True)
+    MANIFEST["cases"][case_id].update({"verdict": "accept", "probe": "stale-check"})
+
+
 # ----------------------------------------------------------------------------- run
 complaint_case("A", ["BATCH-2026-0917"])
 complaint_case("B", ["BATCH-2026-0917"], mutate_in="distribution")
@@ -398,6 +444,7 @@ probe_release("E", "BATCH-2026-%s3" % RUN[-3:], "no-check-child", borrowed_check
 probe_release("F", "BATCH-2026-%s4" % RUN[-3:], "check-cancelled")
 probe_release("G", "BATCH-2026-%s5" % RUN[-3:], "proposer-is-checker")
 batch_release("H", "BATCH-2026-%s6" % RUN[-3:], "SOLV-2026-0177", revise=True)
+stale_release("I", "BATCH-2026-%s7" % RUN[-3:])
 
 print("\n== save the bundle ==")
 exported = 0

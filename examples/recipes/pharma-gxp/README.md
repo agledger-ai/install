@@ -47,7 +47,7 @@ and ERP and keeps the evidence shapes the types declare.
 | `calder-complaint-case-v1` | principal (QA investigator) | QA investigator, naming the orchestrator | orchestrator, after every read is terminal | the complaint as received (hashes, lots, category, distributed), `readOnly` const true; close-out with the 211.198 decisions and the write-stamp digest |
 | `calder-evidence-read-v1` | auto: read-only invariant | orchestrator (parent performer), as a child | the reader automation itself | query hash, result hash, source records with the system's own write stamps, `mutating` |
 | `calder-batch-record-proposal-v1` | notarize-only | the proposer | n/a | product, BOM, lot, component lots, line, `producedBy` (llm, rule-based or human), rationale as a claim |
-| `calder-batch-record-release-v1` | principal (QA release) | QA release, naming the proposer | proposer, after the check child settled | `requiredChecks` and `controlPlanHash` from the quality system; completion names the check and binds the payload hash; the verdict is the signature |
+| `calder-batch-record-release-v1` | principal (QA release) | QA release, naming the proposer | proposer, after the check child settled | `requiredChecks` and `controlPlanHash` from the quality system, the proposal's hash, the checker QA expects and the maximum age of the check; completion names the check and binds the payload hash; the verdict is the signature |
 | `calder-precondition-check-v1` | auto: all required checks passed | proposer (parent performer), as a child | the checker automation | every check with source record, observed, expected, passed; the control plan as re-read |
 | `calder-sor-write-receipt-v1` | notarize-only | the writer | n/a | model, id, name, lot, the system's write stamp, payload hash equal to the approved one |
 
@@ -63,10 +63,10 @@ and ERP and keeps the evidence shapes the types declare.
   `writer.py` builds the batch record payload and writes it after approval; `odoo.py` is the
   standard-library JSON-RPC client they share, which counts reads and writes.
 - `oq/`: the scripted OQ. `run.sh` runs it end to end: `drive.py` drives both workflows and
-  four cases the engine admits, `probes.py` sends the bodies that must be refused,
+  five cases the engine admits, `probes.py` sends the bodies that must be refused,
   `verify.py` runs the published verifier over every export, and `crosscheck.py` compares
   the records to each other from the exports alone. Standard-library Python.
-- `validation/`: `INTENDED-USE.md`, `REQUIREMENTS.json` (eighteen requirements, each with the
+- `validation/`: `INTENDED-USE.md`, `REQUIREMENTS.json` (nineteen requirements, each with the
   type or engine rule that satisfies it and what an OQ asserts), `TRACEABILITY.md` built from
   it, and `OQ-PQ.md`.
 
@@ -82,7 +82,9 @@ and ERP and keeps the evidence shapes the types declare.
   `passedChecks` equals the plan's list as the checker read it (same names, same order, same
   count), and the re-read `controlPlanHash` equals the one on the check record's criteria.
   One failed check, a short passed list, a renamed check and a stale plan all settle FAILED.
-  The child carries no list of checks, only the plan hash.
+  The child carries no list of checks, only the plan hash. Check names are lower-case
+  letters, digits and hyphens on both types: the engine compares the two lists as joined
+  strings, so a comma in a name is refused by pattern.
 - **Ordering, by the engine's cascade settlement.** While a check child is open, the
   release's own completion is refused (422 `has_children_leaf_only`), and the case's while
   any read is open. A failed one-shot child rolls up: the parent is held on an
@@ -102,16 +104,23 @@ and ERP and keeps the evidence shapes the types declare.
 - **Binding of duty and no circular delegation** (engine). Only the parent's performer may
   create a child; naming the parent's principal (QA) as a child's performer is refused. The
   engine admits the performer's own id as the child's performer, so a proposer can name
-  itself the checker. Nothing in the types pins the checker's identity: record the checker
-  agent id your SOP expects, and have QA or the cross-record check compare it to the check
-  child's performer before signing.
+  itself the checker. The release's criteria name the checker QA expects
+  (`checkerAgentId`); the engine does not compare it to the check child's performer, so QA
+  or the cross-record check does before signing, and the writer does before writing.
+- **The proposal, the check's age and the write** (criteria, the cross-record check and the
+  writer). The release's criteria carry the proposal's hash (`proposalHash`) and how old
+  the check may be when it is relied on (`maxCheckAgeMinutes`). The engine reads neither.
+  The cross-record check compares the release to the proposal record and the check's age
+  to the limit at the release completion, at QA's accept and at the receipt. `sor/writer.py`
+  re-reads the release from the ledger before it writes and refuses unless the release
+  reads FULFILLED on an accept verdict, its completion binds the payload's hash, the check
+  is a FULFILLED child performed by the named checker, and the check is within the limit.
 - **Structural claims** (schema). `readOnly` const true on the case; `checkOutcome` const
   FULFILLED on the release completion; `checkerKind` const deterministic; sha256 patterns on
   every hash; UUID patterns on every record reference; conditionals for CAPA, reportability,
-  and a written reason when no investigation was performed (211.198(b)(3), which also
-  wants the responsible person's name: put it in the reason until the type carries a field
-  for it); `model` required
-  when `producedBy.kind` is `llm`.
+  and, when no investigation was performed, a written reason and the name of the
+  responsible person who decided (`noInvestigationDecidedBy`, 211.198(b)(3)); `model`
+  required when `producedBy.kind` is `llm`.
 - **Signature meaning on the chain.** The QA verdict's `checks` object (signatureMeaning,
   signerName, signerRole, regulation, signedAt) is preserved verbatim on the signed
   OUTCOME_REPORTED entry of the audit export, linked to the completion it signs. The
@@ -218,6 +227,15 @@ and whether anything else wrote to the system in the window is the system's own 
   `CANCELLED_IN_PROGRESS`).
 - **`structuralValidation` is `ACCEPTED`, `INVALID` or `WARNING`.** Branch on `INVALID`, as
   the Server's `/llms.txt` says; do not expect `VALID`.
+- **An `INVALID` completion spends a submission.** On a one-shot child (`maxSubmissions: 1`)
+  a body the schema refuses uses the only submission and leaves the child ACTIVE: its next
+  completion is refused 422, and the parent's own completion is refused while the child is
+  open. Cancelling the child fails the parent by rollup. Validate the checker's and the readers'
+  bodies against the type's `completionSchema` before they submit.
+- **The writer needs a read credential.** An agent key reads only the records it is a party
+  to, and the writer is a party to no release. Give it a read-only key beside its agent
+  key: an admin key minted with `scopeProfile: admin-observer` reads records, completions
+  and audit exports and is refused every action.
 
 ### Working with Odoo
 
@@ -235,7 +253,8 @@ and whether anything else wrote to the system in the window is the system's own 
 
 `sor/setup.sh` stands up Odoo 18.0 Community with the OCA `manufacture` addons
 (`quality_control_oca`, `quality_control_stock_oca`, `quality_control_mrp_oca`) on
-`127.0.0.1:18069`, pinned to an OCA commit. `sor/seed-sor.py` creates the fixtures: a
+`127.0.0.1:18069`, pinned to an OCA commit (`setup.sh` stops if it cannot check that commit
+out). `sor/seed-sor.py` creates the fixtures: a
 lot-tracked intermediate and solvent, a BOM, two solvent lots with incoming inspections (one
 passed, one failed), the control plan as a `qc.test` whose questions are the check names, a
 release assay test on the production-done trigger, and one finished historic batch
@@ -262,8 +281,10 @@ release assay test on the production-done trigger, and one finished historic bat
   own records, so give it an admin-key search, and treat an empty history as a result to
   check, not a pass.
 - `sor/writer.py`: `build_payload` so the proposer can hash the batch record before approval,
-  and `write` which, after approval, creates the lot and the manufacturing order from exactly
-  that payload and returns the criteria for `calder-sor-write-receipt-v1`.
+  and `write` which, after approval, re-reads the release through a ledger read you supply
+  (`authorize`), raises `Refused` with nothing written if the release does not authorize
+  the write, and otherwise creates the lot and the manufacturing order from exactly that
+  payload and returns the criteria for `calder-sor-write-receipt-v1`.
 
 Odoo is a third-party system you run inside your own perimeter, so the recipe needs no
 vendor sandbox. A proposal for the checker and the writer is a plain object (`line` is

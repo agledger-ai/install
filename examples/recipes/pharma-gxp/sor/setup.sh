@@ -12,7 +12,10 @@ if [ ! -d oca-manufacture/.git ]; then
   git clone --depth 1 -b 18.0 https://github.com/OCA/manufacture.git oca-manufacture
 fi
 # pin to the commit the recipe was tested on (a shallow clone fetches it if needed)
-( cd oca-manufacture && git fetch --depth 1 origin "$OCA_COMMIT" >/dev/null 2>&1 && git checkout -q "$OCA_COMMIT" ) || true
+if ! ( cd oca-manufacture && { git cat-file -e "$OCA_COMMIT^{commit}" 2>/dev/null || git fetch -q --depth 1 origin "$OCA_COMMIT"; } && git checkout -q "$OCA_COMMIT" ); then
+  echo "could not check out the pinned OCA commit $OCA_COMMIT: oca-manufacture is at $(git -C oca-manufacture rev-parse --short HEAD), not the commit this recipe was tested on" >&2
+  exit 1
+fi
 docker compose up -d db
 if ! docker compose exec -T db psql -U odoo -d postgres -tAc "select 1 from pg_database where datname='gxp'" 2>/dev/null | grep -q 1; then
   docker compose run --rm odoo odoo -d gxp \
