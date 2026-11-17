@@ -434,7 +434,7 @@ Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.23.
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.22.
 
 
-## vv0.22.20 — 2026-05-06
+## v0.22.20 - 2026-05-06
 
 Scripts, Compose files, and Helm chart synced to AGLedger server vv0.22.20.
 
