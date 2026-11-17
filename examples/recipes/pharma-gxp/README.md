@@ -17,8 +17,9 @@ with what meaning, and verify all of it offline against published keys:
    notarizes the system of record's receipt with the same hash.
 
 It is a **starting point you adapt**, not a turnkey product: six contract types, three
-reference automations against a self-hosted Odoo, and a validation package (intended use,
-requirements, a traceability matrix, OQ and PQ guidance).
+reference automations against a self-hosted Odoo, a scripted OQ with a cross-record checker,
+and a validation package (intended use, requirements, a traceability matrix, OQ and PQ
+guidance).
 
 **Why this shape.** The draft EU GMP Annex 22 (published for consultation in July 2025,
 unadopted as of October 2026) keeps generative and large language models out of critical GMP
@@ -35,7 +36,7 @@ systems, and a human signature with a meaning, and the engine orders them: no re
 completion until the check settled, none after it failed.
 
 **Built against Odoo 18.0 Community with the OCA `manufacture` quality modules** as the
-manufacturing, inventory and quality system of record (`sor/`), on an AGLedger 2.0.0 Compose
+manufacturing, inventory and quality system of record (`sor/`), on an AGLedger 2.2.0 Compose
 install. A site replaces the three reference automations with its own against its MES, LIMS
 and ERP and keeps the evidence shapes the types declare.
 
@@ -61,6 +62,10 @@ and ERP and keeps the evidence shapes the types declare.
   deterministic precondition checker; `readers.py` are the four dataset readers;
   `writer.py` builds the batch record payload and writes it after approval; `odoo.py` is the
   standard-library JSON-RPC client they share, which counts reads and writes.
+- `oq/`: the scripted OQ. `run.sh` runs it end to end: `drive.py` drives both workflows and
+  four cases the engine admits, `probes.py` sends the bodies that must be refused,
+  `verify.py` runs the published verifier over every export, and `crosscheck.py` compares
+  the records to each other from the exports alone. Standard-library Python.
 - `validation/`: `INTENDED-USE.md`, `REQUIREMENTS.json` (eighteen requirements, each with the
   type or engine rule that satisfies it and what an OQ asserts), `TRACEABILITY.md` built from
   it, and `OQ-PQ.md`.
@@ -83,10 +88,12 @@ and ERP and keeps the evidence shapes the types declare.
   any read is open. A failed one-shot child rolls up: the parent is held on an
   engine-synthesized completion that takes only a reject verdict, and `accept` is refused
   422. The engine does not require the child to exist, and it never reads the release
-  completion's `checkRef`: a proposer that creates no check child, or cancels one before
-  work, can complete the release on its own. Ordering is deny-on-failure, not
-  required-before. QA's review, or the cross-record check below, confirms that `checkRef`
-  names a FULFILLED child of this release before QA signs.
+  completion's `checkRef`: a proposer that creates no check child, or creates one without
+  `autoActivate` and cancels it before it is activated, can complete the release on its own.
+  (A child cancelled after activation fails the release by rollup, as a failed check does.)
+  Ordering is deny-on-failure, not required-before. QA's review, or the cross-record check
+  (`oq/crosscheck.py`), confirms that `checkRef` names a FULFILLED child of this release
+  before QA signs.
 - **Reject is recoverable.** QA's reject lands the release or the case at FAILED, which is
   not terminal: the principal or an org admin can request a revision, and from there the
   proposer's own completion is graded again. A check that failed stays failed, but a
@@ -161,7 +168,8 @@ The one lie left is a checker that reads a shorter plan than the quality system 
 engine cannot see that from inside one record. Compare, across the audit exports: that
 the release completion's `checkRef` is a FULFILLED child of the release whose performer is
 the expected checker; the checker's plan list to the release's `requiredChecks`; and the
-child's `controlPlanRef` and `controlPlanHash` to the release's. A short list sits on the checker's signed completion under the checker's own identity, attributed
+child's `controlPlanRef` and `controlPlanHash` to the release's. `oq/crosscheck.py` makes
+those comparisons. A short list sits on the checker's signed completion under the checker's own identity, attributed
 and catchable against the quality system's own plan. Keep the checker's plan source the
 quality system, and keep the checker deterministic code.
 
@@ -199,10 +207,15 @@ and whether anything else wrote to the system in the window is the system's own 
   rest are refused 400 for a reason that has nothing to do with the probe.
 - **The export carries evidence hashes, not evidence.** A cross-record check needs the
   completion bodies from somewhere; save them beside the exports when you run the workflow.
-  No cross-record checker ships with the recipe; `validation/OQ-PQ.md` lists the three
-  comparisons a site writes.
+  `oq/drive.py` saves them as `completions.json`, and `oq/crosscheck.py` holds each body it
+  reads to the `evidenceHash` on the chain (SHA-256 over the RFC 8785 canonical JSON of the
+  body), so an edited body is reported, not compared.
   The engine-synthesized rollup completion, by contrast, is on the chain in full on the
   GATE_HELD entry.
+- **A cancel means two things.** A child cancelled before it is activated is neutral to its
+  parent; a child cancelled after fails the parent by rollup. Both read `CANCELLED` on the
+  record, and the export's state-change entry says which (`CANCELLED_PRE_WORK`,
+  `CANCELLED_IN_PROGRESS`).
 - **`structuralValidation` is `ACCEPTED`, `INVALID` or `WARNING`.** Branch on `INVALID`, as
   the Server's `/llms.txt` says; do not expect `VALID`.
 
@@ -239,7 +252,9 @@ release assay test on the production-done trigger, and one finished historic bat
   `component-lots-inspected`, `line-clear`, `lot-number-unique`), refuses to sign if it
   issued a write, and returns the completion evidence for `calder-precondition-check-v1`. A
   check the plan names that the checker does not implement is reported failed, never
-  skipped.
+  skipped. `component-lots-on-hand` takes what is needed from the BOM, never from the
+  proposal: every BOM component has to be covered by proposed lots that together hold the
+  BOM quantity, and a proposed lot of a product the BOM does not list fails the check.
 - `sor/readers.py`: the four readers (MES, LIMS, distribution, complaint history on the
   ledger). Each returns query hash, result hash, stamps and a bounded summary as the
   completion evidence for `calder-evidence-read-v1`. The complaint-history reader searches
@@ -288,6 +303,13 @@ To stand up the reference system of record:
 sor/setup.sh && python3 sor/seed-sor.py > seed.json
 ```
 
+To run the OQ against the two (a test install: it creates agents, records and one
+manufacturing order per run):
+
+```bash
+oq/run.sh        # needs agledger-verify on PATH; see validation/OQ-PQ.md
+```
+
 For the per-call mechanics (preview, compatibility modes, versioning, and sharing types across
 Servers), see the **Define Custom Types** guide. For the Notify subscriptions in `notify.yaml`, see
 the **Webhooks** guide.
@@ -300,6 +322,8 @@ our website, Docker Hub, or npm. The reference system of record under `sor/` is 
 `manufacture` repository and `docker compose` pulls the `odoo:18.0` and `postgres:16` images, so
 stage those inside the perimeter first or point the automations at your own MES, LIMS and ERP. Everything on the
 AGLedger side, including offline verification of the exports, works with no route to Odoo at all.
+`oq/verify.py` runs `agledger-verify`, the `@agledger/verify` package, which you stage the same way;
+the rest of `oq/` is standard-library Python.
 
 ## Adapt it
 
@@ -307,4 +331,4 @@ Imported types are ordinary, editable contract types under your org. Keep, edit,
 any of them. AGLedger ships a deliberately minimal core rather than opinionated built-in types; a
 recipe is a head start you own, not a platform-managed type kept in lockstep with your business.
 Replace `checker.py`, `readers.py` and `writer.py` with implementations against your own systems,
-keep the evidence shapes, and re-run your OQ (`validation/OQ-PQ.md`).
+keep the evidence shapes, and re-run your OQ (`oq/run.sh`, `validation/OQ-PQ.md`).

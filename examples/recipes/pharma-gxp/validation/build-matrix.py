@@ -6,6 +6,7 @@ assertions a scripted OQ makes. Pass the log of an OQ run as the first argument 
 each requirement with the assertions that run proved: the log is one line per assertion,
 `<requirement id><TAB><assertion text>`, and a requirement with no line prints UNCOVERED
 and the build exits non-zero. Without a log the matrix lists what the OQ has to assert.
+A second argument is where to write the matrix (default: TRACEABILITY.md beside this file).
 """
 import json
 import os
@@ -48,6 +49,7 @@ else:
     n = sum(len(r.get("oqAsserts", [])) for r in reqs["requirements"])
     out += ["", "%d requirement(s), %d OQ assertions to make." % (len(reqs["requirements"]), n)]
 
-open(os.path.join(HERE, "TRACEABILITY.md"), "w").write("\n".join(out) + "\n")
+dest = sys.argv[2] if len(sys.argv) > 2 else os.path.join(HERE, "TRACEABILITY.md")
+open(dest, "w").write("\n".join(out) + "\n")
 print(out[-1])
 sys.exit(0 if uncovered == 0 else 1)
