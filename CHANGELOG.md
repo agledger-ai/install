@@ -131,7 +131,7 @@ A receiver or peer that answers with `Retry-After` gets the next attempt at the 
 
 Migration 008 repairs signing-key activation windows that opened after the entries they cover, and from this release only the retirement path may retire a key. Rolling back to 1.7.0 after a key change leaves that pod logging a warning with a cold verification-key cache; it keeps serving and keeps publishing its keys.
 
-## v1.7.0 — 2026-09-12
+## v1.7.0 - 2026-09-12
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.7.0.
 
@@ -145,291 +145,291 @@ Adds agent drift (`GET /v1/agents/drift`, `GET /v1/agents/{agentId}/drift`) in p
 
 `/v1/events`, SIEM polling and `GET /v1/agents/{agentId}/history` project record status at read time, including for rows written before this upgrade: `DRAFT` and `REGISTERED` read as `CREATED`, `COMPLETION_ACCEPTED` and `PENDING_VERDICT` read as `PROCESSING`, `COMPLETION_INVALID` reads as `ACTIVE`, `VERDICT_REJECTED` reads as `FAILED`, `TIMED_OUT` reads as `EXPIRED`, and both cancel states read as `CANCELLED` with the distinction carried in `terminalReason`. Migration 007 takes exclusive locks on the record tables and wants a maintenance window.
 
-## v1.6.0 — 2026-08-29
+## v1.6.0 - 2026-08-29
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.6.0.
 
 
-## v1.5.0 — 2026-08-21
+## v1.5.0 - 2026-08-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.5.0.
 
 
 - New horizontal recipe: `examples/recipes/work-context/` (Agent Work Context). Durable work state for AI agents: signed checkpoint records under a root, schema-enforced supersedes lineage, cold-start resume/handoff, a client-side lineage checker, and an importable manifest (publisher `agledger-recipes`) alongside the `register.sh` path. Validated against a live v1.4.0 Compose install.
 
-## v1.4.0 — 2026-08-09
+## v1.4.0 - 2026-08-09
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.4.0.
 
 
-## v1.3.4 — 2026-07-27
+## v1.3.4 - 2026-07-27
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.3.4.
 
 
-## v1.3.3 — 2026-07-18
+## v1.3.3 - 2026-07-18
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.3.3.
 
 
 - Removed the telemetry-heartbeat references from the installer text (`install.sh` banner, `SECURITY.md`, `air-gap/README.md`, `README.md`, `compose/.env.example`). There is no telemetry and no phone-home; the earlier text described placeholder scaffolding that has been removed from the server. Ships in the binary with the next server release.
 
-## v1.3.2 — 2026-07-13
+## v1.3.2 - 2026-07-13
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.3.2.
 
 
-## v1.2.0 — 2026-07-04
+## v1.2.0 - 2026-07-04
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.2.0.
 
 
-## v1.1.0 — 2026-06-25
+## v1.1.0 - 2026-06-25
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.1.0.
 
 
-## v1.0.3 — 2026-06-22
+## v1.0.3 - 2026-06-22
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.0.3.
 
 
-## v1.0.2 — 2026-06-11
+## v1.0.2 - 2026-06-11
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.0.2.
 
 
-## v1.0.1 — 2026-06-11
+## v1.0.1 - 2026-06-11
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.0.1.
 
 
-## v1.0.0 — 2026-06-08
+## v1.0.0 - 2026-06-08
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v1.0.0.
 
 
-## v0.27.9 — 2026-06-08
+## v0.27.9 - 2026-06-08
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.27.9.
 
 
-## v0.27.8 — 2026-06-08
+## v0.27.8 - 2026-06-08
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.27.8.
 
 
-## v0.27.7 — 2026-06-06
+## v0.27.7 - 2026-06-06
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.27.7.
 
 
-## v0.27.6 — 2026-06-04
+## v0.27.6 - 2026-06-04
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.27.6.
 
 
-## v0.27.5 — 2026-06-04
+## v0.27.5 - 2026-06-04
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.27.5.
 
 
-## v0.27.2 — 2026-06-03
+## v0.27.2 - 2026-06-03
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.27.2.
 
 
-## v0.27.1 — 2026-06-02
+## v0.27.1 - 2026-06-02
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.27.1.
 
 
-## v0.27.0 — 2026-06-02
+## v0.27.0 - 2026-06-02
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.27.0.
 
 
-## v0.26.5 — 2026-05-29
+## v0.26.5 - 2026-05-29
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.26.5.
 
 
-## v0.26.4 — 2026-05-29
+## v0.26.4 - 2026-05-29
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.26.4.
 
 
-## v0.26.3 — 2026-05-29
+## v0.26.3 - 2026-05-29
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.26.3.
 
 
-## v0.26.2 — 2026-05-28
+## v0.26.2 - 2026-05-28
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.26.2.
 
 
-## v0.26.1 — 2026-05-27
+## v0.26.1 - 2026-05-27
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.26.1.
 
 
-## v0.26.0 — 2026-05-27
+## v0.26.0 - 2026-05-27
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.26.0.
 
 
-## v0.25.5 — 2026-05-27
+## v0.25.5 - 2026-05-27
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.25.5.
 
 
-## v0.25.4 — 2026-05-26
+## v0.25.4 - 2026-05-26
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.25.4.
 
 
-## v0.25.3 — 2026-05-25
+## v0.25.3 - 2026-05-25
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.25.3.
 
 
-## v0.25.2 — 2026-05-25
+## v0.25.2 - 2026-05-25
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.25.2.
 
 
-## v0.25.1 — 2026-05-24
+## v0.25.1 - 2026-05-24
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.25.1.
 
 
-## v0.25.0 — 2026-05-24
+## v0.25.0 - 2026-05-24
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.25.0.
 
 
-## v0.24.1 — 2026-05-22
+## v0.24.1 - 2026-05-22
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.24.1.
 
 
-## v0.24.0 — 2026-05-21
+## v0.24.0 - 2026-05-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.24.0.
 
 
-## v0.23.9 — 2026-05-21
+## v0.23.9 - 2026-05-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.23.9.
 
 
-## v0.23.8 — 2026-05-20
+## v0.23.8 - 2026-05-20
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.23.8.
 
 
-## v0.23.7 — 2026-05-20
+## v0.23.7 - 2026-05-20
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.23.7.
 
 
-## v0.23.5 — 2026-05-20
+## v0.23.5 - 2026-05-20
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.23.5.
 
 
-## v0.23.4 — 2026-05-19
+## v0.23.4 - 2026-05-19
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.23.4.
 
 
-## v0.23.3 — 2026-05-19
+## v0.23.3 - 2026-05-19
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.23.3.
 
 
-## v0.23.2 — 2026-05-19
+## v0.23.2 - 2026-05-19
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.23.2.
 
 
-## v0.23.1 — 2026-05-19
+## v0.23.1 - 2026-05-19
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.23.1.
 
 
-## v0.23.0 — 2026-05-19
+## v0.23.0 - 2026-05-19
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.23.0.
 
 
-## v0.22.36 — 2026-05-18
+## v0.22.36 - 2026-05-18
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.36.
 
 
-## v0.22.34 — 2026-05-18
+## v0.22.34 - 2026-05-18
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.34.
 
 
-## v0.22.33 — 2026-05-18
+## v0.22.33 - 2026-05-18
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.33.
 
 
-## v0.22.32 — 2026-05-16
+## v0.22.32 - 2026-05-16
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.32.
 
 
-## v0.22.31 — 2026-05-11
+## v0.22.31 - 2026-05-11
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.31.
 
 
-## v0.22.30 — 2026-05-09
+## v0.22.30 - 2026-05-09
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.30.
 
 
-## v0.22.29 — 2026-05-09
+## v0.22.29 - 2026-05-09
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.29.
 
 
-## v0.22.28 — 2026-05-09
+## v0.22.28 - 2026-05-09
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.28.
 
 
-## v0.22.27 — 2026-05-08
+## v0.22.27 - 2026-05-08
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.27.
 
 
-## v0.22.26 — 2026-05-08
+## v0.22.26 - 2026-05-08
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.26.
 
 
-## v0.22.25 — 2026-05-07
+## v0.22.25 - 2026-05-07
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.25.
 
 
-## v0.22.24 — 2026-05-07
+## v0.22.24 - 2026-05-07
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.24.
 
 
-## v0.22.23 — 2026-05-07
+## v0.22.23 - 2026-05-07
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.23.
 
 
-## v0.22.22 — 2026-05-07
+## v0.22.22 - 2026-05-07
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.22.
 
@@ -439,217 +439,217 @@ Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.22.
 Scripts, Compose files, and Helm chart synced to AGLedger server vv0.22.20.
 
 
-## v0.22.19 — 2026-05-06
+## v0.22.19 - 2026-05-06
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.19.
 
 
-## v0.22.18 — 2026-05-02
+## v0.22.18 - 2026-05-02
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.18.
 
 
-## v0.22.17 — 2026-05-01
+## v0.22.17 - 2026-05-01
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.17.
 
 
-## v0.22.15 — 2026-05-01
+## v0.22.15 - 2026-05-01
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.15.
 
 
-## v0.22.14 — 2026-05-01
+## v0.22.14 - 2026-05-01
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.14.
 
 
-## v0.22.13 — 2026-05-01
+## v0.22.13 - 2026-05-01
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.13.
 
 
-## v0.22.12 — 2026-05-01
+## v0.22.12 - 2026-05-01
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.12.
 
 
-## v0.22.11 — 2026-04-30
+## v0.22.11 - 2026-04-30
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.11.
 
 
-## v0.22.10 — 2026-04-30
+## v0.22.10 - 2026-04-30
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.10.
 
 
-## v0.22.9 — 2026-04-30
+## v0.22.9 - 2026-04-30
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.9.
 
 
-## v0.22.8 — 2026-04-30
+## v0.22.8 - 2026-04-30
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.8.
 
 
-## v0.22.7 — 2026-04-29
+## v0.22.7 - 2026-04-29
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.7.
 
 
-## v0.22.6 — 2026-04-29
+## v0.22.6 - 2026-04-29
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.6.
 
 
-## v0.22.5 — 2026-04-29
+## v0.22.5 - 2026-04-29
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.5.
 
 
-## v0.22.4 — 2026-04-29
+## v0.22.4 - 2026-04-29
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.4.
 
 
-## v0.22.3 — 2026-04-29
+## v0.22.3 - 2026-04-29
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.3.
 
 
-## v0.22.1 — 2026-04-29
+## v0.22.1 - 2026-04-29
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.1.
 
 
-## v0.22.0 — 2026-04-29
+## v0.22.0 - 2026-04-29
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.22.0.
 
 
-## v0.21.7 — 2026-04-28
+## v0.21.7 - 2026-04-28
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.21.7.
 
 
-## v0.21.6 — 2026-04-28
+## v0.21.6 - 2026-04-28
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.21.6.
 
 
-## v0.21.5 — 2026-04-27
+## v0.21.5 - 2026-04-27
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.21.5.
 
 
-## v0.21.4 — 2026-04-27
+## v0.21.4 - 2026-04-27
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.21.4.
 
 
-## v0.21.3 — 2026-04-27
+## v0.21.3 - 2026-04-27
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.21.3.
 
 
-## v0.21.2 — 2026-04-25
+## v0.21.2 - 2026-04-25
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.21.2.
 
 
-## v0.21.1 — 2026-04-25
+## v0.21.1 - 2026-04-25
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.21.1.
 
 
-## v0.20.4 — 2026-04-24
+## v0.20.4 - 2026-04-24
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.20.4.
 
 
-## v0.20.3 — 2026-04-24
+## v0.20.3 - 2026-04-24
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.20.3.
 
 
-## v0.20.2 — 2026-04-23
+## v0.20.2 - 2026-04-23
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.20.2.
 
 
-## v0.20.1 — 2026-04-23
+## v0.20.1 - 2026-04-23
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.20.1.
 
 
-## v0.20.0 — 2026-04-23
+## v0.20.0 - 2026-04-23
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.20.0.
 
 
-## v0.19.26 — 2026-04-22
+## v0.19.26 - 2026-04-22
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.26.
 
 
-## v0.19.25 — 2026-04-21
+## v0.19.25 - 2026-04-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.25.
 
 
-## v0.19.24 — 2026-04-21
+## v0.19.24 - 2026-04-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.24.
 
 
-## v0.19.23 — 2026-04-21
+## v0.19.23 - 2026-04-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.23.
 
 
-## v0.19.22 — 2026-04-21
+## v0.19.22 - 2026-04-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.22.
 
 
-## v0.19.21 — 2026-04-21
+## v0.19.21 - 2026-04-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.21.
 
 
-## v0.19.20 — 2026-04-21
+## v0.19.20 - 2026-04-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.20.
 
 
-## v0.19.19 — 2026-04-21
+## v0.19.19 - 2026-04-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.19.
 
 
-## v0.19.18 — 2026-04-21
+## v0.19.18 - 2026-04-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.18.
 
 
-## v0.19.17 — 2026-04-21
+## v0.19.17 - 2026-04-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.17.
 
 
-## v0.19.16 — 2026-04-21
+## v0.19.16 - 2026-04-21
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.16.
 
 
-## v0.19.15 — 2026-04-20
+## v0.19.15 - 2026-04-20
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.15.
 
 
-## v0.19.14 — 2026-04-20
+## v0.19.14 - 2026-04-20
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v0.19.14.
 
