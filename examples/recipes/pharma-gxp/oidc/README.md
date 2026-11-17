@@ -58,11 +58,14 @@ npm run walkthrough:scripted     # submits the IdP's login form with the passwor
 ```
 
 `npm run walkthrough` is the interactive form: it prints the sign-in URL, the signer opens
-it in a browser, and the script waits on `127.0.0.1:8977` for the redirect. It asks twice,
-once to open the release and once to sign, and skips the colleague's refusal. With the reference Keycloak the browser has to
-resolve the name `keycloak` (the realm calls itself `http://keycloak:8080`); with your own
-IdP on its real URL, set `OIDC_IDP_URL` and `OIDC_ISSUER` to it. Step 3 and 6 of the run
-need `python3` for `../oq/crosscheck.py`.
+it in a browser, and the script waits on `127.0.0.1:8977` for the redirect. It asks twice:
+once to open the release, and once to sign, when the IdP asks the person already signed in
+for their password again. It skips the colleague's refusal. The URL is on the origin the
+IdP calls itself (`OIDC_ISSUER`), because its login form posts back there. With the
+reference Keycloak that is `http://keycloak:8080`, so the signer's machine has to resolve
+the name `keycloak` to the host running it; with your own IdP on its real URL, set
+`OIDC_IDP_URL` and `OIDC_ISSUER` to it. Step 3 and 6 of the run need `python3` for
+`../oq/crosscheck.py`.
 
 The walkthrough writes every export, the Server's verification keys, the signer's two cert
 keys and a case manifest to `exports/`. Check them as an auditor would, pinning the vault

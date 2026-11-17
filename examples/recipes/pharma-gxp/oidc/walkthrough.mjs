@@ -88,7 +88,9 @@ async function signIn({ fresh = false, username = E.QA_USERNAME ?? 'qa.release',
       if (!loc?.startsWith(REDIRECT)) throw new Error(`the IdP refused the sign-in (${post.status})`);
       await fetch(loc);
     } else {
-      console.log(`     ${fresh ? 'Sign in again to sign' : `Sign in as ${username}`}: ${authUrl}`);
+      // The browser goes to the IdP under the name the IdP calls itself: its login form posts
+      // back to that origin, and a session cookie set on any other name is not sent with it.
+      console.log(`     ${fresh ? 'Sign in again to sign' : `Sign in as ${username}`}: ${authUrl.replace(new URL(IDP).origin, new URL(ISS).origin)}`);
     }
     const t = await fetch(`${IDP}/protocol/openid-connect/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ grant_type: 'authorization_code', code: await code, redirect_uri: REDIRECT, client_id: CLIENT, code_verifier: verifier }) });
