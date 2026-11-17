@@ -1,0 +1,82 @@
+{
+  "realm": "calder",
+  "enabled": true,
+  "accessTokenLifespan": 300,
+  "clients": [
+    {
+      "clientId": "calder-qa-desk",
+      "name": "Calder QA signing desk (people sign in here; no client secret)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "implicitFlowEnabled": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [
+        "http://127.0.0.1:8977/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-agledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "agledger",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "agledger-scopes",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "agledger_scopes",
+            "claim.value": "[\"records:read\", \"records:write\", \"completions:read\", \"audit:read\", \"schemas:read\"]",
+            "jsonType.label": "JSON",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "qa.release",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Avery",
+      "lastName": "Quinn",
+      "email": "qa.release@calder.example",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${QA_RELEASE_PASSWORD}",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "lab.analyst",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Rowan",
+      "lastName": "Hale",
+      "email": "lab.analyst@calder.example",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${LAB_ANALYST_PASSWORD}",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

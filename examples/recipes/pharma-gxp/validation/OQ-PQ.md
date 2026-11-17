@@ -109,8 +109,10 @@ non-zero. Without the second argument the build overwrites the shipped `TRACEABI
   re-runs the OQ against those. The probes, the verifier step, the cross-check and the
   matrix build do not touch the system of record and run unchanged.
 - Identity binding. The signers in the reference run are API-key agents named for their
-  roles. A site binds each to a person (OIDC workload identity, or key custody under its
-  SOP); see "Binding a signer to a person" in the README.
+  roles. A site binds each to a person: `oidc/` is a scripted run of the release signed by
+  a person under a cert from an identity provider login, with its own negative controls,
+  and key custody under an SOP is the alternative. For a PQ, list the bound signers in the
+  case manifest (`signers`) and the cross-record check holds every verdict to them.
 - Retention and availability of the ledger (vault checkpoints, anchors, backups): the
   Server's operations runbook, not this recipe.
 

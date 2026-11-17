@@ -13,6 +13,9 @@ Complaint case
   signature  the verdict entry carries a signature meaning and names the completion it signs
   reporter   the verdict was rendered by the case's principal under its own key
   status     the case reads FULFILLED after an accept and FAILED after a reject
+  signer     when the manifest binds the principal to an identity provider subject, the
+             verdict entry carries that issuer and subject (a verdict rendered with an
+             API key carries none)
 
 Release
   checkRef   the release completion's checkRef is a precondition check that is a child of
@@ -29,7 +32,7 @@ Release
   receipt    the receipt's payloadHash equals the release completion's, it names the
              release, and it was written after the accept verdict; no receipt names a
              release that was not accepted, and none exists that the manifest does not list
-  signature, reporter, status   as above
+  signature, reporter, status, signer   as above
   revision   no revision was requested on a release that a failed check holds
 
   evidence   (both flows) every completion body used hashes to the evidenceHash on the chain
@@ -46,7 +49,10 @@ The bundle is what `drive.py` writes, and what your own orchestration writes for
                                   carries the body submitted beside the hash the chain signs
   case-manifest.json              {"cases": {name: {"flow": "complaint", "case": id, "children": [ids]}
                                                  | {"flow": "release", "release": id, "children": [ids],
-                                                    "receipt": id or absent}}}
+                                                    "receipt": id or absent}},
+                                   "signers": {agent id: {"oidcIss": ..., "oidcSub": ...}}}
+                                  signers is optional: the people your provisioning record
+                                  binds to an identity provider subject (see oidc/)
                                   children as GET /v1/records/{id}/sub-records lists them
 Verify each export with `agledger-verify` first: this script trusts the entries it reads.
 
@@ -64,7 +70,8 @@ import sys
 AUD = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "oq-bundle")
 CASE_T, READ_T, CHECK_T, PROPOSAL_T = "calder-complaint-case-v1", "calder-evidence-read-v1", "calder-precondition-check-v1", "calder-batch-record-proposal-v1"
 PROBES = {"no-check-child": {"checkRef"}, "check-cancelled": {"checkRef"},
-          "proposer-is-checker": {"checker"}, "revision-after-failed-check": {"revision"}, "stale-check": {"age"}}
+          "proposer-is-checker": {"checker"}, "revision-after-failed-check": {"revision"}, "stale-check": {"age"},
+          "admin-signed": {"reporter", "signer"}, "key-signed": {"signer"}}
 
 
 def jcs(obj):
@@ -140,6 +147,9 @@ def check_verdict(rec, findings, own_cid):
     if not (p.get("reporterType") == "principal" and p.get("reporterId") == principal
             and v.get("actorRole") == "agent" and v.get("actorOwnerId") == principal):  # the signed actor fields, not the display ones
         findings["reporter"] = "rendered by %s %s (%s), principal is %s" % (v.get("actorRole"), v.get("actorOwnerId"), p.get("reporterType"), principal)
+    bound = SIGNERS.get(principal)
+    if bound and (v.get("actorOidcIss"), v.get("actorOidcSub")) != (bound.get("oidcIss"), bound.get("oidcSub")):
+        findings["signer"] = "rendered under subject %s of %s, the principal is bound to %s of %s" % (v.get("actorOidcSub"), v.get("actorOidcIss"), bound.get("oidcSub"), bound.get("oidcIss"))
     after = [e["payload"]["newStatus"] for e in rec["entries"] if e["chainPosition"] > v["chainPosition"] and e["payload"].get("newStatus")]
     want = "FULFILLED" if p.get("outcome") == "accept" else "FAILED"
     if not after or after[0] != want:
@@ -242,6 +252,7 @@ if not os.path.exists(manifest_path):
     print("NOT RUN: %s is missing" % manifest_path)
     sys.exit(2)
 M = json.load(open(manifest_path))
+SIGNERS = M.get("signers", {})
 R = {}
 for f in glob.glob(os.path.join(AUD, "*.audit-export.json")):
     d = json.load(open(f))

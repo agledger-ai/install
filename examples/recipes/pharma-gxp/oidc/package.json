@@ -1,0 +1,16 @@
+{
+  "name": "agledger-recipe-pharma-gxp-oidc",
+  "private": true,
+  "type": "module",
+  "description": "Pharma GxP batch release signed by a person: OIDC authorization-code login, cert exchange, the signature sealed on the chain.",
+  "scripts": {
+    "walkthrough": "node --env-file=oidc.env walkthrough.mjs",
+    "walkthrough:scripted": "node --env-file=oidc.env --env-file=idp/secrets.env walkthrough.mjs"
+  },
+  "dependencies": {
+    "@agledger/sdk": "3.1.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
