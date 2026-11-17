@@ -20,7 +20,7 @@ It runs five steps and exits non-zero if any fails or any requirement is left un
 
 | Step | Script | What it does |
 |---|---|---|
-| Drive | `oq/drive.py` | Provisions one agent per role and the writer's read-only key, drives the nine cases below against the Server and Odoo, and saves the bundle: every record's audit export, the completion bodies, the case manifest and the verification keys. |
+| Drive | `oq/drive.py` | Provisions one agent per role and the writer's read-only key, drives the nine cases below against the Server and Odoo, and saves the bundle: every record's audit export with the completion bodies inlined (`?evidence=true`), the case manifest and the verification keys. |
 | Probe | `oq/probes.py` | Sends the bodies the types and the engine must refuse. No system of record needed. |
 | Verify | `oq/verify.py` | Runs `agledger-verify` over every export against the saved keys, refusing keys embedded in an export, then alters one character of one export and confirms it is reported. |
 | Cross-check | `oq/crosscheck.py` | Compares the records to each other from the bundle alone, with no call to the Server. |
@@ -69,8 +69,8 @@ with the finding the case exists to raise:
 
 ### The cross-record checks
 
-`oq/crosscheck.py` reads the exports, `completions.json` and `case-manifest.json`. Every
-completion body it uses has to hash to the `evidenceHash` on the chain. For a complaint
+`oq/crosscheck.py` reads the exports and `case-manifest.json`. Every completion body it
+uses is the one its export inlines, and has to hash to the `evidenceHash` on the chain. For a complaint
 case: the close-out's `evidenceRecordIds` equals the case's children; its
 `sorWriteStampDigest` re-derives from the reads' `sourceRecords`; the verdict entry carries a
 signature meaning, names the completion it signs, and was rendered by the principal under
@@ -120,8 +120,8 @@ Performance qualification is the OQ's scenarios driven with the site's identitie
 and systems on the production-shaped install, under the SOP that will govern it:
 
 1. Open one real complaint case with the QA investigator's own credential; let the site's
-   readers attach their evidence; close it. Export the case and its children, save the
-   completion bodies and a case manifest beside them, verify the exports (`oq/verify.py`)
+   readers attach their evidence; close it. Export the case and its children with
+   `?evidence=true`, write a case manifest beside them, verify the exports (`oq/verify.py`)
    and run the cross-record checks (`oq/crosscheck.py`).
 2. Propose one real batch; open the release from the live control plan; let the checker run
    against the live systems; approve; confirm the batch record exists in the MES with the

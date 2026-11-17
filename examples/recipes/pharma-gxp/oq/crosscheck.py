@@ -2,8 +2,8 @@
 """Cross-record checks over a bundle of audit exports: what no single record can show.
 
 The engine settles each gate and signs each record's chain. It does not read one record
-from inside another, so these are compared here, from the exports and the saved completion
-bodies, with no call to the Server:
+from inside another, so these are compared here, from the exports alone, with no call to
+the Server:
 
 Complaint case
   children   the close-out's evidenceRecordIds equals the case's children, and each is an
@@ -40,10 +40,10 @@ only the proposer's completion, and `age` is measured to whatever has happened s
     python3 oq/crosscheck.py [bundle directory, default oq-bundle]
 
 The bundle is what `drive.py` writes, and what your own orchestration writes for a PQ:
-  <record id>.audit-export.json   GET /v1/records/{id}/audit-export, one per record: each
-                                  case or release, its children, the proposal and the receipt
-  completions.json                {completion id: the evidence body submitted}; an export
-                                  carries the body's hash, not the body
+  <record id>.audit-export.json   GET /v1/records/{id}/audit-export?evidence=true, one per
+                                  record: each case or release, its children, the proposal
+                                  and the receipt. With evidence=true each completion entry
+                                  carries the body submitted beside the hash the chain signs
   case-manifest.json              {"cases": {name: {"flow": "complaint", "case": id, "children": [ids]}
                                                  | {"flow": "release", "release": id, "children": [ids],
                                                     "receipt": id or absent}}}
@@ -107,15 +107,15 @@ def final_status(rec):
 
 def own_completion(rec, findings):
     """(completion id, evidence body, submitted at, submitting agent) of the performer's last completion, or Nones.
-    The body comes from completions.json and has to hash to what the chain bound."""
+    The body is the one the export inlines (?evidence=true) and has to hash to what the chain bound."""
     subs = entries(rec, "COMPLETION_SUBMITTED")
     if not subs:
         return None, None, None, None
     e = subs[-1]
     cid = e["payload"]["completionId"]
-    body = BODIES.get(cid)
+    body = e.get("evidence")
     if body is None or hashlib.sha256(jcs(body)).hexdigest() != e["payload"].get("evidenceHash"):
-        findings["evidence"] = "completion %s of %s: %s" % (cid, rec["recordId"], "no saved body" if body is None else "saved body does not hash to the chain's evidenceHash")
+        findings["evidence"] = "completion %s of %s: %s" % (cid, rec["recordId"], "the export carries no body (take it with ?evidence=true)" if body is None else "the body does not hash to the chain's evidenceHash")
         return cid, None, e["createdAt"], e["payload"].get("agentId")
     return cid, body, e["createdAt"], e["payload"].get("agentId")
 
@@ -138,8 +138,8 @@ def check_verdict(rec, findings, own_cid):
     if not meaning or not signed_ok:
         findings["signature"] = "meaning %r, signs completion %s" % (meaning, p.get("completionId"))
     if not (p.get("reporterType") == "principal" and p.get("reporterId") == principal
-            and v.get("actorOwnerType") == "agent" and v.get("actorOwnerId") == principal):
-        findings["reporter"] = "rendered by %s %s (%s), principal is %s" % (v.get("actorOwnerType"), v.get("actorOwnerId"), p.get("reporterType"), principal)
+            and v.get("actorRole") == "agent" and v.get("actorOwnerId") == principal):  # the signed actor fields, not the display ones
+        findings["reporter"] = "rendered by %s %s (%s), principal is %s" % (v.get("actorRole"), v.get("actorOwnerId"), p.get("reporterType"), principal)
     after = [e["payload"]["newStatus"] for e in rec["entries"] if e["chainPosition"] > v["chainPosition"] and e["payload"].get("newStatus")]
     want = "FULFILLED" if p.get("outcome") == "accept" else "FAILED"
     if not after or after[0] != want:
@@ -249,8 +249,6 @@ for f in glob.glob(os.path.join(AUD, "*.audit-export.json")):
 if not R:
     print("NOT RUN: no audit exports in %s" % AUD)
     sys.exit(2)
-bodies_path = os.path.join(AUD, "completions.json")
-BODIES = json.load(open(bodies_path)) if os.path.exists(bodies_path) else {}
 
 WRONG = 0
 RESULT = {}   # case name -> (flow, probe, findings, verdict outcome)

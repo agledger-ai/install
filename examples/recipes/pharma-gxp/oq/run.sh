@@ -7,7 +7,7 @@
 # Needs: the types registered (register.sh), the system of record up (sor/setup.sh),
 # Python 3.11+, and agledger-verify on PATH (or AGLEDGER_VERIFY naming the command). Run it
 # against a test install: it creates agents and records, and one manufacturing order.
-# Leaves in the bundle: the audit exports, completions.json, case-manifest.json,
+# Leaves in the bundle: the audit exports, case-manifest.json,
 # verification-keys.json, oq.log and TRACEABILITY.md. Exit 0 iff every step passed and no
 # requirement is uncovered.
 set -uo pipefail
