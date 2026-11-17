@@ -67,6 +67,9 @@ and ERP and keeps the evidence shapes the types declare.
   five cases the engine admits, `probes.py` sends the bodies that must be refused,
   `verify.py` runs the published verifier over every export, and `crosscheck.py` compares
   the records to each other from the exports alone. Standard-library Python.
+- `oidc/`: the Part 11 signer variant. A person signs the release under a cert from their
+  identity provider login (Keycloak as the reference), with no AGLedger key. Its README
+  maps 21 CFR 11.50, 11.70, 11.100 and 11.200 to what the chain carries.
 - `validation/`: `INTENDED-USE.md`, `REQUIREMENTS.json` (nineteen requirements, each with the
   type or engine rule that satisfies it and what an OQ asserts), `TRACEABILITY.md` built from
   it, `OQ-PQ.md`, `READING-THE-EXPORT.md` (an inspector's guide to verifying and reading
@@ -197,9 +200,12 @@ was read and when; the system's own log proves what was written.
 ### Binding a signer to a person
 
 The signers in the reference run are API-key agents named for their roles. 21 CFR 11.100
-wants the signature to belong to one individual. Bind the QA credentials through OIDC
-workload identity (the chain entry then carries `actorOidcSub`; the insurance recipe's
-`oidc/` directory shows the pattern) or through key custody under your SOP.
+wants the signature to belong to one individual. `oidc/` is the variant where the QA signer
+holds no AGLedger key: they sign in to your identity provider, the token is exchanged for a
+short-lived cert bound to their agent, and the verdict entry carries their IdP subject
+(`actorOidcSub`) and a signature of their own that verifies offline. It also shows the two
+ways an org admin key can sign in a person's name, both of which the engine admits, and
+how the cross-record check tells them apart. The alternative is key custody under your SOP.
 
 ### What the ledger evidences, and what stays with your systems
 
@@ -346,7 +352,8 @@ our website, Docker Hub, or npm. The reference system of record under `sor/` is 
 stage those inside the perimeter first or point the automations at your own MES, LIMS and ERP. Everything on the
 AGLedger side, including offline verification of the exports, works with no route to Odoo at all.
 `oq/verify.py` runs `agledger-verify`, the `@agledger/verify` package, which you stage the same way;
-the rest of `oq/` is standard-library Python.
+the rest of `oq/` is standard-library Python. `oidc/` needs the `@agledger/sdk` package and reaches
+your identity provider; its reference Keycloak is one more image to stage.
 
 ## Adapt it
 
