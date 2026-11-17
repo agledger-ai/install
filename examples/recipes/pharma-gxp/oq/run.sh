@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The scripted OQ, end to end: drive the eight cases, probe the refusals, verify every export
+# The scripted OQ, end to end: drive the nine cases, probe the refusals, verify every export
 # offline, run the cross-record checks, and build the traceability matrix from the log.
 #
 #   AGLEDGER_API_URL=... AGLEDGER_API_KEY=... oq/run.sh [bundle directory, default oq-bundle]
