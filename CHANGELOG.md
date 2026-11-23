@@ -17,6 +17,26 @@ git reset --hard origin/main
 
 `compose/.env` and `backup/` are untracked, so the reset leaves them in place. A checkout pinned to a release tag (`git checkout v2.2.0`) needs only the first line, then the same `git checkout`.
 
+## v3.0.0 - 2026-11-23
+
+Scripts, Compose files, and Helm chart synced to AGLedger server v3.0.0.
+
+`upgrade.sh` names the variables the new release no longer reads before it changes anything, and refuses an upgrade that would leave the Server without the signing key a retired secret source (SSM or Vault) held. A failure after `.env` names the new target says how to restore the previous version. `restore.sh` stops before the drop when it cannot read the previous database's revocations (`--skip-revocations` proceeds without them), refuses a database URL the image's driver would refuse before stopping anything, and a second restore from the same backup carries the revocations made since the first. `install.sh` refuses `--external-db` with no `DATABASE_URL` before writing anything and names each host port held by this install's own stack. The chart's backup Job connects with the Server's `DATABASE_URL` as libpq reads it, so `sslrootcert` or `uselibpqcompat` in the URL no longer fails every backup. The chart runs under the FIPS provider with `fips.enabled`, and refuses an Ed25519 key there at render. The Compose monitoring profile runs Grafana 13.3.1, Prometheus v3.16.0, Jaeger 2.23.0 and `otel/opentelemetry-collector-contrib` 0.165.0, and the bundled PostgreSQL pin carries 18.7.
+
+The pharma GxP recipe gains a Part 11 signer variant (`oidc/`): a person signs the release under a cert from their identity provider login, sending `signatureMeaning`, and the Server seals their name and the meaning on the verdict.
+
+Server changes in v3.0.0:
+
+Removed routes and what does that work now: `POST /v1/admin/auth-cache/flush` (key changes already invalidate the cache on every process); `POST /v1/admin/schemas/cache/flush` (the schema cache load retries on its own); `POST /v1/admin/support-bundle/upload` (`GET /v1/admin/support-bundle` or `scripts/support-bundle.sh`, sent by the operator); `POST /v1/schemas/{type}/check-compatibility` (`POST /v1/schemas/preview`); `POST /v1/schemas/{type}/export` (`GET /v1/schemas/{type}/manifest` with `POST /v1/schemas/import`, or `GET /v1/schemas/{type}/versions/{version}` for a local type). A request to a removed route answers 404 naming the replacement.
+
+The Server no longer fetches secrets from AWS SSM or HashiCorp Vault: every secret comes from its variable or its `<NAME>_FILE` sibling. Swagger UI is gone and `/docs` redirects to agledger.ai/api. `SECRETS_PROVIDER`, `SSM_PREFIX`, `SSM_PARAMETERS`, `VAULT_SECRET_PATH`, `AGLEDGER_SUPPORT_BUNDLE_URL` and `SWAGGER_UI_ENABLED` are no longer read, and a process that finds one logs a WARN naming where its job is done now.
+
+New: `GET /v1/records/counts` counts the records the search filters list, grouped by up to two dimensions. `GET /v1/records/search` takes numeric bounds on `criteria` and `metadata`, `producedBy[key]` and `traceId`. A record and a completion take an optional signed `producedBy` (model, agent software, prompt and config digests). A record created with a W3C `metadata.traceparent` serves its `traceId`. A verdict sent with `signatureMeaning` is a person's electronic signature, and `GET /v1/records/{id}/audit-export?format=html` is the record's readable copy that shows it. `SIEM_START_AT` starts push export at an instant instead of the install's beginning. `work-context-v1` is seeded into every new Org.
+
+Migration 004 adds columns and tables (`records.trace_id`, `produced_by` on records and completions, an Idempotency-Key lease, `compliance_exports.next_from`, `security_posture`), drops `ai_impact_assessments.overseer_name`, which nothing writes, and clears the unexpired ephemeral cert JWS values, which nothing reads. It takes its locks up front with NOWAIT retries, and records written before it get their `trace_id` from the worker afterwards in short batches.
+
+A retried write whose first attempt committed answers 409 `IDEMPOTENT_WRITE_COMMITTED` with `refreshUrl`, and one still in flight answers 409 `IDEMPOTENCY_KEY_IN_FLIGHT` with `Retry-After`. A request arriving at shutdown answers 503 `SERVER_SHUTTING_DOWN`. A request head over the header limit answers 431 as an RFC 9457 problem. A delete refused by a RESTRICT key on PostgreSQL 18 answers 409 instead of 500. A federation peer drives only records it originated. SIEM push export treats a 3xx from the collector as a rejection. An AWS Marketplace Enterprise license is perpetual: an install License Manager has granted stays licensed after the contract ends.
+
 ## v2.2.0 - 2026-11-05
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v2.2.0.
