@@ -59,21 +59,20 @@ spec:
       the API server rejects outright (`at '/spec/rules/0/http/paths': got null,
       want array`), so the most natural way to write this block would fail the
       whole install.
-      Setting only a host is now the ordinary shape (config.externalUrl is
-      required and derives from the first ingress host), so default the one
-      route this chart has rather than refusing.
+      A host alone is a complete entry (config.externalUrl is required and
+      derives from the first ingress host), so the one route this chart serves
+      is the default.
     */}}
     - host: {{ .host | quote }}
       http:
         paths:
           {{- /*
             No `| default` on `.path`. The list-level default above covers the
-            host that declares no paths at all, which is the shape being fixed.
-            An entry that IS declared but carries no `path` is a typo (`paths:`
+            host that declares no paths at all. An entry that IS declared but carries no `path` is a typo (`paths:`
             written under the wrong key, a misspelled `path:`, one level of
             indent out), and defaulting it to / would publish the whole host on
-            an ingress the operator was trying to narrow. Let the API server
-            refuse it the way it always has.
+            an ingress the operator was trying to narrow, so the API server
+            refuses it.
           */}}
           {{- range (.paths | default (list (dict "path" "/" "pathType" "Prefix"))) }}
           - path: {{ .path }}

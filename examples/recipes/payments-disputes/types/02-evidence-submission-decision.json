@@ -3,7 +3,7 @@
   "category": "dispute-decision",
   "defaultGateMode": "principal",
   "displayName": "Evidence-Submission Decision (human-gated, one-shot)",
-  "description": "Headline gated decision: a human principal (chargeback/fraud-ops lead) authorizes contesting a dispute with a SPECIFIC evidence package BEFORE the recipe fires Stripe's irreversible POST /v1/disputes/{id} (submit=true). Stripe allows one submission, no edits — so a signed record of WHO authorized WHAT evidence WHEN, before the terminal call, is the whole value. Analyst = performer (submits the package as the completion); lead = principal (accept/reject via /verdict). The engine enforces conditional-required evidence by category at structural validation — a package missing the category's required fields gets structuralValidation:INVALID and does not advance. evidencePackageHash binds the exact bytes: criteria carries sha256 of the package submitted to Stripe, the completion echoes it, an auditor recomputes over the actually-submitted evidence. GATE IS ENGINE-ENFORCED: this type declares defaultGateMode:principal and carries no gate rules, so a create passing gateMode:auto is refused 400 and only the principal's verdict settles the record. SoD IS ORCHESTRATOR-ENFORCED (see README Lessons): principal==performer is accepted and the record shows selfPrincipal:true. The orchestrator MUST route every fraud/high-value dispute through the principal gate and MUST provision distinct analyst + lead identities.",
+  "description": "Headline gated decision: a human principal (chargeback/fraud-ops lead) authorizes contesting a dispute with a SPECIFIC evidence package BEFORE the recipe fires Stripe's irreversible POST /v1/disputes/{id} (submit=true). Stripe allows one submission, no edits, so a signed record of WHO authorized WHAT evidence WHEN, before the terminal call, is the whole value. Analyst = performer (submits the package as the completion); lead = principal (accept/reject via /verdict). The engine enforces conditional-required evidence by category at structural validation: a package missing the category's required fields gets structuralValidation:INVALID and does not advance. evidencePackageHash binds the exact bytes: criteria carries sha256 of the package submitted to Stripe, the completion echoes it, an auditor recomputes over the actually-submitted evidence. GATE IS ENGINE-ENFORCED: this type declares defaultGateMode:principal and carries no gate rules, so a create passing gateMode:auto is refused 400 and only the principal's verdict settles the record. SoD IS ORCHESTRATOR-ENFORCED (see README Lessons): principal==performer is accepted and the record shows selfPrincipal:true. The orchestrator MUST route every fraud/high-value dispute through the principal gate and MUST provision distinct analyst + lead identities.",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -56,7 +56,7 @@
           "unrecognized",
           "general"
         ],
-        "description": "Evidence-guidance category; must equal the completion evidence package's `category`. (Named disputeCategory in the criteria — `category` is a reserved record-metadata field name.)"
+        "description": "Evidence-guidance category; must equal the completion evidence package's `category`. (Named disputeCategory in the criteria: `category` is a reserved record-metadata field name.)"
       },
       "evidenceDueBy": {
         "type": "string",
@@ -110,12 +110,12 @@
       "evidencePackageHash": {
         "type": "string",
         "pattern": "^sha256:[0-9a-f]{64}$",
-        "description": "Must equal the record's criteria.evidencePackageHash — the bytes the principal is authorizing."
+        "description": "Must equal the record's criteria.evidencePackageHash: the bytes the principal is authorizing."
       },
       "productDescription": {
         "type": "string",
         "minLength": 1,
-        "description": "Stripe evidence.product_description — what the customer purchased."
+        "description": "Stripe evidence.product_description: what the customer purchased."
       },
       "customerName": {
         "type": "string"
@@ -147,7 +147,7 @@
       },
       "accessActivityLog": {
         "type": "string",
-        "description": "Stripe evidence.access_activity_log — server/CDN access records proving digital delivery."
+        "description": "Stripe evidence.access_activity_log: server/CDN access records proving digital delivery."
       },
       "duplicateChargeId": {
         "type": "string"
@@ -180,7 +180,7 @@
       },
       "uncategorizedText": {
         "type": "string",
-        "description": "Stripe evidence.uncategorized_text — free narrative. In test mode the strings winning_evidence / losing_evidence force the outcome."
+        "description": "Stripe evidence.uncategorized_text: free narrative. In test mode the strings winning_evidence / losing_evidence force the outcome."
       }
     },
     "allOf": [

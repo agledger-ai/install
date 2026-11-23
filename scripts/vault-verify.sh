@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# AGLedger — Vault Integrity Check
+# AGLedger: Vault Integrity Check
 # =============================================================================
 # Runs the connected hash / link / position integrity check over the live audit
 # chain: every entry's chain_position is sequential, payload_hash matches the
@@ -30,7 +30,7 @@ set -euo pipefail
 # see the "Offline cryptographic verification" section of GET /llms-full.txt.
 #
 # Requires the AGLedger stack (or at least its database) to be reachable on the
-# compose network — run this against a live install.
+# compose network. Run this against a live install.
 #
 # Usage:
 #   ./scripts/vault-verify.sh                      # check every chain

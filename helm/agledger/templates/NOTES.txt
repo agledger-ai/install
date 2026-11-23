@@ -2,11 +2,8 @@ AGLedger has been installed successfully.
 
 {{- /*
   Every curl below is written against $apiBase, so the commands agree with how
-  this release is actually reached. A hardcoded localhost:3001 would be a real
-  address only in the last branch, where the port-forward creates it: an ingress
-  install would print its real URL once and then ten commands against a port
-  nothing is listening on. 3001 is not the service port either (the service is
-  80 -> 3000); it is the local end of that port-forward.
+  this release is actually reached. 3001 is the local end of the port-forward
+  in the last branch, not the service port (the service is 80 -> 3000).
 */ -}}
 {{- $apiBase := printf "http://localhost:3001" -}}
 {{- if (.Values.ingress).enabled }}
@@ -94,15 +91,6 @@ Next steps:
   3. Read the API surface (always on, no auth):
      curl {{ $apiBase }}/openapi.json
      curl {{ $apiBase }}/llms.txt
-{{- if eq .Values.config.nodeEnv "production" }}
-     Swagger UI at /docs is off under NODE_ENV=production. To turn it on, add
-       - name: SWAGGER_UI_ENABLED
-         value: "true"
-     to extraEnv in your values file, beside the entries already there.
-     A --set on an extraEnv index replaces the whole list your values file sets.
-{{- else }}
-     Swagger UI: {{ $apiBase }}/docs
-{{- end }}
 
   4. View license status:
      curl -H "Authorization: Bearer <platform-key>" {{ $apiBase }}/v1/admin/license
@@ -170,8 +158,9 @@ Metrics:
 {{- if .Values.secrets.existingSecret }}
   GET /metrics is gated. The chart mints no token on the existingSecret path,
   so {{ .Values.secrets.existingSecret }} has to carry METRICS_AUTH_TOKEN itself if you want a
-  bearer-token scrape. Without that key the endpoint answers the ordinary
-  API-key chain (METRICS_AUTH_REQUIRED defaults true under NODE_ENV=production),
+  bearer-token scrape. Without that key /metrics on the API and on the worker's
+  health port answers the API-key chain (METRICS_AUTH_REQUIRED defaults true
+  under NODE_ENV=production) and takes a platform-role key holding admin:system,
   and monitoring.serviceMonitor points at a key that is not there.
 {{- else if not (eq (.Values.secrets.metricsAuthToken | default "") "-") }}
   GET /metrics is gated. The release Secret carries the bearer token:
@@ -187,9 +176,10 @@ Metrics:
     --set monitoring.grafanaDashboards.enabled=true   # the 3 shipped dashboards
 {{- end }}
 {{- else }}
-  secrets.metricsAuthToken is "-", so no token is minted and GET /metrics
-  answers the ordinary API-key chain (METRICS_AUTH_REQUIRED defaults true
-  under NODE_ENV=production). Scrape it with a platform or admin key.
+  secrets.metricsAuthToken is "-", so no token is minted and GET /metrics, on
+  the API and on the worker's health port, answers the API-key chain
+  (METRICS_AUTH_REQUIRED defaults true under NODE_ENV=production). Scrape both
+  with a platform-role key holding admin:system; an admin key gets 403.
 {{- end }}
 {{- end }}
 

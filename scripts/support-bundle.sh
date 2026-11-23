@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# AGLedger — Support Bundle
+# AGLedger: Support Bundle
 # =============================================================================
 # Creates a diagnostic tarball with logs, config, schema, and stats.
 # Credential values in .env are redacted by the shape of the name and the value
@@ -154,8 +154,8 @@ else
       psql "${DATABASE_URL}" -c \
       "SELECT * FROM _migrations ORDER BY id;"
   else
-    echo "[External database — psql not installed, DB diagnostics skipped]" > "${BUNDLE_DIR}/db-schema.sql"
-    log "psql not found — skipping external DB diagnostics. Install PostgreSQL client tools for full bundles."
+    echo "[External database: psql not installed, DB diagnostics skipped]" > "${BUNDLE_DIR}/db-schema.sql"
+    log "psql not found, skipping external DB diagnostics. Install PostgreSQL client tools for full bundles."
   fi
 fi
 

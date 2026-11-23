@@ -16,7 +16,7 @@ spec:
     {{- include "agledger.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: api
 ---
-# Worker service — exposes health + metrics for Prometheus scraping
+# Worker service: exposes health + metrics for Prometheus scraping
 apiVersion: v1
 kind: Service
 metadata:

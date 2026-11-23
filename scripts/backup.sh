@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# AGLedger — Backup Script
+# AGLedger: Backup Script
 # =============================================================================
 # Creates a timestamped backup of PostgreSQL (custom format).
 # Works with both bundled PostgreSQL and external databases (Aurora, RDS, etc.).
@@ -184,7 +184,7 @@ if ! pg_dump_magic_ok "${BACKUP_PATH}/db.dump"; then
     log "It begins with: ${PREFIX_HINT}"
     die "Something wrote to the dump's stdout ahead of pg_dump. No backup was kept."
   fi
-  die "pg_dump produced an empty file — check the output above for what it reported. No backup was kept."
+  die "pg_dump produced an empty file; check the output above for what it reported. No backup was kept."
 fi
 
 DB_SIZE=$(du -sh "${BACKUP_PATH}/db.dump" | cut -f1)

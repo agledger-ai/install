@@ -1,4 +1,4 @@
-## AGLedger Helm Chart — Default Values
+## AGLedger Helm Chart: Default Values
 
 # ---
 # OpenShift
@@ -23,12 +23,9 @@
 # The image supports an arbitrary uid: it declares USER 65532 for plain
 # Kubernetes and Docker, but nothing in it is owned by or hardcoded to that uid.
 # Files are world-readable and it needs no passwd entry, so it runs correctly
-# under an assigned uid with gid 0. Measured against the shipped image under the
-# container constraints restricted-v2 imposes (arbitrary uid with gid 0,
-# read-only root filesystem, all capabilities dropped, no-new-privileges):
-# migrations apply, the API boots healthy, the discovery surfaces serve, a
-# platform key mints, and a record notarizes. Admission itself has not been
-# exercised on a live OpenShift cluster; that half follows from the SCC rules.
+# under an assigned uid with gid 0, including under the container constraints
+# restricted-v2 imposes (arbitrary uid with gid 0, read-only root filesystem,
+# all capabilities dropped, no-new-privileges).
 #
 # What is actually dropped is the whole pod-level block below, which is
 # `runAsNonRoot: true` alongside the two uid/gid keys and the RuntimeDefault
@@ -62,7 +59,7 @@ image:
   # reference is `repository@sha256:...` and `tag` is purely cosmetic. Digest
   # pinning bypasses kubelet's tag-name cache: with `pullPolicy: IfNotPresent`
   # (the default below), a node that previously pulled ANY image under the
-  # same tag will NOT re-pull on the next deploy — your pod can boot against
+  # same tag will NOT re-pull on the next deploy; your pod can boot against
   # a stale layer while ECR/Docker Hub serve a newer one under the same tag.
   # Pinning by digest makes the cache key the bytes you actually want, so
   # silent rollbacks are impossible.
@@ -86,7 +83,7 @@ image:
 # ---
 # Sizing guidance:
 #   Single-node clusters (e.g. one t3.medium = 2 vCPU): keep `strategy.type: Recreate`
-#     and the resource defaults below — combined api+worker requests fit in 2 vCPU.
+#     and the resource defaults below; combined api+worker requests fit in 2 vCPU.
 #   Multi-node / HA: switch `strategy` to `RollingUpdate`, set `replicaCount: 2+`,
 #     enable autoscaling, and bump resources. RollingUpdate creates new pods before
 #     terminating old ones, so the cluster needs ~2x per-pod CPU/memory headroom
@@ -96,10 +93,9 @@ image:
 # Applied to every container in the release that runs an entry script: the API
 # and worker Deployments, and the migration and preflight Jobs. Denies
 # filesystem WRITES, child processes, worker threads, native addons, WASI, and
-# the inspector — the primitives a compromised npm dependency reaches for.
+# the inspector: the primitives a compromised npm dependency reaches for.
 # Network is NOT gated by Node's permission model, so listeners + outbound
-# webhook/JWKS/federation calls are unaffected. All four boot verified-clean
-# under this profile; the two Jobs only read.
+# webhook/JWKS/federation calls are unaffected. The two Jobs only read.
 #
 # Turning this off is not only a loss of sandbox. NODE_OPTIONS reaches every
 # node process in a container, and Node refuses `--allow-fs-write` from one not
@@ -132,8 +128,8 @@ api:
   # previous release, so nothing has to be ordered around it, but a security
   # control a release introduces binds only the pods carrying that release.
   # Read connectedVersions on GET /v1/admin/system-health to see which versions
-  # are still attached.
-  # the install README, "Two releases against one schema".
+  # are still attached, and "Two releases against one schema" in the install
+  # README.
   strategy:
     type: Recreate
   resources:
@@ -153,8 +149,8 @@ api:
   # traffic handoff to drain and the sleep would just lengthen the outage.
   # Set 0 to disable.
   preStopSleepSeconds: 15
-  # Must cover preStopSleepSeconds + the app's own graceful shutdown (25s, from
-  # config.server.shutdownTimeout) + 5s headroom, or the kubelet SIGKILLs
+  # Must cover preStopSleepSeconds + the app's own 25s graceful shutdown + 5s
+  # headroom, or the kubelet SIGKILLs
   # mid-drain. This is enforced: `agledger.assertApiGracePeriodFitsDrain` in
   # _helpers.tpl refuses to render a value that does not fit, because nothing in
   # the rendered manifest shows that the preStop sleep burns inside this number.
@@ -209,7 +205,7 @@ api:
 # ---
 # Worker Service
 # ---
-# See `api` above for sizing guidance — same single-node vs. HA tradeoff applies.
+# See `api` above for sizing guidance; same single-node vs. HA tradeoff applies.
 worker:
   replicaCount: 1
   # Same Recreate default and the same mixed-release window as `api.strategy`
@@ -284,7 +280,7 @@ migrate:
   # top-level `extraEnv`: every knob below is read by dist/src/db/migrate.js and
   # by nothing else, so routing them through the shared list would set variables
   # on the api and worker pods that are inert there, and would make the reverse
-  # true too — every runtime knob an operator adds for the API would land on a
+  # true too; every runtime knob an operator adds for the API would land on a
   # Job that only runs DDL. Two lists, each carrying what its workload reads.
   # (The Job does still get the release ConfigMap and Secret via envFrom; this
   # is about the operator-supplied list, not about withholding credentials the
@@ -295,7 +291,7 @@ migrate:
   # the table until COMMIT (the ALTER TABLE takes it; a plain CREATE INDEX on
   # its own would take the weaker SHARE), so reads as well as writes stop for
   # the whole file. The header of the migration in question is where the
-  # numbers live — read it before picking values. Defaults (the first four are
+  # numbers live. Read it before picking values. Defaults (the first four are
   # applied by applySessionSafety at the start of the run; the last is read by
   # assertNoInvalidIndexes at the end of it):
   #
@@ -346,7 +342,7 @@ migrate:
   #
   # That object must ALREADY EXIST in the namespace. On the external-DB path
   # this Job is a pre-install/pre-upgrade hook, and Helm creates hooks before
-  # every normal resource in the release — so an object created by this same
+  # every normal resource in the release, so an object created by this same
   # release (an umbrella chart's sibling Secret, say) is not there yet when the
   # Job runs. The pod then sits in CreateContainerConfigError, burns
   # backoffLimit, and fails the install. `helm template` and `helm lint` both
@@ -369,7 +365,7 @@ database:
                    # sslrootcert beside it or the driver encrypts without
                    # verifying the certificate). See postgres.bundled.enabled.
                    # IMPORTANT: the role that runs MIGRATIONS (this URL, or
-                   # secrets.databaseUrlMigrate if set) must be a SUPERUSER —
+                   # secrets.databaseUrlMigrate if set) must be a SUPERUSER:
                    # rds_superuser on Amazon RDS/Aurora, a true superuser on
                    # self-managed PostgreSQL. The schema installs an event
                    # trigger (agledger_block_audit_drop, which blocks dropping
@@ -439,7 +435,7 @@ database:
   # `SET statement_timeout` on every pooled connection.
   #
   # 0 (the default) does NOT mean "no cap": the API sends no SET, so every
-  # session inherits the SERVER's statement_timeout — and postgres.bundled below
+  # session inherits the SERVER's statement_timeout, and postgres.bundled below
   # sets one. Pin a value here to be independent of the server. Same format
   # rules as idleInTxTimeoutMs: a whole number of milliseconds, no unit suffix.
   statementTimeoutMs: 0
@@ -463,12 +459,9 @@ postgres:
     enabled: false
     # Pinned by digest, the same reference the Compose bundled overlay pins.
     # A mirrored registry replaces the whole reference, digest included.
-    image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
-    # Server-side guards for the bundled instance, matched to what the Compose
-    # bundled-PG overlay (compose/docker-compose.postgres.yml) already
-    # sets, so the two bundled paths behave the same way. Without these the
-    # bundled Helm Postgres ran stock: no statement cap and no idle-in-transaction
-    # cap, where the Compose path had both.
+    image: postgres:18-alpine@sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
+    # Server-side guards for the bundled instance, the same statement cap and
+    # idle-in-transaction cap the Compose bundled-PG overlay sets.
     #
     # `statement_timeout` is the cap every app session inherits when
     # database.statementTimeoutMs is left at 0. The few engine statements that
@@ -493,10 +486,10 @@ postgres:
     storage: 10Gi
     # storageClassName for the bundled-PG data PVC. Leave empty ("") to use the
     # cluster's DEFAULT storageclass. Bundled PG REQUIRES either a default
-    # storageclass or an explicit value here — otherwise the PVC stays Pending
+    # storageclass or an explicit value here; otherwise the PVC stays Pending
     # forever and the install hangs. Modern EKS (1.30+) ships NO default
     # storageclass (the in-tree gp2 default is gone; the EBS CSI addon does not
-    # mark one default) — on EKS set this to your provisioner's class, e.g. "gp3".
+    # mark one default). On EKS set this to your provisioner's class, e.g. "gp3".
     storageClassName: ""
     resources:
       requests:
@@ -519,9 +512,7 @@ postgres:
         type: RuntimeDefault
     # `readOnlyRootFilesystem: true` holds here because the chart mounts the two
     # paths the server writes outside its data directory: /var/run/postgresql for
-    # the Unix socket and lock file, and /tmp. Measured against the pinned image
-    # above: initdb completes, the server starts, and it accepts connections.
-    # Dropping either mount puts it back to "could not create lock file
+    # the Unix socket and lock file, and /tmp. Dropping either mount puts it back to "could not create lock file
     # /var/run/postgresql/.s.PGSQL.5432.lock: Read-only file system".
     securityContext:
       readOnlyRootFilesystem: true
@@ -567,7 +558,7 @@ instanceId: ""
 # Extra environment (API + worker)
 # ---
 # Inject additional env vars into both workloads. The primary use is secrets
-# CONSUMED BY PROVISIONING at boot — e.g. an HMAC webhook secret referenced from
+# CONSUMED BY PROVISIONING at boot, e.g. an HMAC webhook secret referenced from
 # provisioning YAML as `secret: ${WEBHOOK_ACME_SECRET}` (substitution happens in
 # the loader; provisioning runs on the API pod). The chart-managed Secret below
 # only carries the engine's own keys, so bring webhook/integration secrets here,
@@ -596,12 +587,10 @@ extraEnv: []
 # Extra volumes on the API, worker, migration and preflight pods
 # ---
 # For settings that take a FILE PATH rather than a value. `extraEnv` sets the
-# variable; these put the file where it points. Without them, three of the four
-# /llms.txt customization knobs were unreachable on Kubernetes: they name a path
-# and the chart had no way to deliver one, so the env var pointed at nothing, the
-# Server fell back to the built-in template, and the only evidence was a WARN
-# plus agledger_llms_txt_customization_load_failures_total. The Compose path
-# says "mount the files into the container" and could; this one could not.
+# variable; these put the file where it points. Three of the four /llms.txt
+# customization knobs name a path: with no file there, the Server falls back to
+# the built-in template, and the only evidence is a WARN plus
+# agledger_llms_txt_customization_load_failures_total.
 #
 # Rendered on both workloads, so a file the API reads is also present for the
 # worker rather than being half-configured. Also rendered on the migration and
@@ -689,15 +678,20 @@ secrets:
                              # secrets.gitops above before syncing this chart from a renderer.
                              # A pinned value must be 32 characters or more: the Server refuses
                              # to boot in production on anything shorter.
-  vaultSigningKey: ""       # Ed25519 key for audit vault signatures. Generate with:
+  vaultSigningKey: ""       # Key for audit vault signatures: Ed25519, or ES256 with
+                             # fips.enabled (the FIPS provider cannot use Ed25519,
+                             # and the chart refuses an Ed25519 key here under it).
+                             # Generate with:
                              #   kubectl run keygen --rm -it --restart=Never \
                              #     --image=agledger/agledger:<same tag this chart deploys> \
                              #     --command -- /nodejs/bin/node dist/scripts/generate-signing-key.js
+                             # and --algorithm es256 appended for fips.enabled.
                              # --command is required: it replaces the image's
                              # ENTRYPOINT instead of appending to it.
                              # Install without this value set and the chart
                              # prints the same command with the image already
-                             # filled in. Add --algorithm es256 for FIPS hosts.
+                             # filled in, --algorithm es256 included under
+                             # fips.enabled.
                              # Preserved across upgrades once set.
   webhookEncryptionKey: ""  # optional. When set, held to the same 32-character floor as apiKeySecret
   webhookEncryptionKeyPrevious: ""  # optional. The previous WEBHOOK_ENCRYPTION_KEY after a rotation; stored secrets are re-encrypted under the current key on their next delivery
@@ -706,15 +700,16 @@ secrets:
   # pointed at this install keep scraping. Read it with:
   #   kubectl get secret -n <ns> -l app.kubernetes.io/instance=<release> \
   #     -o jsonpath='{.items[0].data.METRICS_AUTH_TOKEN}' | base64 -d
-  # Set to "-" to mint none, which leaves /metrics behind the ordinary API-key
-  # chain in production (METRICS_AUTH_REQUIRED defaults true there).
+  # Set to "-" to mint none, which leaves /metrics behind the API-key chain in
+  # production (METRICS_AUTH_REQUIRED defaults true there), where it takes a
+  # platform-role key holding admin:system.
   # Preserved the same way apiKeySecret is, and lost the same way under a
   # renderer: see secrets.gitops above.
   metricsAuthToken: ""
-  databaseUrlMigrate: ""    # optional — superuser DATABASE_URL for migrations (DDL).
+  databaseUrlMigrate: ""    # optional: superuser DATABASE_URL for migrations (DDL).
                              # When set, the migration job uses this instead of the
                              # standard DATABASE_URL. Enables DB role separation:
-                             # a SUPERUSER for DDL (migrations — see the event-trigger
+                             # a SUPERUSER for DDL (migrations; see the event-trigger
                              # note on database.externalUrl: rds_superuser on RDS/Aurora,
                              # superuser on self-managed PG), agledger_app for DML
                              # (API/Worker). AGLEDGER_APP_ROLE_PASSWORD on the migrate
@@ -722,7 +717,7 @@ secrets:
                              # gives agledger_app its login under that password on
                              # every migration, so this URL names the owner and
                              # database.externalUrl names agledger_app with it.
-  databaseUrlDirect: ""     # optional — a connection string that bypasses a
+  databaseUrlDirect: ""     # optional: a connection string that bypasses a
                              # connection pooler running in transaction mode
                              # (PgBouncer pool_mode=transaction, RDS Proxy).
                              # Required when DATABASE_URL points at one: the API
@@ -741,7 +736,7 @@ secrets:
   license: ""               # optional. Compact activation string (AGLEDGER_LICENSE)
   licenseKey: ""            # optional. Inline PEM license string (AGLEDGER_LICENSE_KEY)
   apiKeySecretPrevious: ""  # optional. The previous API_KEY_SECRET, honoured beside the current one while keys are re-hashed. A chart-managed Secret change rolls both Deployments; with existingSecret, restart them yourself
-  # optional — the vault signing key this install has stopped signing with.
+  # optional: the vault signing key this install has stopped signing with.
   # Registered as retired so GET /v1/verification-keys keeps publishing it and
   # everything it signed stays verifiable offline. Its window is derived from
   # the chain, so history under it does not fall outside it.
@@ -767,17 +762,17 @@ secrets:
                              # VAULT_SIGNING_KEY: a process that never restarts
                              # goes on signing with the key it booted with.
                              # The Secret must contain these keys (as env var names):
-                             #   DATABASE_URL          (required) — PostgreSQL connection string
-                             #   API_KEY_SECRET        (required) — HMAC key for API key hashing
-                             #   VAULT_SIGNING_KEY     (required unless signing.kmsKeyArn is set) — Ed25519 key
+                             #   DATABASE_URL          (required): PostgreSQL connection string
+                             #   API_KEY_SECRET        (required): HMAC key for API key hashing
+                             #   VAULT_SIGNING_KEY     (required unless signing.kmsKeyArn is set): Ed25519 key
                              #     for audit vault signatures
                              #   VAULT_SIGNING_KEY_PREVIOUS (optional): during a key change,
                              #     the key the running pods sign with. The first pod on the
                              #     new key signs the succession that admits it with both
                              #     keys; remove it once the old key is retired
-                             #   WEBHOOK_ENCRYPTION_KEY (optional) — AES key for webhook payloads
-                             #   DATABASE_URL_MIGRATE  (optional) — Owner-role URL for migrations
-                             #   DATABASE_URL_DIRECT   (optional) — pooler-bypassing URL for
+                             #   WEBHOOK_ENCRYPTION_KEY (optional): AES key for webhook payloads
+                             #   DATABASE_URL_MIGRATE  (optional): Owner-role URL for migrations
+                             #   DATABASE_URL_DIRECT   (optional): pooler-bypassing URL for
                              #     LISTEN, session advisory locks and migrations
                              #   AGLEDGER_APP_ROLE_PASSWORD (optional): the migration Job
                              #     gives agledger_app a login under it, CREATE on the
@@ -786,15 +781,31 @@ secrets:
                              #     DATABASE_URL_MIGRATE naming the owner, so the API does
                              #     not serve as the role that owns the audit chain.
                              #   AGLEDGER_LICENSE      (optional): compact key, agl_<tier>_v1_...
-                             #   AGLEDGER_LICENSE_KEY  (optional) — PEM license string
-                             #   METRICS_AUTH_TOKEN    (optional) — bearer token for GET /metrics.
+                             #   AGLEDGER_LICENSE_KEY  (optional): PEM license string
+                             #   METRICS_AUTH_TOKEN    (optional): bearer token for GET /metrics.
                              #     The chart mints one into its own Secret and cannot write to
                              #     yours, so supply it here if you want a bearer-token scrape.
                              #     Required if you enable monitoring.serviceMonitor, which
                              #     references this key: without it the Prometheus Operator
                              #     cannot resolve the selector and drops the scrape config.
                              #     Without it /metrics answers the API-key chain instead
-                             #     (METRICS_AUTH_REQUIRED defaults true in production).
+                             #     (METRICS_AUTH_REQUIRED defaults true in production),
+                             #     which takes a platform-role key holding admin:system.
+
+# ---
+# FIPS 140
+# ---
+# Runs every AGLedger pod with the image's OpenSSL FIPS provider active, from
+# a mounted OpenSSL config (no FIPS kernel needed, and harmless on a node that
+# has one). Also sets AGLEDGER_FIPS=true, so a pod whose provider did not load
+# refuses to boot instead of running on the default provider.
+#
+# The provider cannot compute Ed25519, so this requires an ES256 vault key and
+# config.allowNonDefaultSigningAlg=true (the chart refuses to render without
+# it), and the Server refuses to boot with federation keys set.
+# helm-install.sh with AGLEDGER_FIPS=true sets all of it.
+fips:
+  enabled: false
 
 # ---
 # License (Developer Edition or Enterprise)
@@ -807,7 +818,7 @@ secrets:
 # Everything fails open. No key configured, or a key that was removed, logs a WARN
 # banner every 24h; a key that fails validation logs an ERROR every 30 minutes.
 license:
-  releaseDate: ""           # YYYY-MM-DD — baked into image at build time; override only if building from source
+  releaseDate: ""           # YYYY-MM-DD; baked into image at build time; override only if building from source
   keyFile:
     enabled: false          # Mount a PEM license file from a K8s Secret
     secretName: ""          # Name of the K8s Secret containing the license PEM
@@ -818,10 +829,10 @@ license:
                              # POST /v1/admin/license/reload without a pod restart.
 
 # ---
-# AWS Marketplace — alternative license source via License Manager
+# AWS Marketplace: alternative license source via License Manager
 # ---
 marketplace:
-  productId: ""              # AWS Marketplace product ID (prod-…) — enables Marketplace licensing
+  productId: ""              # AWS Marketplace product ID (prod-…). Setting it enables Marketplace licensing.
   publicKeyVersion: ""        # Key version for CheckoutLicense (default: SDK default)
   # IAM role for License Manager access (IRSA on EKS)
   serviceAccountAnnotations: {}
@@ -889,7 +900,7 @@ config:
   trustProxy: false
   nodeEnv: production
   externalUrl: ""  # Public URL where this instance is reachable (e.g., https://agledger.example.com).
-                    # The Server's published identity — the issuer (`iss`) signed into every
+                    # The Server's published identity: the issuer (`iss`) signed into every
                     # record/receipt/cert. Cascades to the A2A agent card URL. Auto-derived
                     # from ingress.hosts[0] when ingress is enabled.
                     #
@@ -898,7 +909,7 @@ config:
                     # correcting anything. With nodeEnv: production and neither this value nor
                     # an ingress host, the chart REFUSES to render rather than signing a
                     # default into that field. For a single node with no domain, set it to
-                    # https://localhost yourself — that is a choice the chart will not make
+                    # https://localhost yourself; that is a choice the chart will not make
                     # on your behalf.
                     #
                     # UPGRADING from a release that had no such requirement: your install
@@ -1055,8 +1066,8 @@ ingress:
 # both: the OpenShift router reconciles an Ingress into a Route of its own, so
 # two objects would claim the same hostname and the chart refuses that render.
 #
-# Nothing here implies openshift.enabled — that flag is about pod admission and
-# this one is about exposure — but a cluster that needs one usually needs both.
+# Nothing here implies openshift.enabled: that flag is about pod admission and
+# this one is about exposure. A cluster that needs one usually needs both.
 route:
   enabled: false
   # Omit to let the router generate <name>-<namespace>.<apps domain>. An empty
@@ -1123,12 +1134,13 @@ backup:
   # A PostgreSQL client image: the AGLedger runtime base carries no pg_dump.
   # Defaults to postgres.bundled.image. pg_dump refuses a server newer than
   # itself, so an external PostgreSQL 18 needs an 18 client here. The Job
-  # connects with DATABASE_URL_MIGRATE (or DATABASE_URL) as written, so an
-  # external database on sslmode=verify-ca or verify-full needs the CA the
-  # Server uses: with config.nodeExtraCaCerts set, an init container running
-  # the Server's image copies that file (the bundled RDS CA, or a CA mounted
-  # there through extraVolumes, which are rendered on it) into an emptyDir the
-  # dump reads as PGSSLROOTCERT. Nothing further to set.
+  # connects with DATABASE_URL_MIGRATE (or DATABASE_URL) as libpq reads it: an
+  # init container running the Server's image drops the two parameters only
+  # the Server's driver reads (uselibpqcompat, and an sslrootcert path that
+  # names a file in the Server's image), and copies the CA that sslrootcert
+  # names, or else config.nodeExtraCaCerts (the bundled RDS CA, or a CA mounted
+  # there through extraVolumes, which are rendered on it), into an in-memory
+  # emptyDir the dump reads as PGSSLROOTCERT. Nothing further to set.
   image: ""
   persistence:
     enabled: false
@@ -1137,8 +1149,8 @@ backup:
     storageClassName: ""
     accessModes: [ReadWriteOnce]
   # Object storage instead of a PVC. Needs an image carrying BOTH pg_dump and
-  # the aws CLI (set backup.image); no public image ships both, so this is a
-  # build-one-image path, deliberately not a default that half-works. On EKS,
+  # the aws CLI (set backup.image); no public image ships both, so this path
+  # needs an image you build. On EKS,
   # leave existingSecret empty and annotate the service account for IRSA.
   s3:
     enabled: false
@@ -1175,10 +1187,8 @@ postRestore:
 # ---
 # Monitoring (Prometheus Operator)
 # ---
-# All three render the SAME files the Compose stack mounts: the chart's
-# `files/alerts` and `files/dashboards` are symlinks into monitoring/ and
-# compose/grafana/, so a rule or panel is written once and both packaging
-# paths get it.
+# All three render the same alert rules and dashboards the Compose stack
+# mounts.
 #
 # These objects need the Prometheus Operator CRDs (PrometheusRule,
 # ServiceMonitor) already installed in the cluster. Enabling them without the
@@ -1307,7 +1317,7 @@ networkPolicy:
           app.kubernetes.io/name: traefik
   # Source CIDRs allowed to reach the API on port 3000, in addition to the
   # ingressFrom podSelectors above. Required for load balancers that connect
-  # from outside the pod network — e.g. AWS ALB with target-type: ip health-
+  # from outside the pod network, e.g. AWS ALB with target-type: ip health-
   # checks and forwards traffic from VPC ENIs, which no podSelector can match.
   # Set this to the subnet CIDR(s) the load balancer's addresses come from
   # instead of disabling the policy. Do not set it to the whole VPC CIDR on a
@@ -1401,14 +1411,11 @@ provisioning:
     # and the reload would report a clean no-op over the original bytes.
     trustedIssuers: ""
 
-  # Inline YAML content — a ConfigMap is created automatically.
+  # Inline YAML content: a ConfigMap is created automatically.
   # Each key becomes a file in the corresponding subdirectory.
   #
-  # The commented examples below are read back out of this file and validated
-  # against the provisioning loader on every build, so what you uncomment is
-  # what the reconciler accepts. Keep the `  #  ` comment prefix and the
-  # two-space file-key indent if you edit them, or that check stops seeing
-  # them. `examples/provisioning/` carries the fuller versions, including API
+  # The commented examples below are entries the provisioning loader accepts
+  # as written. `examples/provisioning/` carries the fuller versions, including API
   # keys and field mappings.
   orgs: {}
   #  my-corp.yaml: |

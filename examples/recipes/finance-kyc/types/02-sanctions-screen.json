@@ -32,7 +32,7 @@
       },
       "datasetVersion": {
         "type": "string",
-        "description": "The list/dataset snapshot the disposition was rendered against (yente returns the dataset version) \u2014 the audit anchor for 'which snapshot'."
+        "description": "The list/dataset snapshot the disposition was rendered against (yente returns the dataset version): the audit anchor for 'which snapshot'."
       },
       "scope": {
         "type": "string",
@@ -76,7 +76,7 @@
       },
       "explanationsDigest": {
         "type": "string",
-        "description": "Hex digest of the yente per-feature explanations payload \u2014 binds the 'why' of the match without putting the full breakdown on-chain."
+        "description": "Hex digest of the yente per-feature explanations payload, binds the 'why' of the match without putting the full breakdown on-chain."
       }
     }
   }

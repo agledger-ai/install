@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# AGLedger — Upgrade Script
+# AGLedger: Upgrade Script
 # =============================================================================
 # Usage:
 #   ./scripts/upgrade.sh 2.0.1
@@ -144,7 +144,39 @@ foreign_database_hint() {
   error "To run ${TARGET_VERSION}, install it on a new, empty database from its own checkout."
 }
 
+# Set once .env names the target. From then on `docker compose up -d` starts
+# the target, so a run that failed because the target does not boot cannot
+# offer it as the way back, and the previous version's images and schema are
+# no longer what is on the host.
+ENV_REWRITTEN=false
+
+# Past the .env rewrite. A resumed run's CURRENT_VERSION is the target and any
+# backup it took is of the migrated schema, so the version to go back to is the
+# rollback marker's and the backup is the one the first attempt took.
+env_rewritten_hint() {
+  local previous backup_hint
+  if [[ "${RESUMING_FAILED_UPGRADE:-false}" == true ]]; then
+    previous="$(read_pre_upgrade_marker 2>/dev/null || true)"
+    backup_hint="the backup taken before the first attempt at this upgrade (a backup this run took is of the migrated schema)"
+  elif [[ "${SKIP_BACKUP:-false}" == true ]]; then
+    previous="${CURRENT_VERSION:-}"
+    backup_hint="a backup taken before this run (this run took none: --skip-backup)"
+  else
+    previous="${CURRENT_VERSION:-}"
+    backup_hint="the pre-upgrade backup this run took"
+  fi
+  error "The migrations for ${TARGET_VERSION} are applied and .env names ${TARGET_VERSION}, so the"
+  error "previous version is no longer installed. Either fix what is reported above and finish:"
+  error "  ./scripts/upgrade.sh ${TARGET_VERSION}          # re-run; applied migrations are skipped"
+  error "or go back to ${previous:-the previous version} by restoring ${backup_hint}, from $(backup_root):"
+  error "  ./scripts/restore.sh $(backup_root)/<backup>.tar.gz"
+}
+
 worker_restart_hint() {
+  if [[ "$ENV_REWRITTEN" == true ]]; then
+    env_rewritten_hint
+    return 0
+  fi
   error "Finish or abandon the upgrade, then bring it back with either:"
   error "  ./scripts/upgrade.sh ${TARGET_VERSION}          # re-run; applied migrations are skipped"
   error "  (cd ${COMPOSE_DIR} && docker compose up -d)   # restart on the version .env names"
@@ -169,7 +201,12 @@ cleanup() {
     fi
     case "$worker_now" in
       untouched)
-        error "Upgrade failed. Nothing was stopped, so your previous version is still running."
+        if [[ "$ENV_REWRITTEN" == true ]]; then
+          error "Upgrade failed after the migration (this host has no worker container to stop)."
+          env_rewritten_hint
+        else
+          error "Upgrade failed. Nothing was stopped, so your previous version is still running."
+        fi
         ;;
       up)
         error "Upgrade failed after the worker was stopped for the migration, and the worker is"
@@ -442,7 +479,7 @@ detect_db_mode
 CONFIG_GAPS=()
 while IFS= read -r gap_line; do
   CONFIG_GAPS+=("$gap_line")
-done < <(missing_prod_config "$ENV_FILE")
+done < <(missing_prod_config "$ENV_FILE" upgrade)
 
 if [[ ${#CONFIG_GAPS[@]} -gt 0 ]]; then
   warn "${ENV_FILE} does not set every production prerequisite:"
@@ -451,6 +488,50 @@ if [[ ${#CONFIG_GAPS[@]} -gt 0 ]]; then
   done
   warn "If they reach the container another way (exported env, secrets manager), this is fine."
   warn "If they do not, ${TARGET_VERSION} will refuse to boot and this upgrade will stop at the restart."
+fi
+
+# Variables the new release does not read. The Server names each in a WARN at
+# boot; named here, before anything changes, an operator whose secrets came
+# from one of them learns it while the running stack is still the old one.
+RETIRED_SET=()
+while IFS= read -r retired_line; do
+  [[ -n "$retired_line" ]] && RETIRED_SET+=("$retired_line")
+done < <(retired_env_set "$ENV_FILE")
+if [[ ${#RETIRED_SET[@]} -gt 0 ]]; then
+  warn "${ENV_FILE} sets variables ${TARGET_VERSION} does not read:"
+  for retired_line in "${RETIRED_SET[@]}"; do
+    warn "  ${retired_line%%|*}: ${retired_line#*|}"
+  done
+fi
+# A secret source this release does not read, with no signing key where the
+# containers get it from (.env, or VAULT_SIGNING_KEY exported to this script,
+# which the production overlay interpolates): the key lived in that source,
+# the new release cannot fetch it, and it would boot to a refusal after the
+# migration had run. This is the one config gap the upgrade refuses over,
+# because the source that would otherwise supply the key is the one retired.
+# An override file an operator edited can supply it in ways this script cannot
+# read, so with one present the gap is a warning. The stub every kit writes
+# supplies nothing, and counting it would turn the refusal into a warning on
+# every kit-made install. Stopped here, nothing has changed.
+UPGRADE_NODE_ENV="$(get_env_value NODE_ENV "$ENV_FILE")"
+if [[ -z "$UPGRADE_NODE_ENV" || "$UPGRADE_NODE_ENV" == production ]] && retired_secret_source_set "$ENV_FILE" \
+   && [[ -z "$(get_env_value VAULT_SIGNING_KEY "$ENV_FILE")" && -z "$(get_env_value VAULT_SIGNING_KEY_FILE "$ENV_FILE")" \
+         && -z "$(get_env_value VAULT_SIGNING_KEY_KMS_ARN "$ENV_FILE")" && -z "${VAULT_SIGNING_KEY:-}" ]]; then
+  UPGRADE_OVERRIDE="$(compose_override_file)"
+  if [[ -n "$UPGRADE_OVERRIDE" ]] && ! compose_override_is_stub "$UPGRADE_OVERRIDE"; then
+    warn "${ENV_FILE} names a secret source ${TARGET_VERSION} does not read and sets no VAULT_SIGNING_KEY."
+    warn "  If ${UPGRADE_OVERRIDE} supplies the signing key, this is fine. If it does not, put the"
+    warn "  key this install already signs with in .env as VAULT_SIGNING_KEY before going on: a new key"
+    warn "  does not verify anything the current one signed."
+  else
+    error "${ENV_FILE} names a secret source ${TARGET_VERSION} does not read and sets no VAULT_SIGNING_KEY."
+    error "  The signing key this install uses is held in that source. Put the same key in .env as"
+    error "  VAULT_SIGNING_KEY (or VAULT_SIGNING_KEY_KMS_ARN for a key held in AWS KMS), together with any"
+    error "  other secret that source supplied (API_KEY_SECRET, WEBHOOK_ENCRYPTION_KEY, database"
+    error "  passwords), then re-run."
+    error "  Do not generate a new key: it does not verify anything the current one signed."
+    fatal "Nothing was changed; the running stack is still ${CURRENT_VERSION}."
+  fi
 fi
 
 # --- Confirmation ---
@@ -501,7 +582,7 @@ case $VERIFY_STATUS in
     fi
     fatal "Could not pull ${AGLEDGER_IMAGE}:${TARGET_VERSION}; the output above says why. The running install is untouched."
     ;;
-  *) fatal "Image signature verification failed — aborting upgrade before running an unverified image." ;;
+  *) fatal "Image signature verification failed, aborting upgrade before running an unverified image." ;;
 esac
 # The verified digest for the rest of this upgrade, carried in a variable and
 # handed to each command that has to run the target image, rather than written
@@ -748,10 +829,24 @@ verify_sibling_reachability
 # moment. Every other failure repeats until something changes, so it stops here.
 MIGRATE_ATTEMPTS=3
 MIGRATE_ATTEMPT=1
+# A kit that pins a new PostgreSQL image would have `run` recreate the running
+# database container before the migration, an outage of its own on top of the
+# restart below. With the bundled database already up, the migration runs
+# against it as it is, and the container is recreated once, with the API and
+# worker, in the restart step.
+# Only a container whose healthcheck passes: `--no-deps` also skips the
+# migrate service's wait for a healthy database.
+MIGRATE_RUN_ARGS=()
+if [[ "$USES_BUNDLED_PG" == true ]]; then
+  PG_CONTAINER="$("${COMPOSE[@]}" ps --status running -q postgres 2>/dev/null | head -1 || true)"
+  if [[ -n "$PG_CONTAINER" && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$PG_CONTAINER" 2>/dev/null || true)" == healthy ]]; then
+    MIGRATE_RUN_ARGS=(--no-deps)
+  fi
+fi
 while :; do
   MIGRATE_STATUS=0
   AGLEDGER_VERSION="${TARGET_VERSION}" AGLEDGER_IMAGE_PIN="${TARGET_IMAGE_PIN}" \
-    "${COMPOSE[@]}" run --rm agledger-migrate || MIGRATE_STATUS=$?
+    "${COMPOSE[@]}" run --rm ${MIGRATE_RUN_ARGS[@]+"${MIGRATE_RUN_ARGS[@]}"} agledger-migrate || MIGRATE_STATUS=$?
   [[ $MIGRATE_STATUS -eq 0 ]] && break
   if [[ $MIGRATE_STATUS -eq 65 ]]; then
     FOREIGN_DATABASE=true
@@ -793,6 +888,7 @@ already applied will be skipped." \
 step "Updating configuration"
 
 upsert_env_var AGLEDGER_VERSION "${TARGET_VERSION}" "$ENV_FILE"
+ENV_REWRITTEN=true
 info "Updated AGLEDGER_VERSION=${TARGET_VERSION} in .env"
 
 # The digest, in the same breath as the version it belongs to. Everything that
@@ -836,7 +932,7 @@ fi
 # --wait fails the upgrade if the new image crashloops at boot (e.g. a
 # missing runtime asset). Without it, `up -d` returns as soon as
 # the container is created, the preflight loop below logs a soft WARN, and
-# the script exits 0 — handing the customer a broken upgrade with no
+# the script exits 0, handing the customer a broken upgrade with no
 # visible signal anything went wrong.
 #
 # It is not the whole answer either: `--wait` is satisfied by a container that
@@ -860,7 +956,7 @@ if ! "${COMPOSE[@]}" up -d --wait || ! all_compose_services_up "${UPGRADE_SERVIC
     for gap in "${CONFIG_GAPS[@]}"; do
       error "  ${gap}"
     done
-    error "Set them in ${ENV_FILE} and re-run this script. Your previous version is still installed."
+    error "Set them in ${ENV_FILE} and re-run this script."
   fi
   # Which of the two halves failed decides what is worth printing: a container
   # that is restarting, exited, unhealthy or looping is named with its own log
@@ -944,7 +1040,7 @@ fi
 
 echo ""
 echo -e "${GREEN}=============================================================================${NC}"
-echo -e "${GREEN}  AGLedger — Upgrade Complete${NC}"
+echo -e "${GREEN}  AGLedger: Upgrade Complete${NC}"
 echo -e "${GREEN}=============================================================================${NC}"
 echo ""
 echo -e "  ${BOLD}Previous version:${NC}  ${CURRENT_VERSION}"

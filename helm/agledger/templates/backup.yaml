@@ -67,7 +67,7 @@ spec:
        exist: it stays Pending, the Job never completes, and `helm upgrade`
        blocks until its timeout with the release stuck in pending-upgrade.
        `lookup` reads the live cluster on a real install and returns empty under
-       `helm template`, which is why the render tests pin an existingClaim. */}}
+       `helm template`. */}}
 {{- $destinationExists := or $s3On $existingClaim (lookup "v1" "PersistentVolumeClaim" .Release.Namespace $pvcName) }}
 {{- if and ((.Values.backup).preUpgrade).enabled $destinationExists }}
 ---

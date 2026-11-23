@@ -10,12 +10,15 @@ Complaint case
              evidence read parented to the case
   stamps     the close-out's sorWriteStampDigest re-derives from the reads' sourceRecords,
              and no read reports mutating
-  signature  the verdict entry carries a signature meaning and names the completion it signs
+  signature  the verdict entry carries a signature meaning and names the completion it signs.
+             When the manifest binds the principal to an identity provider subject, the
+             meaning is the one the Server sealed (`signature`, from a verdict sent with
+             signatureMeaning), not text in `checks`
   reporter   the verdict was rendered by the case's principal under its own key
   status     the case reads FULFILLED after an accept and FAILED after a reject
   signer     when the manifest binds the principal to an identity provider subject, the
-             verdict entry carries that issuer and subject (a verdict rendered with an
-             API key carries none)
+             verdict entry, and the signature sealed on it, carry that issuer and subject
+             (a verdict rendered with an API key carries neither)
 
 Release
   checkRef   the release completion's checkRef is a precondition check that is a child of
@@ -71,7 +74,7 @@ AUD = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "oq-bundle")
 CASE_T, READ_T, CHECK_T, PROPOSAL_T = "calder-complaint-case-v1", "calder-evidence-read-v1", "calder-precondition-check-v1", "calder-batch-record-proposal-v1"
 PROBES = {"no-check-child": {"checkRef"}, "check-cancelled": {"checkRef"},
           "proposer-is-checker": {"checker"}, "revision-after-failed-check": {"revision"}, "stale-check": {"age"},
-          "admin-signed": {"reporter", "signer"}, "key-signed": {"signer"}}
+          "admin-signed": {"signature", "reporter", "signer"}, "key-signed": {"signature", "signer"}}
 
 
 def jcs(obj):
@@ -138,7 +141,8 @@ def check_verdict(rec, findings, own_cid):
     if not v:
         return None
     p, principal = v["payload"], opening(rec).get("principalAgentId")
-    meaning = (p.get("checks") or {}).get("signatureMeaning")
+    bound, sealed = SIGNERS.get(principal), p.get("signature") or {}
+    meaning = sealed.get("meaning") if bound else sealed.get("meaning") or (p.get("checks") or {}).get("signatureMeaning")
     # an accept signs the performer's own completion; a reject signs that, or the completion the engine held the record on after a rollup
     held = [e["payload"].get("completionId") for e in entries(rec, "GATE_HELD") if e["chainPosition"] < v["chainPosition"]]
     signed_ok = p.get("completionId") and (p["completionId"] == own_cid if p.get("outcome") == "accept" else p["completionId"] in held + [own_cid])
@@ -147,9 +151,11 @@ def check_verdict(rec, findings, own_cid):
     if not (p.get("reporterType") == "principal" and p.get("reporterId") == principal
             and v.get("actorRole") == "agent" and v.get("actorOwnerId") == principal):  # the signed actor fields, not the display ones
         findings["reporter"] = "rendered by %s %s (%s), principal is %s" % (v.get("actorRole"), v.get("actorOwnerId"), p.get("reporterType"), principal)
-    bound = SIGNERS.get(principal)
-    if bound and (v.get("actorOidcIss"), v.get("actorOidcSub")) != (bound.get("oidcIss"), bound.get("oidcSub")):
-        findings["signer"] = "rendered under subject %s of %s, the principal is bound to %s of %s" % (v.get("actorOidcSub"), v.get("actorOidcIss"), bound.get("oidcSub"), bound.get("oidcIss"))
+    if bound:
+        want_id = (bound.get("oidcIss"), bound.get("oidcSub"))
+        if (v.get("actorOidcIss"), v.get("actorOidcSub")) != want_id or (sealed.get("signerIss"), sealed.get("signerSub")) != want_id:
+            findings["signer"] = "rendered under subject %s of %s, signature sealed for %s, the principal is bound to %s of %s" % (
+                v.get("actorOidcSub"), v.get("actorOidcIss"), sealed.get("signerSub"), bound.get("oidcSub"), bound.get("oidcIss"))
     after = [e["payload"]["newStatus"] for e in rec["entries"] if e["chainPosition"] > v["chainPosition"] and e["payload"].get("newStatus")]
     want = "FULFILLED" if p.get("outcome") == "accept" else "FAILED"
     if not after or after[0] != want:

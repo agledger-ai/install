@@ -2,7 +2,7 @@
   "type": "halcyon-pa-request-v1",
   "category": "intake",
   "displayName": "Prior Authorization Request",
-  "description": "The prior-authorization request as submitted to the payer (provider side). Notarize-only: it records WHAT was asked for and WHEN, so the provider has a signed 'this is what we submitted' artifact and the 72h-expedited / 7-day-standard CMS-0057-F decision clock has a tamper-evident start. AGLedger does not adjudicate it — the payer's Da Vinci PAS / X12 278 system does (see halcyon-pa-disposition-v1). Correlate every downstream record by claimId.",
+  "description": "The prior-authorization request as submitted to the payer (provider side). Notarize-only: it records WHAT was asked for and WHEN, so the provider has a signed 'this is what we submitted' artifact and the 72h-expedited / 7-day-standard CMS-0057-F decision clock has a tamper-evident start. AGLedger does not adjudicate it; the payer's Da Vinci PAS / X12 278 system does (see halcyon-pa-disposition-v1). Correlate every downstream record by claimId.",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,

@@ -83,7 +83,7 @@ spec:
   ingress:
     # Allow traffic from ingress controllers (podSelectors) and/or explicit CIDRs.
     # AWS ALB with target-type: ip sends health checks and traffic from VPC ENIs,
-    # not a pod — no podSelector can match it, so admit the VPC/subnet CIDR via
+    # not a pod; no podSelector can match it, so admit the VPC/subnet CIDR via
     # networkPolicy.ingressCIDRs rather than disabling the policy.
     - from:
         {{- range .Values.networkPolicy.ingressFrom }}
@@ -106,10 +106,9 @@ spec:
         {{- end }}
         {{- if (.Values.openshift).enabled }}
         {{- /* The OpenShift router is not ingress-nginx and is not traefik, so
-               none of the podSelectors above match it and the shipped policy
-               left the router unable to reach the API: an admitted Route that
-               returns 503 with nothing in the pod logs, because the connection
-               never arrived. The router runs in the openshift-ingress
+               none of the podSelectors above match it. Without an entry for it
+               an admitted Route returns 503 with nothing in the pod logs,
+               because the connection never arrives. The router runs in the openshift-ingress
                namespace; both selectors below name it, because which label is
                present depends on the cluster version.
 

@@ -9,7 +9,7 @@
     "required": ["applicationId", "creditorName", "product", "requestedAmount", "applicantRef"],
     "properties": {
       "applicationId": {"type": "string", "minLength": 3},
-      "creditorName": {"type": "string", "minLength": 2, "description": "The creditor of record — carries the ECOA notice obligation."},
+      "creditorName": {"type": "string", "minLength": 2, "description": "The creditor of record: carries the ECOA notice obligation."},
       "product": {"type": "string", "enum": ["personal-loan", "auto", "card", "mortgage", "line-of-credit"]},
       "requestedAmount": {
         "type": "object", "additionalProperties": false, "required": ["amount", "currency"],

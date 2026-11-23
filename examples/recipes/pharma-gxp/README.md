@@ -36,7 +36,7 @@ systems, and a human signature with a meaning, and the engine orders them: no re
 completion until the check settled, none after it failed.
 
 **Built against Odoo 18.0 Community with the OCA `manufacture` quality modules** as the
-manufacturing, inventory and quality system of record (`sor/`), on an AGLedger 2.2.0 Compose
+manufacturing, inventory and quality system of record (`sor/`), on an AGLedger 3.0.0 Compose
 install. A site replaces the three reference automations with its own against its MES, LIMS
 and ERP and keeps the evidence shapes the types declare.
 
@@ -131,7 +131,9 @@ and ERP and keeps the evidence shapes the types declare.
   OUTCOME_REPORTED entry of the audit export, linked to the completion it signs. The
   `checks` object is caller-supplied text the engine stores, not validates, and an org-admin
   key can render the verdict for the principal; the entry names the reporter, so the OQ
-  asserts the reporter is the principal's identity.
+  asserts the reporter is the principal's identity. The reference signers are API keys, so
+  the meaning is in `checks`; in `oidc/` the person signs with `signatureMeaning` and the
+  Server seals the meaning with the name and subject from their IdP token.
 
 ## Lessons for implementers
 
@@ -203,7 +205,8 @@ The signers in the reference run are API-key agents named for their roles. 21 CF
 wants the signature to belong to one individual. `oidc/` is the variant where the QA signer
 holds no AGLedger key: they sign in to your identity provider, the token is exchanged for a
 short-lived cert bound to their agent, and the verdict entry carries their IdP subject
-(`actorOidcSub`) and a signature of their own that verifies offline. It also shows the two
+(`actorOidcSub`), a signature of their own that verifies offline, and the electronic
+signature the Server seals from the token (`signature`: printed name, meaning, Server time). It also shows the two
 ways an org admin key can sign in a person's name, both of which the engine admits, and
 how the cross-record check tells them apart. The alternative is key custody under your SOP.
 
@@ -325,6 +328,12 @@ registers a new version of any type whose schema changed compatibly, and a type 
 unchanged answers 200 with its current version and registers nothing; an incompatible change is
 rejected and reported. See `register.sh` for the `RECIPE_FORCE=1` reset option (destructive;
 scratch orgs only).
+
+The types register under the publisher label `local`. When the same types also reach the Org by
+manifest import under a named publisher, set `RECIPE_PUBLISHER=<that label>` so both land under
+one publisher: a type held under two publishers has to be named with its `publisher` on every
+create, and a bare type name is refused with a 422 that names both. `register.sh` reads back
+under the label it registered with. See [the recipes README](../README.md).
 
 To stand up the reference system of record:
 

@@ -82,6 +82,7 @@
             - name: tmp
               mountPath: /tmp
             {{- include "agledger.licenseVolumeMount" . | nindent 12 }}
+            {{- include "agledger.fipsVolumeMount" . | nindent 12 }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -89,6 +90,7 @@
         - name: tmp
           emptyDir: {}
         {{- include "agledger.licenseVolume" . | nindent 8 }}
+        {{- include "agledger.fipsVolume" . | nindent 8 }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

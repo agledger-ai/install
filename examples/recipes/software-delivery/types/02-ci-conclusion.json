@@ -55,7 +55,7 @@
           "stale",
           "startup_failure"
         ],
-        "description": "GitHub's conclusion enum, verbatim and closed. stale = marked superseded by GitHub (e.g. on a re-request); only GitHub sets it \u2014 new commits get their own check suites and do not retro-flip old ones. startup_failure is a workflow-run-level conclusion (invalid workflow file)."
+        "description": "GitHub's conclusion enum, verbatim and closed. stale = marked superseded by GitHub (e.g. on a re-request); only GitHub sets it; new commits get their own check suites and do not retro-flip old ones. startup_failure is a workflow-run-level conclusion (invalid workflow file)."
       },
       "completedAt": {
         "type": "string",

@@ -2,9 +2,9 @@
 
 Install scripts, Docker Compose files, and Helm chart for [AGLedger](https://agledger.ai).
 
-AGLedger is change control for AI agents, delivered as a signed ledger for agentic work. An agent records what it is about to do, then records what was done. Both are signed and hash-chained. For workloads where the deliverable is measurable (procurement, finance, compliance), an optional gated mode adds a receipt + verdict phase. AGLedger does not inspect or judge deliverable content; it records what was claimed and when, signed and chainable.
+AGLedger is change control for AI agents, delivered as a signed ledger for agentic work. An agent records what it is about to do, then records what was done. Both are signed and hash-chained. For workloads where the deliverable is measurable (procurement, finance, compliance), an optional gated mode adds a completion and verdict phase: the customer's principal or agent renders the verdict, or the Gate applies the rules the customer registered, and AGLedger signs the criteria, the evidence hash and the verdict into the chain.
 
-This repository contains only the deployment packaging. The server image is distributed on [Docker Hub](https://hub.docker.com/r/agledger/agledger) and the Helm chart on OCI at `oci://registry-1.docker.io/agledger/agledger-chart`.
+This repository contains only the deployment packaging. The server image is distributed on [Docker Hub](https://hub.docker.com/r/agledger/agledger) and the Helm chart on OCI at `oci://registry-1.docker.io/agledger/agledger-chart`. The chart is named `agledger-chart`; its source is the `helm/agledger` directory here.
 
 ## Prerequisites
 
@@ -23,7 +23,7 @@ cd install
 ./scripts/install.sh
 ```
 
-The API is reachable at `http://localhost:3001` once startup completes. The OpenAPI document is served at `http://localhost:3001/openapi.json`, and `/docs` redirects to the hosted reference at https://agledger.ai/api. To browse an API explorer on the install itself, which is what an air-gapped host needs, set `SWAGGER_UI_ENABLED=true` in `compose/.env` and run `docker compose up -d agledger-api`. That recreates the container, which is what picks the value up: the API reads `.env` through `env_file`, and a container's environment is fixed when it is created, so `docker compose restart` brings the old value back with it.
+The API is reachable at `http://localhost:3001` once startup completes. The OpenAPI document is served at `http://localhost:3001/openapi.json`, and `/docs` redirects to the hosted reference at https://agledger.ai/api. On an air-gapped host, open the saved `openapi.json` in any OpenAPI viewer.
 
 `install.sh` generates cryptographic secrets locally, writes `compose/.env`, starts PostgreSQL, runs migrations, creates a platform API key (printed once, so save it), and starts the API and worker.
 
@@ -150,7 +150,11 @@ which keeps the per-alert `#<lowercase alert name>` anchors.
 `GET /metrics` is gated under `NODE_ENV=production`, which the chart sets: it mints a
 bearer token into the release Secret, preserved across upgrades, and the ServiceMonitor presents it.
 Read it with `kubectl get secret -n <ns> -l app.kubernetes.io/instance=<release> -o jsonpath='{.items[0].data.METRICS_AUTH_TOKEN}' | base64 -d` (by label: the chart renders one Secret, and its name depends on your release name and `fullnameOverride`)
-for a Prometheus you run yourself.
+for a Prometheus you run yourself. With `secrets.existingSecret` the chart mints nothing, so that
+Secret carries `METRICS_AUTH_TOKEN` itself or both the API's and the worker's `/metrics` answer the
+API-key chain instead: a platform-role key holding `admin:system`. The worker checks the key the
+way the API does and answers the same 401 and 403 bodies, but writes no audit row for a key it
+refuses.
 
 #### OpenShift
 
@@ -187,7 +191,7 @@ The bundled PostgreSQL container is the default. To point at Aurora, RDS, Cloud 
 
 Requirements:
 
-- A connection pooler in front of the database is supported, with one extra setting. Set `DATABASE_URL_DIRECT` to a connection string that reaches PostgreSQL without a pooler in transaction mode, and leave `DATABASE_URL` pointing at the pooler. The transactional pool keeps running through the pooler and gets its connection multiplexing; the direct string carries only the work that needs a session that stays its own: the `LISTEN` client that keeps caches coherent across replicas, the session-level advisory locks that serialize the provisioning reconcile and the federation zero-row sweep, migrations, and the session settings that cap statement and idle-in-transaction time. Leave it unset for a direct database or a pooler in session mode, where everything runs on `DATABASE_URL` as before.
+- A connection pooler in front of the database is supported, with one extra setting. Set `DATABASE_URL_DIRECT` to a connection string that reaches PostgreSQL without a pooler in transaction mode, and leave `DATABASE_URL` pointing at the pooler. The transactional pool keeps running through the pooler and gets its connection multiplexing; the direct string carries only the work that needs a session that stays its own: the `LISTEN` client that keeps caches coherent across replicas, the session-level advisory locks that serialize the provisioning reconcile and the federation zero-row and dispute recovery sweeps, migrations, and the session settings that cap statement and idle-in-transaction time. Leave it unset for a direct database or a pooler in session mode, where everything runs on `DATABASE_URL` as before.
 - The API and Worker refuse to boot when `DATABASE_URL` is behind a transaction-mode pooler and `DATABASE_URL_DIRECT` is unset, and the refusal names the setting. What they detect is the topology itself, not the hostname: two connections that report one backend process, or one advisory lock granted to both of them. Neither is possible on a direct connection, so the check cannot refuse a topology that would have worked. A pooler in session mode passes, because it pins one backend per client for that client's whole life. `preflight` reports the same reading under its `topology` check, and the Compose installer and the chart's preflight Job both run it before anything starts.
 - What breaks without the direct string behind a transaction-mode pooler (PgBouncer with `pool_mode = transaction`, for example): a `NOTIFY` sent from one connection is never delivered to a `LISTEN` on another, so every replica falls back to cache TTL expiry; `pg_try_advisory_lock` on the same key returns true to two different clients at once, so nothing that relies on one holder is serialized; and a session `SET` lands on whichever backend served it and stays there, visible to unrelated clients afterwards, because PgBouncer runs no `server_reset_query` in transaction mode unless `server_reset_query_always` is on. None of the three raises an error, which is why the Server refuses to boot in that topology without `DATABASE_URL_DIRECT`.
 - **RDS Proxy** (AGLedger has not been tested behind it; this follows AWS's *Avoiding pinning an RDS Proxy* documentation): it multiplexes at transaction granularity, and where a session surface would break it pins the connection to that client for the rest of the session instead. The conditions it lists for PostgreSQL include `SET` commands, `PREPARE`/`DISCARD`/`DEALLOCATE`/`EXECUTE`, temporary sequences, tables and views, declaring cursors, listening on a notification channel, and `pg_advisory_lock` / `pg_try_advisory_lock`. It states that transaction-level advisory locks (`pg_advisory_xact_lock` and its siblings) do not pin. So the session surfaces are correct behind the proxy, and the price is that the connections carrying them stop being shared. Point `DATABASE_URL_DIRECT` at the instance or cluster endpoint and leave `DATABASE_URL` on the proxy endpoint.
@@ -244,9 +248,12 @@ The flag is sticky on purpose. An upgrade that recreated the containers without 
 
 `--fips` against an install that already holds an Ed25519 key is refused, with the rotation steps below: the provider carries no EdDSA, so that Server would boot unable to sign at all.
 
+On Kubernetes, install with `AGLEDGER_FIPS=true ./scripts/helm-install.sh`, which generates an ES256 key and sets the chart's `fips.enabled=true` and `config.allowNonDefaultSigningAlg=true`. `fips.enabled` mounts the same `openssl-fips.cnf` into every pod and sets `OPENSSL_CONF` and `AGLEDGER_FIPS=true`, so a pod whose provider did not load refuses to boot. The chart refuses to render `fips.enabled` without `config.allowNonDefaultSigningAlg`, and the script refuses a release whose existing key is Ed25519.
+
 **What you give up.** This is a deliberately narrow configuration, and the Server enforces its edges rather than degrading quietly:
 
 - **Federation is not available.** The federation transport signs with Ed25519 by design. A Server configured with both ES256 and federation keys refuses to boot, naming the conflict, rather than starting with a transport it cannot sign for.
+- **Agent ephemeral certificates and agent signatures are not available.** Both bind an Ed25519 agent key. `POST /v1/auth/oidc/cert` and any request carrying `X-Agent-Signature` return 400 naming FIPS mode, `GET /v1/conformance` reads `ephemeralCerts: false` and `agentSignatureCoSign: false`, and registering a trusted issuer with `appliesTo: agent` (through the admin API or the provisioning file) is refused. Agents authenticate with API keys; direct admin JWT on `/v1/admin/*` is unaffected.
 - **Ed25519-pinned surfaces refuse explicitly.** A webhook subscription requesting `signingAlg: "ed25519"` returns 422 naming the algorithms this Server can use (`ecdsa-p256-sha256`, `hmac`). Nothing silently downgrades.
 - **Consumers need a current verifier.** Anyone verifying your chain offline needs `@agledger/verify` 2.0.0 or later, the floor for every 2.x install whatever its algorithm; that release carries ES256. Your Server publishes the floor per key as `minVerifierVersion` at `GET /v1/verification-keys`.
 
@@ -392,7 +399,7 @@ The dump's privileges are restored with it: the DML grants, the `ALTER DEFAULT P
 
 ### Two releases against one schema
 
-Every upgrade path migrates the database before the new processes exist. On Kubernetes the migration is a `pre-install,pre-upgrade` hook Job, so it finishes while the pods of the release you are leaving are still serving. On Compose `upgrade.sh` stops the worker first and migrates with the old API still up, then recreates the containers. From the moment the migration commits until the last process of the old release is gone, two releases read and write one schema.
+Every upgrade path migrates the database before the new processes exist. On Kubernetes the migration is a `pre-install,pre-upgrade` hook Job, so it finishes while the pods of the release you are leaving are still serving. On Compose `upgrade.sh` stops the worker first and migrates with the old API still up, then recreates the containers. When the new kit pins a different bundled PostgreSQL image, the database container is recreated in that same step, so clients see connection errors (refused or reset connections, and a 503 `DATABASE_UNAVAILABLE` from the API) from the moment the old API stops until the new one passes its healthcheck, typically under a minute. `upgrade.sh` names any variable in `.env` the new release does not read before it changes anything, and refuses to start when `.env` names a secret source the new release does not read and neither `.env` nor an override file can supply the signing key. From the moment the migration commits until the last process of the old release is gone, two releases read and write one schema.
 
 The chart ships `strategy.type: Recreate` for both the API and the worker, which holds that window to the gap between the old pods stopping and the new ones passing their probes. Setting `api.strategy.type` or `worker.strategy.type` to `RollingUpdate`, which is what a multi-node install wants, stretches it across the whole rollout: pods of both releases answer the same Service, behind the same load balancer, at the same time. Two things follow from that, and only the second needs anything from you.
 
@@ -403,6 +410,8 @@ The chart ships `strategy.type: Recreate` for both the API and the worker, which
 **2.0 does not upgrade a 1.x database.** Install 2.0 against a new, empty database and keep the 1.x database for the 1.x install that wrote it. The migration, `upgrade.sh`, `restore.sh --keep-version` and the 2.0 chart each refuse a 1.x install or archive before they change anything.
 
 **A migration can run out of lock budget under sustained writes.** A migration that cannot take a table's lock within `MIGRATION_LOCK_TIMEOUT` (default `30s`) rolls back whole with `lock_not_available`. On Compose the migrate CLI exits 75 for this failure alone and `upgrade.sh` retries it, three attempts in all, with the previous API serving throughout. On Kubernetes the migrate Job retries up to its `backoffLimit`; on an external database it is a pre-upgrade hook, so the previous release keeps serving, but on bundled PostgreSQL it is an ordinary resource and the new pods start without waiting for it, crashlooping until a migration lands. If it still fails, set `MIGRATION_LOCK_TIMEOUT=120s` (`compose/.env`, or `migrate.extraEnv` on the chart) and re-run, or upgrade in a low-traffic window. On the chart, size `helm upgrade --timeout` (default 5m) to cover every Job attempt: about four times the lock budget plus the migration's own run time, or Helm reports the hook failed while a later attempt is still running.
+
+**A migration holds the tables it changes until it commits.** Requests through the previous release's pods that touch those tables wait for it, and then complete. A migration therefore changes the schema and builds what it needs, and leaves a rewrite of existing rows to the worker of the new release, which does it afterwards in short batches that lock only the rows they write. On this release that is `records.trace_id`: `?traceId=` on `/v1/records/search` finds a record created before the upgrade once the worker's `trace-id-backfill` task has reached it, `agledger_maintenance_sweep_rows_total{task="trace-id-backfill"}` counts the records it fills, and the worker logs `records.trace_id backfill finished` once it has walked them all.
 
 **Rolling back within a major takes the processes back, not the schema.** `helm rollback` runs no migrate Job, because the migration is a `pre-install,pre-upgrade` hook and rollback triggers neither; the older image comes up against the newer schema, which is the same mixed case as the upgrade and is safe for the same reason. On Compose, `restore.sh` does move the schema, because a dump and the schema it came from have to agree. What does not resolve itself either way is work the newer release scheduled: a worker on the older release carries no handler for a sweep the newer one added, so it fails those jobs rather than completing them, counts them on `agledger_maintenance_unknown_task_total`, and the pg-boss cron keeps minting them from the schedule the newer release wrote. Going forward again clears it.
 
@@ -427,10 +436,11 @@ Restoring is `./scripts/restore.sh <archive>`. Each archive `backup.sh` writes r
 was taken from, so the restore returns the install to that version before starting it. An archive
 that carries no such record (one the chart's backup Job wrote) leaves
 the install where it is, and the run says so. It fetches that image before it
-drops anything, and refuses with the database untouched if it cannot. Two flags change what it does:
-`--force` restores into a database that does not carry the `public.records` table yet, and
+drops anything, and refuses with the database untouched if it cannot. Three flags change what it does:
+`--force` restores into a database that does not carry the `public.records` table yet,
 `--keep-version` restores the data onto the release the install is on now, which re-applies that
-release's migrations over the older dump.
+release's migrations over the older dump, and `--skip-revocations` goes on when the revocations made
+after the backup cannot be read out of the database about to be replaced.
 
 The migration and the checks around it run in the image of the release the install runs, which is
 `AGLEDGER_VERSION` in `compose/.env`. A host restoring into a cluster has no `compose/.env`, so it
@@ -599,7 +609,9 @@ creation instant, plus every unexpired consumed single-use token, and re-applies
 restored schema is current. The counts go into the restore marker and onto the `RESTORE_EPOCH`
 entry. A credential created after the backup is not in the restored database, so there is nothing
 to revoke and the run says how many it skipped. What this cannot cover is a restore onto a host
-whose previous database is gone, since there is no record left to read: the closing notes then
+whose previous database is gone, since there is no record left to read. A database that holds
+AGLedger data and cannot be read stops the run before the drop, with the read's error and its
+cause; `--skip-revocations` goes on without them. Either way the closing notes then
 name the one-off command that lists what can authenticate against the restored database
 (`dist/scripts/post-restore.js --list-active-credentials`), to compare against your own record of
 revocations, which the SIEM stream carries as `ADMIN_KEY_REVOKED`, `ACCOUNT_DEACTIVATED` and
@@ -660,7 +672,8 @@ run it against the database from a host that can reach it, with two flags the cl
 `--target external`, because a `DATABASE_URL` passed in from the environment that names `localhost`
 looks exactly like the bundled container and the script refuses to guess which one to drop; and
 `--no-start`, so the run does not bring up a Compose stack beside the cluster's own workloads.
-The host has to reach the database from the one-off containers the script runs as well as from
+The host needs a Docker daemon the script can run containers with, and `psql` (`pg_restore` runs
+from the host when it is new enough and from a client container otherwise). It has to reach the database from the one-off containers the script runs as well as from
 itself (the revocation read, the migration and the privilege check run in the api image), so a
 `kubectl port-forward` on a laptop is not enough on its own: a container cannot reach the laptop's
 `localhost`. Run it from a bastion or a pod that reaches the database by a routable address, or
@@ -687,7 +700,16 @@ kubectl get deploy -n "$NS" -l "$SEL" \
 kubectl scale -n "$NS" --replicas=0 deploy -l "$SEL"
 
 # 3. copy one out and restore it with the documented script, naming the
-#    release it runs and both database roles the release's Secret holds
+#    release it runs and both database roles the release's Secret holds.
+#    A verified connection (sslmode=verify-ca or verify-full) needs the CA:
+#    sslrootcert=<path> in both URLs, or an exported NODE_EXTRA_CA_CERTS.
+#    psql on this host and the steps restore.sh runs in the image both read
+#    it, and a file at that path on this host is mounted into those steps'
+#    containers at the same path (the image itself carries the AWS RDS /
+#    Aurora bundle at /etc/ssl/certs/rds-global-bundle.pem). Those containers
+#    run as a non-root user, so the file and every directory above it must be
+#    readable by any user: a CA under /root fails the read with EACCES. With
+#    uselibpqcompat=true, sslmode=verify-ca needs sslrootcert in the URL.
 kubectl cp "$NS"/agl-backups:/backups/backup-<timestamp>.tar.gz ./backup-<timestamp>.tar.gz
 DATABASE_URL='<runtime-role URL, reachable from here and from a container here>' \
 DATABASE_URL_MIGRATE='<owner-role URL, the same way>' \
@@ -735,17 +757,70 @@ sub-minute RPO and the CronJob is a portable second copy.
 
 ## SIEM export
 
-Three channels, all off until `SIEM_ENABLED=true`, and all serving the same bytes for the same row:
-a file sink (`SIEM_FILE_ENABLED`, `SIEM_FILE_PATH`), an HTTP push sink (`SIEM_HTTP_ENABLED`,
-`SIEM_HTTP_URL`) and a pull endpoint, `GET /v1/siem/stream`. Every knob is documented where it is
-set, in `compose/.env.example`.
+Three channels, all serving the same bytes for the same row. Two are push sinks, off until
+`SIEM_ENABLED=true`: a file sink (`SIEM_FILE_ENABLED`, `SIEM_FILE_PATH`) and an HTTP sink
+(`SIEM_HTTP_ENABLED`, `SIEM_HTTP_URL`). The third is a pull endpoint, `GET /v1/siem/stream`, which
+is always served and needs no setting. Every knob is documented where it is set, in
+`compose/.env.example`.
+
+**A push sink delivers a batch before it moves on.** The position advances only once every enabled
+sink has taken the batch: the HTTP collector answered 2xx, and the write to the file completed.
+A sink that refuses holds the feed for both, and the batch is sent again to both on every retry
+until both take it, so a collector should deduplicate on the row id (`id` under `SIEM_FORMAT=raw`, `metadata.uid` in OCSF).
+A redirect is a refusal: the Server follows none, so `SIEM_HTTP_URL` has to name the address that
+answers 2xx.
+
+**The first run sends the history.** The position starts at the install, not at the moment push
+export is switched on, so the first time a sink runs it sends every row written since the install,
+oldest first, and reaches current events once that is through. Plan for that volume at the
+collector on an install that has been running for a while. The pull endpoint starts wherever its
+caller's `since` says.
+
+**`SIEM_START_AT` starts later.** Set it to an RFC 3339 instant with an offset
+(`SIEM_START_AT=2026-11-17T00:00:00Z`; `date -u +%FT%TZ` prints the current one) and the worker
+moves the position forward to it before its first batch. Rows written before that instant are not
+pushed. They stay on the Server, and the pull endpoint serves them. The position only moves
+forward, so the setting can stay in place: on a later boot, or once the feed has passed that
+instant, it changes nothing. A later value on a running install skips the rows between the
+position and that value, and the worker logs a WARN naming both. An instant in the future is
+refused at boot. With no push sink running there is no position to move, and the setting does
+nothing.
+
+**A placed position is on the feed.** When `SIEM_START_AT` moves the position, the Server writes
+an `admin.siem_position_moved` row whose payload carries `reason: "start_at"`, the new `position`
+and the `previousPosition`. It is stamped when the move happens and arrives in order with the
+rows written around it, so the feed itself says where it skipped. The same row, with `reason: "cursor_row_missing"`, is written if the
+`siem_cursor` row is ever found gone: found at boot, the Server creates it again at `SIEM_START_AT`
+when that is set and otherwise at the present; found gone while the worker runs, at the present,
+on the next poll cycle. It logs a WARN either way, and the cycle that finds it gone counts
+`agledger_siem_poll_skipped_total{reason="cursor_missing"}`.
+
+**A change in security settings between boots is on the feed.** The settings a restart can loosen
+are read from the environment: `VAULT_ANCHOR_ENABLED`, `RATE_LIMIT_ENABLED`,
+`RATE_LIMIT_EXEMPT_OWNERS`, `RATE_LIMIT_EXEMPT_IPS`, `SSRF_ALLOW_CIDRS`, `SSRF_ALLOW_PLAIN_HTTP`,
+`VAULT_DISTRUSTED_KEYS` and, on the worker, whether SIEM export and each of its sinks is on. The
+API and the worker each keep the values they last booted with. A boot that finds a different value
+writes one `admin.security_posture_changed` row naming each setting with the value it had and the
+value it has; a restart into the same settings writes nothing. `loosened: true` marks a change that
+relaxes a control (anchoring or rate limiting off, plain `http://` allowed, an exemption or an
+allowed range added, a key no longer distrusted, a sink off) and ranks MEDIUM in OCSF; a change
+with no such part ranks INFORMATIONAL. List entries are compared as text, so an entry edited in
+place (a CIDR narrowed, a distrust cutoff moved) reads as one removed and one added and is marked
+loosened either way. The collector URL is never recorded, only whether the HTTP sink is on.
+`replicasDisagree: true` means another process start of the same kind booted with different settings
+within the last 10 minutes: either two replicas are running different configuration, and each
+restart of either writes another row until they agree, or the setting was changed twice in that
+time. The first boot of a release that has this record stores the settings and writes no row.
 
 **The worker drains the push sinks; the API serves the pull endpoint.** Both push channels advance
 one shared cursor row, and the sinks are per-process, so two draining processes take alternate
 batches. One HTTP collector sees the whole feed either way, because both halves arrive in the same
-place. Two file sinks do not: each container's `SIEM_FILE_PATH` holds a slice and nothing in either
-file says so. That is why only the worker polls, and why a file sink is the complete feed only under
-a single worker replica. Past one replica, use the HTTP sink.
+place. Two file sinks do not: each container's `SIEM_FILE_PATH` holds a slice, and the file gives
+no sign of it. That is why only the worker polls, and why a file sink is the complete feed only under
+a single worker replica. Past one replica, use the HTTP sink. A worker that writes a file and finds
+another worker draining alongside it logs a WARN and counts it on
+`agledger_siem_file_sink_peer_advances_total`, which `AGLedgerSiemFileSinkSplit` alerts on. A
+rolling restart, where two workers overlap for the length of a shutdown, does not count.
 
 **A collector on loopback or a private address needs no `SSRF_ALLOW_CIDRS`.** `SIEM_HTTP_URL` is
 operator configuration, so the egress guard on it refuses only the cloud instance-metadata service,
@@ -885,3 +960,5 @@ The [LICENSE](LICENSE) in this repository is the **Installer License**. It gover
 - [agledger.ai/docs](https://agledger.ai/docs): documentation
 - [SECURITY.md](SECURITY.md): release verification, SBOM, provenance
 - [Docker Hub](https://hub.docker.com/r/agledger/agledger): server image
+
+AGLedger is a trademark of AGLedger LLC. All other trademarks are the property of their respective owners. Patent pending.

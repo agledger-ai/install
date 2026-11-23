@@ -2,7 +2,7 @@
   "type": "meridian-coverage-check-v1",
   "category": "coverage",
   "displayName": "Coverage Determination",
-  "description": "Coverage sub-agent assertion. A denial must carry both a factual and a legal basis \u2014 enforced by an if/then conditional-required, so the record cannot deny coverage without recording why.",
+  "description": "Coverage sub-agent assertion. A denial must carry both a factual and a legal basis, enforced by an if/then conditional-required, so the record cannot deny coverage without recording why.",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,

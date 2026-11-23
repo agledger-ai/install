@@ -2,7 +2,7 @@
   "type": "meridian-damage-assessment-v1",
   "category": "assessment",
   "displayName": "Damage Assessment",
-  "description": "Loss estimate plus the method used and an evidence reference. Notarize-only \u2014 AGLedger records the estimate and how it was reached; it does not judge whether the estimate is correct.",
+  "description": "Loss estimate plus the method used and an evidence reference. Notarize-only. AGLedger records the estimate and how it was reached; it does not judge whether the estimate is correct.",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# AGLedger — Uninstaller
+# AGLedger: Uninstaller
 # =============================================================================
 # Stops all containers and removes Docker volumes. By default .env is kept so
 # you can reinstall without regenerating secrets; pass --purge to remove it.
@@ -70,7 +70,7 @@ if [[ "$NON_INTERACTIVE" != "true" ]]; then
   else
     echo "${ENV_FILE} will be kept so secrets survive a reinstall."
   fi
-  # Fail loud when stdin isn't a TTY — otherwise `read` returns empty, confirm
+  # Fail loud when stdin isn't a TTY, because otherwise `read` returns empty, confirm
   # is empty, and we silently abort with exit 0 (looks like success in
   # automation logs).
   if [[ ! -t 0 ]]; then

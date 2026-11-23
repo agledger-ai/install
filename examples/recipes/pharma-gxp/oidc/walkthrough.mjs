@@ -14,13 +14,16 @@
 //   2. a release to the point of signature: proposal, release opened by the signer, check
 //      delegated and completed, release completed by the proposer
 //   3. the cross-record check (../oq/crosscheck.py) over the exports, before the signature
-//   4. the signer authenticates again and signs: an accept verdict with a signature meaning
+//   4. the signer authenticates again and signs: an accept verdict sent with
+//      signatureMeaning, which the Server seals with the name and subject from the token
 //   5. two negative controls, each a way an org admin key can put the signer's name on a
-//      release, and each admitted by the engine: the admin key renders the verdict itself,
-//      and the admin key mints an API key for the signer's agent and signs with that. In
-//      both exports the verdict entry carries no IdP subject, and the cross-record check
-//      flags both.
-//   6. every export verified offline against supplied keys, the signer's cert keys included
+//      release: the admin key renders the verdict itself, and the admin key mints an API key
+//      for the signer's agent and signs with that. The engine refuses signatureMeaning from
+//      either, and admits the verdict sent without it, the name typed into `checks`. In both
+//      exports the verdict entry carries no signature and no IdP subject, and the
+//      cross-record check flags both.
+//   6. every export verified offline against supplied keys, the signer's cert keys included,
+//      and the signed release's readable copy (audit-export?format=html) written beside it
 //
 // The check evidence is a fixed body: this walkthrough exercises the signature, not the
 // system of record. `oq/run.sh` drives the real checker against Odoo.
@@ -69,7 +72,8 @@ async function signIn({ fresh = false, username = E.QA_USERNAME ?? 'qa.release',
       if (u.pathname !== '/callback') { res.writeHead(404).end(); return; }
       const good = u.searchParams.get('state') === state && u.searchParams.get('code');
       res.writeHead(good ? 200 : 400, { 'content-type': 'text/plain' }).end(good ? 'Signed in. You can close this tab.' : 'Sign-in failed.');
-      good ? resolve(u.searchParams.get('code')) : reject(new Error(`callback without a code: ${u.search.slice(0, 200)}`));
+      if (good) resolve(u.searchParams.get('code'));
+      else reject(new Error(`callback without a code: ${u.search.slice(0, 200)}`));
     }).listen(PORT, '127.0.0.1');
     setTimeout(() => reject(new Error('no sign-in within five minutes')), 300_000).unref();
   });
@@ -108,7 +112,7 @@ const session = (opts) => { const credential = oidcCertCredential({ getOidcToken
 async function call(key, method, path, body) {
   const r = await fetch(BASE + path, { method, headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(`${method} ${path} answered ${r.status}: ${JSON.stringify(j).slice(0, 300)}`);
+  if (!r.ok) throw Object.assign(new Error(`${method} ${path} answered ${r.status}: ${JSON.stringify(j).slice(0, 300)}`), { status: r.status, body: j });
   return j;
 }
 const PROP = { id: E.PROPOSER_AGENT_ID, key: E.PROPOSER_API_KEY }, CHK = { id: E.CHECKER_AGENT_ID, key: E.CHECKER_API_KEY };
@@ -154,7 +158,11 @@ function crosscheck() {
   for (const line of (r.stdout ?? '').split('\n').filter((l) => l.startsWith('[') || l.startsWith('  '))) console.log('     ' + line);
   return r.status;
 }
-const signature = (meaning) => ({ signatureMeaning: meaning, signerName, signerRole: 'qa-release', regulation: '21 CFR 11.50', signedAt: new Date().toISOString() });
+// What the site records beside the signature. The meaning, name, subject and time are the Server's.
+const SITE_CHECKS = { signerRole: 'qa-release', regulation: '21 CFR 11.50' };
+// What a key that is not the person can still send: the name typed in, as text.
+const typedName = () => ({ ...SITE_CHECKS, signatureMeaning: 'approval', signerName, signedAt: new Date().toISOString() });
+const reasonOf = (e) => /"reason":"([a-z_]+)"/.exec(JSON.stringify(e.body ?? ''))?.[1];
 
 step('1. the signer signs in: a cert, not a key');
 const opening = session();
@@ -184,28 +192,45 @@ if (crosscheck() === 0) ok('the release holds: checkRef, checker, plan, age and 
 
 step('4. the signer authenticates again and signs');
 const signing = session({ fresh: true });
-let verdictBody = null;
+let sealed = null;
 try {
-  await signing.client.auth.getMe(); // the sign-in happens here, so signerName is the name on this session's token
-  verdictBody = { completionId: signed.completion, verdict: 'accept', checks: signature('approved'), notes: `Reviewed precondition check ${signed.check}. Approved: the batch record may be created.` };
-  await signing.client.records.submitVerdict(signed.release, verdictBody);
-  const st = (await call(PROP.key, 'GET', `/v1/records/${signed.release}`)).status;
-  if (st === 'FULFILLED') ok(`accept verdict rendered under a second cert; release ${signed.release} reads ${st}`); else bad(`release reads ${st} after the verdict`);
+  const me2 = await signing.client.auth.getMe(); // the sign-in happens here, so signerName is the name on this session's token
+  if (me2.oidc?.name === signerName) ok(`the Server reads the printed name it will seal from the token: ${me2.oidc.name}`);
+  else bad(`GET /v1/auth/me oidc.name is ${JSON.stringify(me2.oidc?.name)}, the token's name claim is ${JSON.stringify(signerName)}`);
+  const res = await signing.client.records.submitVerdict(signed.release, { completionId: signed.completion, verdict: 'accept', signatureMeaning: 'approval',
+    checks: SITE_CHECKS, notes: `Reviewed precondition check ${signed.check}. Approved: the batch record may be created.` });
+  sealed = res.signature ?? null;
+  const s = sealed ?? {};
+  if (s.meaning === 'approval' && s.signerName === signerName && s.signerIss === ISS && s.signerSub === QA_SUB && s.signedAt === res.reportedAt) ok(`signed: ${s.signerName}, ${s.meaning}, ${s.signedAt}, subject ${s.signerSub}`);
+  else bad(`the verdict answered signature ${JSON.stringify(res.signature)}`);
+  if (res.recordStatus === 'FULFILLED') ok(`accept verdict rendered under a second cert; release ${signed.release} reads ${res.recordStatus}`); else bad(`release reads ${res.recordStatus} after the verdict`);
 } catch (e) { bad(`signing: ${e instanceof AgledgerApiError ? `${e.status} ${e.code} ` : ''}${e.message?.slice(0, 300)}`); }
 
 step('5. negative controls: two ways an org admin key signs in the signer\'s name');
+// Each key first asks for a signature, which the engine refuses, then renders the verdict
+// without one, the name typed into checks, which it admits.
+async function unsignedInTheSignersName(label, key, c, notes) {
+  try {
+    await call(key, 'POST', `/v1/records/${c.release}/verdict`, { completionId: c.completion, verdict: 'accept', signatureMeaning: 'approval', checks: SITE_CHECKS, notes });
+    bad(`${label}: the engine sealed a signature for a key that is not the person`);
+  } catch (e) {
+    if (e.status === 422 && reasonOf(e) === 'signature_requires_oidc_identity') ok(`${label}: signatureMeaning is refused, 422 signature_requires_oidc_identity`);
+    else bad(`${label}: signatureMeaning answered ${e.message.slice(0, 200)}`);
+  }
+  try {
+    await call(key, 'POST', `/v1/records/${c.release}/verdict`, { completionId: c.completion, verdict: 'accept', checks: typedName(), notes });
+    ok(`${label}: the verdict without signatureMeaning, "${signerName}, approval" typed into checks, is admitted: release ${c.release} reads ${(await call(PROP.key, 'GET', `/v1/records/${c.release}`)).status}`);
+  } catch (e) { bad(`${label}: the unsigned verdict was refused, so this control shows nothing: ${e.message.slice(0, 200)}`); }
+}
 const admin = await releaseToSignature(opening.client, `BATCH-2026-${RUN.slice(-3)}9`);
-try {
-  await call(E.ADMIN_API_KEY, 'POST', `/v1/records/${admin.release}/verdict`, { completionId: admin.completion, verdict: 'accept', checks: signature('approved'), notes: 'Rendered with an org admin key, in the signer\'s name.' });
-  ok(`the admin key renders the verdict and the engine admits it: release ${admin.release} reads ${(await call(PROP.key, 'GET', `/v1/records/${admin.release}`)).status}`);
-} catch (e) { bad(`the admin verdict was refused, so this control shows nothing: ${e.message.slice(0, 200)}`); }
+await unsignedInTheSignersName('admin key', E.ADMIN_API_KEY, admin, 'Rendered with an org admin key, in the signer\'s name.');
 const keyed = await releaseToSignature(opening.client, `BATCH-2026-${RUN.slice(-3)}7`);
 try {
   const minted = await call(E.ADMIN_API_KEY, 'POST', '/v1/admin/api-keys', { ownerId: QA_ID, ownerType: 'agent', role: 'agent', scopeProfile: 'agent-full' });
-  await call(minted.apiKey, 'POST', `/v1/records/${keyed.release}/verdict`, { completionId: keyed.completion, verdict: 'accept', checks: signature('approved'), notes: 'Rendered with an API key an admin minted for the signer\'s agent.' });
+  await unsignedInTheSignersName('a key minted for the signer\'s agent', minted.apiKey, keyed, 'Rendered with an API key an admin minted for the signer\'s agent.');
   await call(E.ADMIN_API_KEY, 'PATCH', `/v1/admin/api-keys/${minted.keyId}`, { isActive: false, reason: 'walkthrough negative control' });
-  ok(`the admin key mints a key for the signer's agent, signs with it, and the engine admits it: release ${keyed.release} reads ${(await call(PROP.key, 'GET', `/v1/records/${keyed.release}`)).status} (key revoked)`);
-} catch (e) { bad(`the minted-key verdict was refused, so this control shows nothing: ${e.message.slice(0, 200)}`); }
+  ok('the minted key is revoked');
+} catch (e) { bad(`minting or revoking the signer's key: ${e.message.slice(0, 200)}`); }
 
 step('6. the exports, verified offline');
 await exportCase('signed', signed, { verdict: 'accept' });
@@ -226,18 +251,26 @@ for (const [name, c] of [['signed', signed], ['admin-signed', admin], ['key-sign
     if (who.owner === QA_ID && who.iss === ISS && who.sub === QA_SUB) ok(`signed: the verdict entry names agent ${who.owner} and IdP subject ${who.sub}`);
     else bad(`signed: verdict entry actor ${JSON.stringify(who)}`);
     const flat = (o) => JSON.stringify(Object.entries(o ?? {}).sort());
-    if (flat(entry.payload.checks) === flat(verdictBody?.checks)) ok(`signed: the entry carries the signature meaning verbatim: ${JSON.stringify(entry.payload.checks)}`);
-    else bad(`signed: checks on the chain ${JSON.stringify(entry?.payload?.checks)}`);
+    if (sealed && flat(entry.payload.signature) === flat(sealed)) ok(`signed: the entry seals the signature the verdict answered: ${JSON.stringify(entry.payload.signature)}`);
+    else bad(`signed: signature on the chain ${JSON.stringify(entry?.payload?.signature)}`);
     if (v.agentSignatures.present > 0 && v.agentSignatures.present === v.agentSignatures.verified) ok(`signed: ${v.agentSignatures.verified}/${v.agentSignatures.present} agent signatures on the release re-verify against the signer's two cert keys`);
     else bad(`signed: agent signatures present=${v.agentSignatures.present} verified=${v.agentSignatures.verified}`);
   } else if (name === 'admin-signed') {
-    if (who.owner !== QA_ID && who.role === 'admin' && !who.sub) ok(`admin-signed: the verdict entry names ${who.role} ${who.owner} and no IdP subject, whatever its checks say`);
+    if (who.owner !== QA_ID && who.role === 'admin' && !who.sub && !entry.payload.signature) ok(`admin-signed: the verdict entry names ${who.role} ${who.owner}, no signature and no IdP subject, whatever its checks say`);
     else bad(`admin-signed: verdict entry actor ${JSON.stringify(who)}`);
   } else {
-    if (who.owner === QA_ID && !who.sub) ok(`key-signed: the verdict entry names the signer's agent ${who.owner} and no IdP subject, and it carries no signature of the signer's (${v.agentSignatures.verified} on this release, from opening it)`);
+    if (who.owner === QA_ID && !who.sub && !entry.payload.signature) ok(`key-signed: the verdict entry names the signer's agent ${who.owner}, no signature and no IdP subject, and no request signature of the signer's (${v.agentSignatures.verified} on this release, from opening it)`);
     else bad(`key-signed: verdict entry actor ${JSON.stringify(who)}`);
   }
 }
-if (crosscheck() === 0) ok('the cross-record check holds for the signed release and flags the other two (reporter, signer)'); else bad('the cross-record check did not come out as expected');
+// The readable copy of the signed release: what a reviewer opens, with the signature's name,
+// meaning and time shown beside the record (11.50(b)).
+const html = await fetch(`${BASE}/v1/records/${signed.release}/audit-export?format=html`, { headers: { authorization: `Bearer ${PROP.key}` } });
+const page = await html.text();
+writeFileSync(join(OUT, `${signed.release}.audit-export.html`), page);
+const esc = (s) => String(s).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+if (html.ok && sealed && [sealed.signerName, sealed.meaning, sealed.signerSub].every((s) => page.includes(s) || page.includes(esc(s)))) ok(`signed: the readable copy shows ${sealed.signerName}, ${sealed.meaning} and the subject (exports/${signed.release}.audit-export.html)`);
+else bad(`signed: format=html answered ${html.status} and does not show the signature`);
+if (crosscheck() === 0) ok('the cross-record check holds for the signed release and flags the other two (signature, reporter, signer)'); else bad('the cross-record check did not come out as expected');
 
 console.log(fail === 0 ? '\nWALKTHROUGH PASS' : '\nWALKTHROUGH FAIL'); process.exit(fail);

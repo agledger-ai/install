@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Finance / KYC — AGLedger vertical recipe.
+# Finance / KYC: AGLedger vertical recipe.
 # Registers all contract types in this recipe against YOUR AGLedger Server.
 #
 # A recipe is a starting point you adapt, not a turnkey product. Stand it up,
@@ -26,7 +26,7 @@
 # RECIPE_FORCE=1 (DESTRUCTIVE): disable + delete each type before POSTing, so the
 # recipe's exact schema lands as a fresh v1 regardless of what the org already has.
 # The engine refuses to delete a type that has live records. Use only to reset a
-# scratch org to the recipe's canonical shape — never against an org with real data.
+# scratch org to the recipe's canonical shape; never against an org with real data.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 : "${AGLEDGER_API_URL:?set AGLEDGER_API_URL to your Server URL}"
@@ -60,17 +60,23 @@ if [[ "$role" != "admin" ]]; then
   exit 1
 fi
 
+# `local` is the label a registration without one takes.
+PUBLISHER="${RECIPE_PUBLISHER:-local}"
 fail=0
 for f in "$HERE"/types/*.json; do
   type=$(jq -r .type "$f")
   if [[ "$FORCE" == "1" ]]; then
-    curl -s -X PATCH  "$API/v1/schemas/$type/disable" -H "Authorization: Bearer $AK" >/dev/null 2>&1
-    curl -s -X DELETE "$API/v1/schemas/$type"         -H "Authorization: Bearer $AK" >/dev/null 2>&1
+    curl -s -X PATCH  "$API/v1/schemas/$type/disable?publisher=$PUBLISHER" -H "Authorization: Bearer $AK" >/dev/null 2>&1
+    curl -s -X DELETE "$API/v1/schemas/$type?publisher=$PUBLISHER"         -H "Authorization: Bearer $AK" >/dev/null 2>&1
   fi
   attempt=0
   while :; do
+    # RECIPE_PUBLISHER registers each type under that publisher label rather
+    # than `local`, which is what to set when the same types also arrive by
+    # manifest import under a named publisher.
+    body=$(jq -c --arg p "${RECIPE_PUBLISHER:-}" 'if $p == "" then . else . + {publisher: $p} end' "$f")
     resp=$(curl -s -w $'\n%{http_code}' -X POST "$API/v1/schemas" \
-        -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' --data-binary "@$f")
+        -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' --data-binary "$body")
     code="${resp##*$'\n'}"; json="${resp%$'\n'*}"
     [[ "$code" != "429" ]] && break
     attempt=$((attempt + 1))
@@ -90,10 +96,12 @@ for f in "$HERE"/types/*.json; do
   fi
 done
 
-echo "----- recipe types now registered on this Server -----"
+# Named with the publisher this run registered under: a bare type name is
+# refused with a 422 once the Org holds the type under a second publisher.
+echo "----- recipe types now registered on this Server under publisher $PUBLISHER -----"
 for f in "$HERE"/types/*.json; do
   t=$(jq -r .type "$f")
-  r=$(curl -s -w $'\n%{http_code}' "$API/v1/schemas/$t" -H "Authorization: Bearer $AK")
+  r=$(curl -s -w $'\n%{http_code}' "$API/v1/schemas/$t?publisher=$PUBLISHER" -H "Authorization: Bearer $AK")
   c="${r##*$'\n'}"; j="${r%$'\n'*}"
   if [[ "$c" == "200" ]]; then
     echo "$j" | jq -r '"\(.type)\tv\(.version)\t\(.status)\t\(if (.completionSchema.properties|length)>0 then (.defaultGateMode//"auto") else "notarize-only" end)"' 2>/dev/null

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# AGLedger — Restore Script
+# AGLedger: Restore Script
 # =============================================================================
 # Restores PostgreSQL data from a backup tarball.
 # Works with both bundled PostgreSQL and external databases (Aurora, RDS, etc.).
@@ -19,6 +19,10 @@ set -euo pipefail
 #   --target bundled|external  Which database this run drops, when a
 #                              DATABASE_URL naming localhost could be either.
 #   --no-start                 Leave the compose stack down at the end.
+#   --skip-revocations         Go on when the revocations made after the
+#                              backup cannot be read out of the database about
+#                              to be replaced. Without it the run stops before
+#                              the drop; with it they are not carried across.
 #   --version <X.Y.Z>          The release this install runs, for a host whose
 #                              compose/.env names none (restoring into a
 #                              cluster). AGLEDGER_VERSION in the environment
@@ -223,6 +227,10 @@ write_post_restore_input() {
   printf '%s\n' "kubernetes-${RESTORE_MARKER_SUFFIX}" > "${dir}/marker-id" || return 1
   printf '%s\n' "${RESTORE_STARTED_AT}" > "${dir}/restored-at" || return 1
   printf '%s\n' "$(basename "${TARBALL}")" > "${dir}/archive" || return 1
+  if [[ "${#BACKUP_IDENTITY_ARGS[@]}" -eq 4 ]]; then
+    printf '%s\n' "${BACKUP_IDENTITY_ARGS[1]}" > "${dir}/database-token" || return 1
+    printf '%s\n' "${BACKUP_IDENTITY_ARGS[3]}" > "${dir}/${BACKUP_IDENTITY_ARGS[2]#--}" || return 1
+  fi
   if [[ "${REVOCATION_OUTCOME}" == exported ]]; then
     gzip -c "${REVOCATIONS_FILE}" > "${dir}/revocations.ndjson.gz" || return 1
   fi
@@ -239,6 +247,9 @@ DB_TARGET=""
 # Leave the compose stack down at the end. The cluster recipe passes this: the
 # workloads it restores for are the cluster's Deployments, not containers here.
 NO_START=false
+# Whether a failed read of the revocations to carry across stops the run (the
+# default) or is passed over, as the operator asked.
+SKIP_REVOCATIONS=false
 # The release named on the command line, and the one the calling environment
 # names, read before load_env can overwrite the variable from compose/.env.
 VERSION_FLAG=""
@@ -249,6 +260,7 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE=true; shift ;;
     --keep-version) KEEP_VERSION=true; shift ;;
     --no-start) NO_START=true; shift ;;
+    --skip-revocations) SKIP_REVOCATIONS=true; shift ;;
     --version)
       [[ -n "${2:-}" ]] || die "--version needs a value: the release this install runs, e.g. 2.0.0"
       VERSION_FLAG="$2"; shift 2 ;;
@@ -380,7 +392,7 @@ fi
 # On the external path this is the database DATABASE_URL names, not POSTGRES_DB.
 # POSTGRES_DB configures the bundled PostgreSQL container. It is in every
 # install's .env at its `agledger` default, because install.sh copies
-# .env.example whole, and only the bundled path ever re-records it — so on an
+# .env.example whole, and only the bundled path ever re-records it, so on an
 # external install it is a stale default that names nothing. Reading it here
 # sent the restore to the right server and the wrong database: a new empty
 # `agledger` was created and restored into while the real database was left
@@ -392,8 +404,8 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   # database on the customer's server, and psql is not version-fussy, so any
   # recent one works.
   #
-  # pg_restore is not in this check. It has no server-version gate at all —
-  # what it refuses is an ARCHIVE written by a newer pg_dump than itself — so
+  # pg_restore is not in this check. It has no server-version gate at all:
+  # what it refuses is an ARCHIVE written by a newer pg_dump than itself, so
   # it goes through pg_client_run, which picks the host binary when it is at
   # least the server's major and a container client at that major otherwise.
   # That is the right client whenever the archive came from this server, which
@@ -431,8 +443,8 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   # The two URLs must name the same database on the same server. Only the name
   # was ever compared, and the name is the half that matches by accident: the
   # engine's default is `agledger` on every install, so a DATABASE_URL_MIGRATE
-  # left pointing at a different host — a copy-paste from another environment,
-  # a stale line after a migration — passes a name check, passes the
+  # left pointing at a different host (a copy-paste from another environment,
+  # a stale line after a migration) passes a name check, passes the
   # is-this-an-AGLedger-database check (it IS one), and gets dropped. The
   # backup is read from DATABASE_URL and the drop is issued on
   # DATABASE_URL_MIGRATE, so the two being different servers means destroying
@@ -447,8 +459,50 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   if [[ -n "${PGDATABASE:-}" && "${PGDATABASE}" != "${TARGET_DB}" ]]; then
     die "DATABASE_URL_MIGRATE names database \"${PGDATABASE}\" but DATABASE_URL names \"${TARGET_DB}\". They must be the same database."
   fi
+
+  # The host steps connect through libpq, which takes the CA from PGSSLROOTCERT
+  # (set just above), and pass. The revocation read, the runtime-role check and
+  # the migration run node in the Server image, whose driver refuses this one
+  # string before it connects; the last two run after the drop.
+  for url_var in DATABASE_URL DATABASE_URL_MIGRATE; do
+    [[ -n "${!url_var:-}" ]] || continue
+    if db_url_driver_refuses "${!url_var}"; then
+      log "${url_var} combines uselibpqcompat=true with sslmode=verify-ca and no sslrootcert."
+      log "  psql connects on it, and the pg driver in the Server image refuses it before connecting, so"
+      log "  the steps this run takes in that image (the revocation read before the drop, the runtime-role"
+      log "  check and the migration after it) would fail. Add sslrootcert=<CA path> to the URL, raise it"
+      log "  to sslmode=verify-full, or drop uselibpqcompat=true. Restoring into a cluster, a CA file at"
+      log "  that path on this host is mounted into those containers at the same path; otherwise the path"
+      log "  has to be one the image carries, such as /etc/ssl/certs/rds-global-bundle.pem."
+      refuse_untouched "Fix the URL and re-run."
+    fi
+  done
 else
   TARGET_DB="${POSTGRES_DB}"
+fi
+
+# The CA files the one-off containers need, at the paths the connection names.
+#
+# On a cluster restore the database is the cluster's, reached from this host,
+# and nothing mounts a CA into the containers this run starts: they see only
+# what the image carries. A CA named by an exported NODE_EXTRA_CA_CERTS, or by
+# sslrootcert in either URL, that exists on this host is mounted read-only at
+# the same path, so the containers verify with the file the host steps did. A
+# path not on this host is left to the image (the AWS RDS / Aurora bundle is
+# at /etc/ssl/certs/rds-global-bundle.pem). A Compose install is left alone:
+# its Server containers see the CA through its own override mounts, and the
+# one-off steps here have to see what they see.
+CONTAINER_CA_ARGS=()
+if [[ "${CLUSTER_RESTORE}" == true && "${USES_BUNDLED_PG}" == "false" ]]; then
+  while IFS= read -r ca_path; do
+    CONTAINER_CA_ARGS+=(-v "${ca_path}:${ca_path}:ro")
+  done < <(container_ca_mounts "${NODE_EXTRA_CA_CERTS:-}" \
+             "$(urldecode "$(db_url_query_param "${DATABASE_URL:-}" sslrootcert)")" \
+             "$(urldecode "$(db_url_query_param "${DATABASE_URL_MIGRATE:-}" sslrootcert)")")
+  for ca_path in ${CONTAINER_CA_ARGS[@]+"${CONTAINER_CA_ARGS[@]}"}; do
+    [[ "${ca_path}" == -v ]] && continue
+    log "Mounting ${ca_path%%:*} from this host into this run's containers at the same path."
+  done
 fi
 
 # --- Confirmation ---
@@ -472,7 +526,7 @@ if [[ "${NON_INTERACTIVE}" != "true" ]]; then
   # DR runbooks pipe into restore.sh expecting it to run; silently aborting with
   # exit 0 masks the no-op and subsequent smoke tests hit an empty database.
   if [[ ! -t 0 ]]; then
-    log "WARN: non-TTY stdin detected — proceeding as if --non-interactive was passed."
+    log "WARN: non-TTY stdin detected, proceeding as if --non-interactive was passed."
   else
     read -rp "  Continue? (y/N) " confirm
     if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
@@ -562,7 +616,7 @@ if ! pg_dump_magic_ok "${RESTORE_DIR}/db.dump"; then
     log "  $0 repaired.tar.gz"
     log ""
     log "If it is binary, or the archive still will not read, the file was damaged in"
-    log "storage or transit and there is nothing to recover from it — use another backup."
+    log "storage or transit and there is nothing to recover from it. Use another backup."
   fi
   refuse_untouched
 fi
@@ -725,14 +779,14 @@ fi
 # The SQL arrives on stdin, not through -c: psql performs :var interpolation
 # only on input it reads, so with -c the `:"db"` reaches the server verbatim and
 # every one of these statements is a syntax error. ON_ERROR_STOP comes with it,
-# because psql reading a script exits 0 after an ERROR unless it is set — which
+# because psql reading a script exits 0 after an ERROR unless it is set, which
 # would leave the `|| die` guards further down never firing.
 if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   PROBE_ERR="${RESTORE_TMP}/probe.err"
 
   # "Answered: absent" and "could not ask" are different answers, and only the
   # first means it is safe to carry on. Collapsing them let a connection reset
-  # during a failover — the situation a restore happens in — skip the guard
+  # during a failover (the situation a restore happens in) skip the guard
   # below entirely and go straight to a DROP on a fresh connection.
   if ! DB_PRESENT="$(psql -qX -v ON_ERROR_STOP=1 -d postgres -tA -v db="${TARGET_DB}" \
       <<<"SELECT count(*) FROM pg_database WHERE datname = :'db';" 2>"${PROBE_ERR}")"; then
@@ -743,7 +797,7 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
 
   if [[ "${DB_PRESENT}" == "1" ]]; then
     # Refuse to drop a database that is not this install's. On a shared managed
-    # instance — the whole point of external-database mode — the name in
+    # instance (the whole point of external-database mode) the name in
     # DATABASE_URL can be anything, and DROP DATABASE is not undoable.
     #
     # An EMPTY database passes: that is what a run interrupted between CREATE
@@ -765,7 +819,7 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
 
     if [[ "${TARGET_SHAPE}" == "other" ]]; then
       if [[ "${FORCE}" == "true" ]]; then
-        log "WARN: --force — \"${TARGET_DB}\" on ${PGHOST} holds tables that are not this install's."
+        log "WARN: --force: \"${TARGET_DB}\" on ${PGHOST} holds tables that are not this install's."
         log "      Dropping it anyway, as asked. This cannot be undone."
       else
         log "Database \"${TARGET_DB}\" on ${PGHOST} holds tables but no public.records, so it does"
@@ -930,13 +984,15 @@ fi
 # harmlessly to rows the backup already held as revoked.
 #
 # That record exists only in the very database the backup was dumped from,
-# carried forward to now. A fresh host's own database, a standby restored from
-# an earlier backup, and the database a previous attempt at this restore left
-# behind all read fine and hold none of the revocations the restore undoes, so a
-# count of 0 from them would say nothing was revoked when nothing could be
-# known. The archive records which database it was dumped from (database_token
-# in backup-metadata, see database_token_sql) and the export reads nothing out
-# of any other. REVOCATION_OUTCOME is then other_database (compared, and it is
+# carried forward to now, or in one whose latest restore loaded this same
+# backup: a restore recreates the database, which gives it a new token, so the
+# post-restore step records the backup's database_token and position on its
+# restore marker and the export reads that. A fresh host's own database and a
+# standby restored from an earlier backup read fine and hold none of the
+# revocations the restore undoes, so a count of 0 from them would say nothing
+# was revoked when nothing could be known. The archive records which database
+# it was dumped from (database_token in backup-metadata, see database_token_sql)
+# and the export reads nothing out of any other. REVOCATION_OUTCOME is then other_database (compared, and it is
 # not that database) or unproven (nothing could be compared), and the closing
 # notes handle both as they do a database that could not be read.
 REVOCATIONS_FILE="${RESTORE_TMP}/revocations.ndjson"
@@ -958,15 +1014,45 @@ elif [[ -z "${BACKUP_NEXT_XID}" ]] && is_wal_lsn "${BACKUP_WAL_LSN}"; then
   BACKUP_POSITION_ARGS=(--wal-lsn "${BACKUP_WAL_LSN}")
 fi
 : > "${REVOCATIONS_FILE}"
+# The backup's identity, recorded on this restore's marker so a later restore
+# of the same archive over the database this one leaves reads its revocations.
+BACKUP_IDENTITY_ARGS=()
+if is_database_token "${BACKUP_DATABASE_TOKEN}" && [[ ${#BACKUP_POSITION_ARGS[@]} -eq 2 ]]; then
+  BACKUP_IDENTITY_ARGS=(--database-token "${BACKUP_DATABASE_TOKEN}" "${BACKUP_POSITION_ARGS[@]}")
+fi
 
 if ! is_database_token "${BACKUP_DATABASE_TOKEN}" || [[ ${#BACKUP_POSITION_ARGS[@]} -eq 0 ]]; then
   REVOCATION_OUTCOME=unproven
   REVOCATION_SOURCE_NOTE="The archive does not record both database_token and next_xid, so nothing can show which database it was dumped from, or that the one about to be replaced carried on from it: it was written by a backup.sh or chart backup Job that did not record them, or by one whose database would not report them (backup.sh and the Job print a WARN naming the value they could not read)."
 fi
 
+# Whether there is a previous AGLedger database to read them out of. "None" is
+# an answer the probes above gave (the database is absent, empty, or holds no
+# public.records), never the reading of a failed read: a read that fails on a
+# database that does hold them would otherwise pass for a fresh host and the
+# drop would take the only record of them. "unknown" is read like "agledger".
+PREVIOUS_DATABASE=agledger
+if [[ "${REVOCATION_OUTCOME}" == unavailable ]]; then
+  if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
+    PREVIOUS_DATABASE="$(previous_database_external "${DB_PRESENT:-}" "${TARGET_SHAPE:-}")"
+  else
+    previous_rc=0
+    previous_out="$("${COMPOSE[@]}" exec -T postgres psql -qAtX -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-agledger}" -d "${POSTGRES_DB:-agledger}" \
+      -c "SELECT to_regclass('public.records') IS NOT NULL" 2>"${RESTORE_TMP}/previous.err")" || previous_rc=$?
+    PREVIOUS_DATABASE="$(previous_database_bundled "${previous_rc}" "${previous_out}" "$(cat "${RESTORE_TMP}/previous.err" 2>/dev/null || true)")"
+  fi
+  if [[ "${PREVIOUS_DATABASE}" == none ]]; then
+    REVOCATION_OUTCOME=no_previous
+    log "\"${TARGET_DB}\" holds no AGLedger data, so there are no revocations made after the backup to"
+    log "  read out of it."
+  fi
+fi
+
 if [[ "${REVOCATION_OUTCOME}" == unavailable ]]; then
   log "Reading revocations made after the backup out of the database about to be replaced..."
-  log "  The backup was dumped from database ${BACKUP_DATABASE_TOKEN} (cluster system identifier:OID); any other holds none of them."
+  log "  The backup was dumped from database ${BACKUP_DATABASE_TOKEN} (cluster system identifier:OID); any other holds"
+  log "  none of them, unless its latest restore loaded this backup."
   SINCE_ARGS=(--database-token "${BACKUP_DATABASE_TOKEN}" "${BACKUP_POSITION_ARGS[@]}")
   [[ -n "${BACKUP_CREATED_AT}" ]] && SINCE_ARGS+=(--since "${BACKUP_CREATED_AT}")
   # NODE_OPTIONS cleared on every one-off `node` this script runs: it reaches every
@@ -981,15 +1067,15 @@ if [[ "${REVOCATION_OUTCOME}" == unavailable ]]; then
   # role's login is put in place by the migration run that follows the restore,
   # so against the database about to be replaced it may not work yet: a
   # pre-split install left the role NOLOGIN, and reconcile_env_file may have just
-  # minted its password. A failed read here is only a WARN, and it would drop
-  # the revocations to replay without saying why. The URL reaches compose
+  # minted its password, and a failed read stops the run. The URL reaches compose
   # through its environment, which is where the service's DATABASE_URL default
   # is interpolated from, so it is never an argument.
   REVOCATION_READ_URL="${DATABASE_URL:-}"
   if [[ "${USES_BUNDLED_PG}" == "true" ]]; then
     REVOCATION_READ_URL="postgresql://${POSTGRES_USER:-agledger}:$(get_env_value POSTGRES_PASSWORD "${COMPOSE_DIR}/.env")@postgres:5432/${POSTGRES_DB:-agledger}"
   fi
-  if DATABASE_URL="${REVOCATION_READ_URL}" "${COMPOSE[@]}" run --rm --no-deps -T -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api \
+  if DATABASE_URL="${REVOCATION_READ_URL}" "${COMPOSE[@]}" run --rm --no-deps -T -e NODE_OPTIONS= ${CONTAINER_CA_ARGS[@]+"${CONTAINER_CA_ARGS[@]}"} \
+       --entrypoint /nodejs/bin/node agledger-api \
        dist/scripts/post-restore.js --export-revocations "${SINCE_ARGS[@]}" 2>&1 \
      | tee "${RESTORE_TMP}/revocations-export.log" \
      | sed -n 's/^REVOCATION //p' > "${REVOCATIONS_FILE}"; then
@@ -1012,21 +1098,40 @@ if [[ "${REVOCATION_OUTCOME}" == unavailable ]]; then
     else
       log "  ${REVOCATIONS_EXPORTED} revocation(s) made after ${BACKUP_CREATED_AT}."
     fi
-    if [[ "${REVOCATION_OUTCOME}" == exported ]]; then
+    if [[ "${REVOCATION_OUTCOME}" == exported ]] && grep -q '^This is database .*, and its latest restore loaded this backup' "${RESTORE_TMP}/revocations-export.log"; then
+      log "  This database was left by an earlier restore of this backup, and carries on from it. A physical"
+      log "  copy of it (a snapshot, a point-in-time restore, a clone) answers the same, and holds none of the"
+      log "  revocations made on it after the copy: if this is such a copy, compare the list"
+      log "  post-restore.js --list-active-credentials prints against your own record of revocations."
+    elif [[ "${REVOCATION_OUTCOME}" == exported ]]; then
       log "  This database answers as the one the backup was dumped from. A physical copy of it taken after"
       log "  the backup (a snapshot, a point-in-time restore, a clone) answers the same, and holds none of the"
       log "  revocations made on the original after the copy: if this is such a copy, compare the list"
       log "  post-restore.js --list-active-credentials prints against your own record of revocations."
     fi
   else
-    log "WARN: could not read revocations out of the current database. If this host has no"
-    log "      previous database, that is expected; the closing notes say what to compare instead."
-    log "      The read printed:"
     # Everything but the revocation lines themselves, which went to the file
     # the replay reads; the log is removed with the rest of the scratch space.
-    while IFS= read -r export_line; do log "        ${export_line}"; done \
-      < <(grep -v '^REVOCATION ' "${RESTORE_TMP}/revocations-export.log" 2>/dev/null | tail -20 || true)
     : > "${REVOCATIONS_FILE}"
+    if [[ "${SKIP_REVOCATIONS}" == true ]]; then
+      log "WARN: could not read revocations out of \"${TARGET_DB}\". --skip-revocations: going on without"
+      log "      them; the closing notes say what to compare instead. The read printed:"
+      while IFS= read -r export_line; do log "        ${export_line}"; done \
+        < <(grep -v '^REVOCATION ' "${RESTORE_TMP}/revocations-export.log" 2>/dev/null | tail -20 || true)
+    else
+      log "Could not read the revocations made after the backup out of \"${TARGET_DB}\", an AGLedger database"
+      log "  and the only record of them. The restore drops it, so the run stops here. The read printed:"
+      while IFS= read -r export_line; do log "    ${export_line}"; done \
+        < <(grep -v '^REVOCATION ' "${RESTORE_TMP}/revocations-export.log" 2>/dev/null | tail -20 || true)
+      while IFS= read -r hint_line; do log "  ${hint_line}"; done \
+        < <(revocation_read_failure_hint "${RESTORE_TMP}/revocations-export.log")
+      log "  --skip-revocations restores without carrying them across: a credential revoked after the"
+      log "  backup then authenticates again until it is disabled by hand."
+      if [[ "${CLUSTER_RESTORE}" == true ]]; then
+        refuse_untouched "Fix the cause and re-run."
+      fi
+      die "Nothing was dropped. The API and Worker are stopped; '${COMPOSE[*]} up -d' starts them again."
+    fi
   fi
 fi
 if [[ "${REVOCATION_OUTCOME}" == other_database || "${REVOCATION_OUTCOME}" == unproven ]]; then
@@ -1080,7 +1185,7 @@ fi
 # and decide what a non-zero exit means.
 #
 # The dump's privileges are restored, not discarded. They are the privilege set
-# the schema installed — the DML grants to agledger_app, the ALTER DEFAULT
+# the schema installed: the DML grants to agledger_app, the ALTER DEFAULT
 # PRIVILEGES that keep later migrations reachable, and the append-only REVOKEs
 # that hold the runtime role out of UPDATE/DELETE on the audit chain. Dropping
 # them with --no-acl left a correctly-provisioned-looking role holding nothing,
@@ -1089,7 +1194,7 @@ fi
 # pg_restore does not stop on a statement it cannot run: it reports each one,
 # restores everything else, and exits 1. So a GRANT naming a role this server
 # does not have costs privileges, not data, and must not be read as a failed
-# restore — while anything else must. The two are told apart by what the
+# restore, while anything else must. The two are told apart by what the
 # failing statements were.
 pg_restore_from_dump() {
   local rc=0
@@ -1113,7 +1218,7 @@ pg_restore_from_dump() {
 
   if [[ ${errors} -gt 0 && ${errors} -eq ${privilege_errors} ]]; then
     log "WARN: every row restored, but ${errors} privilege statement(s) in the backup could not be"
-    log "      applied — see the GRANT/REVOKE lines above. This is normal when restoring onto a"
+    log "      applied. See the GRANT/REVOKE lines above. This is normal when restoring onto a"
     log "      server that does not carry the same roles (a cross-server DR, or a single-role"
     log "      install). The runtime-role check below decides whether this Server can serve."
     if grep -q 'permission denied to change default privileges' "${RESTORE_TMP}/pg_restore.log"; then
@@ -1160,7 +1265,7 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
     || die "Failed to recreate \"${TARGET_DB}\" on ${PGHOST}. Ensure the role has CREATEDB."
 
   # A new database carries no ACL at all (`datacl` is NULL, not a copy of the
-  # template's), so every database-level grant the install made is gone —
+  # template's), so every database-level grant the install made is gone:
   # granting on template1 would not have brought them back either. Nothing in
   # the dump carries them: pg_dump
   # of a single database does not include its pg_database ACL. The runtime role
@@ -1170,12 +1275,12 @@ if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   if [[ -n "${RUNTIME_ROLE}" && "${RUNTIME_ROLE}" != "${PGUSER:-}" ]]; then
     psql -qX -v ON_ERROR_STOP=1 -d postgres -v db="${TARGET_DB}" -v role="${RUNTIME_ROLE}" \
       <<<'GRANT CONNECT, CREATE ON DATABASE :"db" TO :"role";' >/dev/null \
-      || log "WARN: could not grant CONNECT, CREATE on \"${TARGET_DB}\" to \"${RUNTIME_ROLE}\" — the runtime-role check below reports what that costs."
+      || log "WARN: could not grant CONNECT, CREATE on \"${TARGET_DB}\" to \"${RUNTIME_ROLE}\". The runtime-role check below reports what that costs."
   fi
 
   pg_restore_from_dump pg_client_run pg_restore -d "${TARGET_DB}" --no-owner
 else
-  # Bundled postgres — exec into the container
+  # Bundled postgres: exec into the container
   ensure_bundled_postgres
 
   "${COMPOSE[@]}" exec -T postgres psql -U "${POSTGRES_USER}" -d postgres -c "
@@ -1572,10 +1677,13 @@ post_restore_notes() {
           log "NOTHING SHOWED THAT THE DATABASE THIS RESTORE REPLACED IS THE ONE THIS BACKUP WAS DUMPED FROM,"
           log "  so no revocations were read out of it and none were carried across."
           ;;
+        no_previous)
+          log "THE DATABASE THIS RESTORE REPLACED HELD NO AGLEDGER DATA, so no revocations made after the"
+          log "  backup were read out of it. Any made on the database the backup came from are not carried across."
+          ;;
         *)
           log "REVOCATIONS COULD NOT BE READ OUT OF THE DATABASE THIS RESTORE REPLACED, so none were carried"
-          log "  across. The WARN before the drop has the read's own error; a host with no previous database"
-          log "  fails that read too."
+          log "  across (--skip-revocations). The WARN before the drop has the read's own error."
           ;;
       esac
       [[ -n "${REVOCATION_SOURCE_NOTE:-}" ]] && log "  ${REVOCATION_SOURCE_NOTE}"
@@ -1722,14 +1830,14 @@ version_outcome_note() {
 # recreated database, the pg-boss schema that --no-owner restored to the owner).
 if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   log "Checking runtime role privileges..."
-  if ! "${COMPOSE[@]}" run --rm --no-deps -e NODE_OPTIONS= \
+  if ! "${COMPOSE[@]}" run --rm --no-deps -e NODE_OPTIONS= ${CONTAINER_CA_ARGS[@]+"${CONTAINER_CA_ARGS[@]}"} \
       --entrypoint /nodejs/bin/node agledger-api \
       dist/scripts/preflight.js --only=runtime-role,pgboss; then
     echo ""
     log "The role in DATABASE_URL cannot serve the restored database. The report above is the"
     log "diagnosis: a privilege failure names the role and the exact grant to run."
     log ""
-    log "Your data is restored and intact — this is about access to it, not about the rows."
+    log "Your data is restored and intact. This is about access to it, not about the rows."
     log "The API and Worker are still stopped, so nothing is serving a half-configured database."
     if [[ "${VERSION_PLAN}" == pin ]]; then
       # The version move happens below this gate, so it has not happened. An
@@ -1819,7 +1927,7 @@ fi
 post_restore_steps() {
   log "Applying migrations before the Server starts, so the steps below run on the current schema..."
   local migrate_rc=0
-  "${COMPOSE[@]}" run --rm agledger-migrate || migrate_rc=$?
+  "${COMPOSE[@]}" run --rm ${CONTAINER_CA_ARGS[@]+"${CONTAINER_CA_ARGS[@]}"} agledger-migrate || migrate_rc=$?
   # 65 is the migration refusing the restored database as another release
   # line's: an archive with no version record that a 1.x install wrote. No
   # re-run of this release migrates it, so the tail is not worth naming.
@@ -1876,11 +1984,13 @@ post_restore_steps() {
     replay_args=(--replay-revocations -)
   fi
   set +e
-  "${COMPOSE[@]}" run --rm --no-deps -T -e NODE_OPTIONS= --entrypoint /nodejs/bin/node agledger-api \
+  "${COMPOSE[@]}" run --rm --no-deps -T -e NODE_OPTIONS= ${CONTAINER_CA_ARGS[@]+"${CONTAINER_CA_ARGS[@]}"} \
+    --entrypoint /nodejs/bin/node agledger-api \
     dist/scripts/post-restore.js \
     --marker-id "${THIS_PROJECT}-${RESTORE_MARKER_SUFFIX}" \
     --restored-at "${RESTORE_STARTED_AT}" \
     --archive "$(basename "${TARBALL}")" \
+    ${BACKUP_IDENTITY_ARGS[@]+"${BACKUP_IDENTITY_ARGS[@]}"} \
     ${replay_args[@]+"${replay_args[@]}"} < "${REVOCATIONS_FILE}" 2>&1 | tee "${out}"
   rc=${PIPESTATUS[0]}
   set -e

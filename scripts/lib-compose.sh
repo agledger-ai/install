@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# AGLedger — Shared Deployment Helpers
+# AGLedger: Shared Deployment Helpers
 # =============================================================================
 # Source this from scripts that need compose commands, logging, or ECR auth.
 # Automatically resolves paths relative to this script's location.
@@ -481,7 +481,7 @@ drop_csv_ids() {
 }
 
 # Read KEY=VALUE from an env file, stripping inline comments (whitespace + '#')
-# and surrounding whitespace — matching docker-compose's native parser. Naive
+# and surrounding whitespace, matching docker-compose's native parser. Naive
 # `cut -d= -f2-` leaves inline comments in place and defeats equality checks
 # against values like "true" (.env.example ships trailing comments).
 # Returns empty string if the key is absent.
@@ -985,8 +985,35 @@ grafana_password_action() {
 # the Server's config loader; the two are kept in step by hand.
 #
 # Usage: while IFS= read -r gap; do ...; done < <(missing_prod_config FILE)
+# Variables this release does not read, as `<name>|<where its job is done
+# now>` lines: the same variables the Server names in a WARN at boot.
+RETIRED_ENV_LINES='SECRETS_PROVIDER|every secret is read from its own variable or the <NAME>_FILE sibling
+SSM_PREFIX|every secret is read from its own variable or the <NAME>_FILE sibling
+SSM_PARAMETERS|every secret is read from its own variable or the <NAME>_FILE sibling
+VAULT_SECRET_PATH|every secret is read from its own variable or the <NAME>_FILE sibling
+AGLEDGER_SUPPORT_BUNDLE_URL|a support bundle is fetched with GET /v1/admin/support-bundle or scripts/support-bundle.sh and sent by the operator
+SWAGGER_UI_ENABLED|/docs redirects to the hosted API reference; /openapi.json serves the spec'
+
+# The retired variables $1 (an env file) sets, one `<name>|<instead>` line each.
+retired_env_set() {
+  local file="$1" name instead
+  while IFS='|' read -r name instead; do
+    [[ -n "$name" && -n "$(get_env_value "$name" "$file")" ]] && printf '%s|%s\n' "$name" "$instead"
+  done <<<"$RETIRED_ENV_LINES"
+  return 0
+}
+
+# Whether $1 sets a secret source this release does not read.
+retired_secret_source_set() {
+  local file="$1" name
+  for name in SECRETS_PROVIDER SSM_PREFIX SSM_PARAMETERS VAULT_SECRET_PATH; do
+    [[ -n "$(get_env_value "$name" "$file")" ]] && return 0
+  done
+  return 1
+}
+
 missing_prod_config() {
-  local file="$1" db_url node_env db_query sslmode libpq_compat sslrootcert
+  local file="$1" db_url node_env
   # Every gate below is scoped to production, exactly as the config loader scopes them.
   #
   # Absent counts as production: the image bakes `ENV NODE_ENV=production` and
@@ -1001,7 +1028,12 @@ missing_prod_config() {
   # is refused at boot, and the preflight names that case.
   if [[ -z "$(get_env_value VAULT_SIGNING_KEY "$file")" && -z "$(get_env_value VAULT_SIGNING_KEY_KMS_ARN "$file")" ]]; then
     echo "VAULT_SIGNING_KEY is unset. It signs every chain entry."
-    echo "    generate: docker run --rm ${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest} dist/scripts/generate-signing-key.js"
+    if [[ "${2:-}" == upgrade ]]; then
+      echo "    supply the key this install already signs with, as VAULT_SIGNING_KEY:"
+      echo "    a newly generated key does not verify anything the current one signed."
+    else
+      echo "    generate: docker run --rm ${AGLEDGER_IMAGE:-agledger/agledger}:${AGLEDGER_VERSION:-latest} dist/scripts/generate-signing-key.js"
+    fi
     echo "    or set VAULT_SIGNING_KEY_KMS_ARN to sign with a key held in AWS KMS."
   fi
 
@@ -1036,59 +1068,88 @@ missing_prod_config() {
   db_url="$(get_env_value DATABASE_URL "$file")"
   if [[ -n "$db_url" ]] \
     && [[ "$(get_env_value ALLOW_DB_WITHOUT_SSL "$file")" != "true" ]]; then
-    # The value of sslmode decides, not its presence. `disable` and `allow`
-    # permit plaintext, `prefer` falls back to it, and `no-verify` sets
-    # rejectUnauthorized: false, so the session is encrypted to whoever
-    # answered. The config loader accepts require, verify-ca and verify-full
-    # and refuses the rest, so a presence test here passes strings the Server
-    # then refuses at boot, after the install has written the .env and pulled
-    # the images.
-    #
-    # This is the Server's own rule said in shell, and the two have to keep
-    # answering the same way: the whole point of asking here is to say it before
-    # the pull rather than after. There is no portable URL parser in shell, so
-    # the query string is read by hand below. Anything the two readers cannot
-    # agree on lands on the strict side, because a gap reported here costs an
-    # operator a re-run and a gap missed here costs them a container that will
-    # not boot.
-    #
-    # Parsed by hand rather than with a URL reader, because there is no portable
-    # one in shell. A DSN with no query string, or one whose password carries a
-    # raw `?`, yields no parameters and is reported as unverified. That is the
-    # direction to be wrong in, and it is the same answer the config loader
-    # gives a connection string it cannot parse.
-    # `tail -1`, not `head -1`, and that is load-bearing. A repeated parameter
-    # is legal in a query string and the pg driver resolves it to the LAST
-    # occurrence, so reading the first makes
-    # `?sslmode=require&sslmode=disable` pass a gate the driver then answers
-    # with a plaintext connection. Reading the last is what the connection
-    # actually does.
-    db_query=""
-    [[ "$db_url" == *\?* ]] && db_query="${db_url#*\?}"
-    sslmode="$(printf '%s' "$db_query" | tr '&' '\n' | sed -n 's/^sslmode=//p' | tail -1 | tr '[:upper:]' '[:lower:]')"
-    libpq_compat="$(printf '%s' "$db_query" | tr '&' '\n' | sed -n 's/^uselibpqcompat=//p' | tail -1 | tr '[:upper:]' '[:lower:]')"
-    sslrootcert="$(printf '%s' "$db_query" | tr '&' '\n' | sed -n 's/^sslrootcert=//p' | tail -1)"
+    db_url_ssl_gap "$db_url"
+  fi
+}
 
-    if [[ -z "$sslmode" ]]; then
-      echo "DATABASE_URL has no sslmode= and ALLOW_DB_WITHOUT_SSL is not true."
-      echo "    a managed database wants sslmode=verify-full with sslrootcert=<CA bundle path>,"
-      echo "    which is the only mode that checks the certificate names the host you dialled."
-      echo "    sslmode=require is the floor. Or set ALLOW_DB_WITHOUT_SSL=true (not recommended)."
-    elif [[ "$sslmode" != "require" && "$sslmode" != "verify-ca" && "$sslmode" != "verify-full" ]]; then
-      echo "DATABASE_URL sets sslmode=${sslmode}, which is not a verified TLS connection."
-      echo "    disable and allow permit plaintext, prefer falls back to it, and no-verify encrypts"
-      echo "    to whoever answered. The Server accepts require, verify-ca and verify-full only."
-      echo "    a managed database wants sslmode=verify-full with sslrootcert=<CA bundle path>."
-    elif [[ "$libpq_compat" == "true" && "$sslmode" == "require" && -z "$sslrootcert" ]]; then
-      echo "DATABASE_URL combines uselibpqcompat=true with sslmode=require and no sslrootcert."
-      echo "    under libpq semantics that encrypts the connection without verifying the certificate."
-      echo "    add sslrootcert=<CA bundle path>, raise it to sslmode=verify-full, or drop uselibpqcompat=true."
-    elif [[ "$libpq_compat" == "true" && "$sslmode" == "verify-ca" && -z "$sslrootcert" ]]; then
-      echo "DATABASE_URL combines uselibpqcompat=true with sslmode=verify-ca and no sslrootcert."
-      echo "    pg-connection-string refuses that combination outright and throws at connect, so the"
-      echo "    Server would start and then fail every query."
-      echo "    add sslrootcert=<CA bundle path>, raise it to sslmode=verify-full, or drop uselibpqcompat=true."
-    fi
+# The value of query parameter $2 in connection string $1, as written (not
+# URL-decoded), or nothing when it is absent. The LAST occurrence, because that
+# is the one the pg driver uses. A string with no `?` has no parameters.
+db_url_query_param() {
+  local db_query=""
+  [[ "$1" == *\?* ]] && db_query="${1#*\?}"
+  printf '%s' "$db_query" | tr '&' '\n' | sed -n "s/^${2}=//p" | tail -1
+}
+
+# Whether the pg driver refuses connection string $1 before it connects:
+# uselibpqcompat=true with sslmode=verify-ca and no sslrootcert. libpq (psql,
+# pg_dump) takes the CA from PGSSLROOTCERT, so a host step can connect on a
+# string the Server image's node steps then refuse.
+db_url_driver_refuses() {
+  [[ "$(db_url_query_param "$1" uselibpqcompat | tr '[:upper:]' '[:lower:]')" == true ]] \
+    && [[ "$(db_url_query_param "$1" sslmode | tr '[:upper:]' '[:lower:]')" == verify-ca ]] \
+    && [[ -z "$(db_url_query_param "$1" sslrootcert)" ]]
+}
+
+# The Server's production database-TLS rule, said in shell,
+# for one connection string. Prints the gap, a headline and remedy lines
+# indented four spaces, or nothing when the string declares verified TLS.
+# missing_prod_config asks it of compose/.env; restore.sh asks it of the URLs
+# it is handed, before it stops or drops anything.
+#
+# Usage: gap="$(db_url_ssl_gap "$url" [VARIABLE_NAME])"   (the name the text uses, default DATABASE_URL)
+db_url_ssl_gap() {
+  local db_url="$1" name="${2:-DATABASE_URL}" sslmode libpq_compat sslrootcert
+  # The value of sslmode decides, not its presence. `disable` and `allow`
+  # permit plaintext, `prefer` falls back to it, and `no-verify` sets
+  # rejectUnauthorized: false, so the session is encrypted to whoever
+  # answered. The config loader accepts require, verify-ca and verify-full
+  # and refuses the rest, so a presence test here passes strings the Server
+  # then refuses at boot, after the install has written the .env and pulled
+  # the images.
+  #
+  # This is the Server's own rule said in shell, and the two have to keep
+  # answering the same way: the whole point of asking here is to say it before
+  # the pull rather than after. There is no portable URL parser in shell, so
+  # the query string is read by hand below. Anything the two readers cannot
+  # agree on lands on the strict side, because a gap reported here costs an
+  # operator a re-run and a gap missed here costs them a container that will
+  # not boot.
+  #
+  # Parsed by hand rather than with a URL reader, because there is no portable
+  # one in shell. A DSN with no query string, or one whose password carries a
+  # raw `?`, yields no parameters and is reported as unverified. That is the
+  # direction to be wrong in, and it is the same answer the config loader
+  # gives a connection string it cannot parse.
+  # `tail -1`, not `head -1`, and that is load-bearing. A repeated parameter
+  # is legal in a query string and the pg driver resolves it to the LAST
+  # occurrence, so reading the first makes
+  # `?sslmode=require&sslmode=disable` pass a gate the driver then answers
+  # with a plaintext connection. Reading the last is what the connection
+  # actually does.
+  sslmode="$(db_url_query_param "$db_url" sslmode | tr '[:upper:]' '[:lower:]')"
+  libpq_compat="$(db_url_query_param "$db_url" uselibpqcompat | tr '[:upper:]' '[:lower:]')"
+  sslrootcert="$(db_url_query_param "$db_url" sslrootcert)"
+
+  if [[ -z "$sslmode" ]]; then
+    echo "${name} has no sslmode= and ALLOW_DB_WITHOUT_SSL is not true."
+    echo "    a managed database wants sslmode=verify-full with sslrootcert=<CA bundle path>,"
+    echo "    which is the only mode that checks the certificate names the host you dialled."
+    echo "    sslmode=require is the floor. Or set ALLOW_DB_WITHOUT_SSL=true (not recommended)."
+  elif [[ "$sslmode" != "require" && "$sslmode" != "verify-ca" && "$sslmode" != "verify-full" ]]; then
+    echo "${name} sets sslmode=${sslmode}, which is not a verified TLS connection."
+    echo "    disable and allow permit plaintext, prefer falls back to it, and no-verify encrypts"
+    echo "    to whoever answered. The Server accepts require, verify-ca and verify-full only."
+    echo "    a managed database wants sslmode=verify-full with sslrootcert=<CA bundle path>."
+  elif [[ "$libpq_compat" == "true" && "$sslmode" == "require" && -z "$sslrootcert" ]]; then
+    echo "${name} combines uselibpqcompat=true with sslmode=require and no sslrootcert."
+    echo "    under libpq semantics that encrypts the connection without verifying the certificate."
+    echo "    add sslrootcert=<CA bundle path>, raise it to sslmode=verify-full, or drop uselibpqcompat=true."
+  elif [[ "$libpq_compat" == "true" && "$sslmode" == "verify-ca" && -z "$sslrootcert" ]]; then
+    echo "${name} combines uselibpqcompat=true with sslmode=verify-ca and no sslrootcert."
+    echo "    pg-connection-string refuses that combination outright and throws at connect, so the"
+    echo "    Server would start and then fail every query."
+    echo "    add sslrootcert=<CA bundle path>, raise it to sslmode=verify-full, or drop uselibpqcompat=true."
   fi
 }
 
@@ -1244,6 +1305,69 @@ ca_host_path() {
     return 0
   fi
   return 1
+}
+
+# The CA files, among the paths given, that a one-off container restoring into
+# a cluster gets mounted at the same path: absolute, a readable file on this
+# host, and free of the `:` and `,` a mount specification cannot carry. Prints
+# each once, one per line; empty arguments are skipped.
+container_ca_mounts() {
+  local path seen=" "
+  for path in "$@"; do
+    [[ -n "$path" && "$path" == /* && "$path" != *[:,]* ]] || continue
+    [[ -f "$path" && -r "$path" ]] || continue
+    [[ "$seen" == *" ${path} "* ]] && continue
+    seen="${seen}${path} "
+    printf '%s\n' "$path"
+  done
+}
+
+# Whether the external database a restore is about to replace holds AGLedger
+# data, from the answers restore.sh's host probes gave: $1 is how many
+# databases of that name exist (1 or 0), $2 the shape of the one that does
+# (agledger, empty or other). Prints agledger or none.
+previous_database_external() {
+  if [[ "$1" == 1 && "$2" == agledger ]]; then echo agledger; else echo none; fi
+}
+
+# The same for the bundled database, from a psql probe of
+# `to_regclass('public.records') IS NOT NULL`: $1 its exit code, $2 its output,
+# $3 its stderr. Prints agledger, none, or unknown when the probe could not ask.
+previous_database_bundled() {
+  local rc="$1" out="$2" err="$3"
+  if [[ "$rc" == 0 ]]; then
+    case "$out" in
+      t) echo agledger ;;
+      f) echo none ;;
+      *) echo unknown ;;
+    esac
+  elif [[ "$err" == *"database \""*"\" does not exist"* ]]; then
+    echo none
+  else
+    echo unknown
+  fi
+}
+
+# The cause and the fix for a failed revocation read, from its output in file
+# $1: one line per cause it recognises, nothing for one it does not.
+revocation_read_failure_hint() {
+  local log="$1"
+  if grep -qE 'sslrootcert|self[- ]signed|SELF_SIGNED|UNABLE_TO_VERIFY|unable to get (local )?issuer|certificate' "$log" 2>/dev/null; then
+    echo "The read runs node in the Server image, which verifies the database's certificate against"
+    echo "sslrootcert in the URL, or NODE_EXTRA_CA_CERTS and the CAs the image carries. psql on this host"
+    echo "takes the CA from elsewhere, so the host steps passed. Name the CA with sslrootcert=<path> in"
+    echo "the URL; restoring into a cluster, a file at that path on this host is mounted into the"
+    echo "containers at the same path, or name one the image carries (/etc/ssl/certs/rds-global-bundle.pem)."
+  fi
+  if grep -q 'ENOENT' "$log" 2>/dev/null; then
+    echo "A file the read names is not in its container: a path that exists only on this host. Restoring"
+    echo "into a cluster, a CA at an absolute path on this host is mounted at the same path; otherwise"
+    echo "name a path the image carries."
+  fi
+  if grep -qE 'password authentication failed|no pg_hba.conf entry|role "[^"]*" does not exist' "$log" 2>/dev/null; then
+    echo "The database refused the role in DATABASE_URL. The read connects as that role (as the owner on"
+    echo "the bundled database); check its password and that it may log in."
+  fi
 }
 
 # The `docker run` arguments that give a throwaway container the CA setting the
@@ -1446,7 +1570,7 @@ pg_client_run() {
 # Asked because a restore reads one URL and writes another: the backup comes
 # from DATABASE_URL and the DROP is issued on DATABASE_URL_MIGRATE. The database
 # NAME matches by accident on every install (the engine's default is `agledger`
-# everywhere), so the name is not the part worth comparing — the host is.
+# everywhere), so the name is not the part worth comparing; the host is.
 #
 # An omitted port is 5432, and the loopback spellings are one host: those are
 # the two ways two identical endpoints are written differently, and a false
@@ -1485,12 +1609,13 @@ pg_dump_magic_ok() {
 # Which physical database a backup is taken from: the cluster's system
 # identifier (written once by initdb) and the database's OID in that cluster,
 # as `<sysid>:<oid>`. backup.sh records it as database_token in
-# backup-metadata, and restore.sh carries revocations across only out of a
-# database that answers with the same value. A database restore.sh created is a
-# new database with a new OID, and another host's cluster has its own system
-# identifier, so a fresh host, a standby restored from an earlier backup and a
-# re-run after a restore that failed partway all answer differently, although
-# their rows descend from the same install. A physical copy (a storage
+# backup-metadata, and restore.sh carries revocations across out of a database
+# that answers with the same value, or one whose latest restore marker names
+# this backup (a restore that completed from it). A database restore.sh created
+# is a new database with a new OID, and another host's cluster has its own
+# system identifier, so a fresh host, a standby restored from an earlier backup
+# and a re-run after a restore that failed before its marker all answer
+# differently, although their rows descend from the same install. A physical copy (a storage
 # snapshot, a provider point-in-time restore, a clone, a copied data volume)
 # keeps both values, so the archive also records next_xid (next_xid_sql), and a
 # database whose next transaction id is still before it is a copy taken before
@@ -1574,8 +1699,8 @@ audit_event_trigger_probe_sql() {
 
 # Classify a probe answer. Three verdicts, not two: "answered no" and "could not
 # ask" are different, and only the first is worth refusing on. A probe that
-# never ran — a connection reset during the failover a restore happens in, a
-# role that cannot read pg_roles — must not read as permission granted, and
+# never ran (a connection reset during the failover a restore happens in, a
+# role that cannot read pg_roles) must not read as permission granted, and
 # must not read as permission denied either. Same reason the DB_PRESENT probe
 # in restore.sh keeps its own failure separate from its answer.
 #
@@ -2932,7 +3057,7 @@ verify_image() {
         error "For dev/local ONLY, install from them unverified with: --skip-verify"
       fi
     else
-      error "docker pull ${ref} failed — cannot verify or run an image that isn't present."
+      error "docker pull ${ref} failed, cannot verify or run an image that isn't present."
     fi
     local pull_registry="${image%%/*}"
     if [[ "$image" == */* && ( "$pull_registry" == *.* || "$pull_registry" == *:* ) ]]; then
@@ -2963,7 +3088,7 @@ verify_image() {
   fi
   if [[ "${AGLEDGER_SKIP_VERIFY:-false}" == "true" ]]; then
     UNVERIFIED_REASON="AGLEDGER_SKIP_VERIFY=true"
-    warn "AGLEDGER_SKIP_VERIFY=true — skipping image signature verification (dev/local ONLY, never production)."
+    warn "AGLEDGER_SKIP_VERIFY=true, skipping image signature verification (dev/local ONLY, never production)."
     return 0
   fi
   if [[ "$image" != "agledger/agledger" ]]; then
@@ -2994,7 +3119,7 @@ verify_image() {
       return 1
     fi
     warn "Custom image '${image}' serves no release signature (not built by the AGLedger release pipeline, or mirrored"
-    warn "without its referrers: 'oras cp -r' keeps them) — skipping signature verification."
+    warn "without its referrers: 'oras cp -r' keeps them), skipping signature verification."
     return 0
   fi
   if ! command -v cosign &>/dev/null; then
@@ -3005,7 +3130,7 @@ verify_image() {
       error "Install cosign 3.x: https://docs.sigstore.dev/system_config/installation/"
       return 1
     fi
-    warn "cosign not installed — cannot cryptographically verify the image before running it."
+    warn "cosign not installed, cannot cryptographically verify the image before running it."
     warn "Install cosign 3.x to enable supply-chain verification: https://docs.sigstore.dev/system_config/installation/"
     warn "Proceeding UNVERIFIED. Set AGLEDGER_REQUIRE_VERIFY=true to make this fatal."
     return 0
@@ -3047,7 +3172,7 @@ verify_chart() {
   if [[ "${AGLEDGER_SKIP_VERIFY:-false}" == "true" ]]; then
     # shellcheck disable=SC2034  # read by scripts that source this file
     UNVERIFIED_REASON="AGLEDGER_SKIP_VERIFY=true"
-    warn "AGLEDGER_SKIP_VERIFY=true — skipping chart signature verification (dev/local ONLY)."
+    warn "AGLEDGER_SKIP_VERIFY=true, skipping chart signature verification (dev/local ONLY)."
     return 0
   fi
   if ! command -v cosign &>/dev/null; then
@@ -3057,7 +3182,7 @@ verify_chart() {
     fi
     # shellcheck disable=SC2034  # read by scripts that source this file
     UNVERIFIED_REASON="cosign not installed"
-    warn "cosign not installed — cannot verify the chart signature before install."
+    warn "cosign not installed, cannot verify the chart signature before install."
     warn "Install cosign 3.x: https://docs.sigstore.dev/system_config/installation/"
     warn "Proceeding UNVERIFIED. Set AGLEDGER_REQUIRE_VERIFY=true to make this fatal."
     return 0
@@ -3144,7 +3269,7 @@ resolve_version() {
     grep 'AGLEDGER_VERSION=' "${COMPOSE_DIR}/.env" | head -1 | cut -d= -f2- | tr -d '[:space:]'
     return
   fi
-  # Fall back to package.json (dev environment only — no Node.js dependency for customers)
+  # Fall back to package.json (dev environment only; no Node.js dependency for customers)
   if command -v node &>/dev/null && [[ -f "${REPO_ROOT}/package.json" ]]; then
     node -p "require('${REPO_ROOT}/package.json').version" 2>/dev/null || echo "latest"
     return
@@ -3156,7 +3281,7 @@ resolve_version() {
 # Prints the semver string (e.g., "0.19.13") to stdout on success.
 # Returns non-zero if the network call fails AND no usable cache exists.
 # Cache: ${HOME}/.cache/agledger/latest-version, 1 hour TTL, falls back to
-# stale cache if the API is unreachable — and warns on stderr with the age.
+# stale cache if the API is unreachable, and warns on stderr with the age.
 resolve_latest_version() {
   # This queries the public agledger/agledger Docker Hub repository
   # unconditionally, so it must not be asked to resolve "latest" for any other
@@ -3202,7 +3327,7 @@ resolve_latest_version() {
           return 0
         fi
         if [[ "$tag_status" == "404" ]]; then
-          echo "WARN: cached latest-version (${cached}) no longer exists on Docker Hub — refreshing." >&2
+          echo "WARN: cached latest-version (${cached}) no longer exists on Docker Hub, refreshing." >&2
           rm -f "$cache_file"
         fi
         # Any other status (000 network, 5xx, etc): fall through to refresh,
@@ -3231,7 +3356,7 @@ resolve_latest_version() {
   if [[ -f "$cache_file" ]]; then
     local age_min=$(( ${cache_age:-0} / 60 ))
     # Warn to stderr (keeping stdout clean for the version string). Agents
-    # piping this call into a variable still get the version back — they just
+    # piping this call into a variable still get the version back; they just
     # also see the warning, which is the point.
     echo "WARN: Docker Hub unreachable; using cached latest-version (age: ~${age_min} min). Pin with --version X.Y.Z to be explicit, or check network and retry." >&2
     cat "$cache_file"
@@ -3618,7 +3743,7 @@ build_compose_cmd() {
 # Verify a sibling container can actually reach Postgres on the compose network.
 #
 # Postgres's own healthcheck (`pg_isready`) runs INSIDE the postgres container,
-# so it can pass while sibling-container reachability is broken — most commonly
+# so it can pass while sibling-container reachability is broken, most commonly
 # when Docker daemon iptables rules for the compose bridge are stale (FORWARD
 # chain DROPs traffic between containers on the same bridge). Without this
 # check, migrate hangs ~55s on a TCP timeout and the customer sees a confusing
@@ -3633,7 +3758,7 @@ verify_sibling_reachability() {
   if [[ "${USES_BUNDLED_PG:-true}" != "true" ]]; then
     return 0
   fi
-  # The agledger image ships no nc/pg_isready — node + net is the
+  # The agledger image ships no nc/pg_isready, so node + net is the
   # only reliable TCP-probe primitive shipped in it. Using `compose run` against
   # the agledger-migrate service definition guarantees we hit the same network
   # path migrate itself will use moments later.
@@ -3647,7 +3772,7 @@ verify_sibling_reachability() {
     return 0
   fi
   error "Postgres healthcheck passed, but a sibling container cannot reach it on the compose network."
-  error "This is almost always Docker daemon iptables state — the FORWARD chain is dropping"
+  error "This is almost always Docker daemon iptables state: the FORWARD chain is dropping"
   error "container-to-container traffic on the compose bridge."
   error ""
   error "Recovery (recovers in seconds, no data loss):"

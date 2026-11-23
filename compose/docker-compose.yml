@@ -1,9 +1,9 @@
 # =============================================================================
-# AGLedger — Self-Hosted Docker Compose
+# AGLedger: Self-Hosted Docker Compose
 # =============================================================================
 # API server, background worker, and database migrations.
 #
-# Bundled PostgreSQL (default — eval/dev):
+# Bundled PostgreSQL (default: eval/dev):
 #   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --wait
 #
 # External database (Aurora, RDS, Cloud SQL, Azure):
@@ -47,9 +47,8 @@ services:
     # it uses them or not, CAP_CHOWN, CAP_SETUID, CAP_MKNOD and CAP_NET_RAW among
     # them. Nothing in this image needs one: it runs as uid 65532 from the
     # Dockerfile's USER, binds ports 3000 and 3001 (both above 1024, so no
-    # CAP_NET_BIND_SERVICE), and never changes uid at runtime. Dropping them is
-    # the compose half of what the Dockerfile's hardening note claims, and the
-    # Helm chart already drops the same set per container.
+    # CAP_NET_BIND_SERVICE), and never changes uid at runtime. The Helm chart
+    # drops the same set per container.
     cap_drop: [ALL]
     # No path from inside the container to more privilege than it started with,
     # whatever setuid or file-capability bit a future base layer arrives
@@ -65,9 +64,7 @@ services:
       # EAGERLY, so a `:?` here fires even when DATABASE_URL is set and this
       # whole branch is discarded, breaking every external-database install.
       # (The overlay avoids `:?` for a different reason, in its own comment:
-      # parse-time resolution would kill `down`/`ps`/`logs` too.) Both are
-      # pinned by the release gate, which runs real
-      # `docker compose config`.
+      # parse-time resolution would kill `down`/`ps`/`logs` too.)
       # DATABASE_URL_DIRECT sits between the two: it bypasses a transaction-mode
       # connection pooler, and migrations need that (one session advisory lock
       # across every migration's transaction, plus session timeouts). An owner
@@ -109,7 +106,7 @@ services:
     # Docker's default grace period is 10s. Both processes meter their own
     # shutdown against a 25s drain budget and force-exit at it, so the default
     # SIGKILLs them two thirds of the way through: in-flight requests severed,
-    # the last SIEM export batch dropped, the database pool never released.
+    # running jobs abandoned, the database pool never released.
     #
     # 60s is well above the 30s that budget strictly needs. That headroom is
     # close to free: this is a MAXIMUM wait, not a delay. An idle process still
@@ -144,10 +141,9 @@ services:
       agledger-migrate:
         condition: service_completed_successfully
     # /health/ready, not /health. `/health` is a static 200 that opens no
-    # connection, so a container pointed at a database that is down, gone or
-    # refusing its credentials reported healthy: `upgrade.sh` runs
-    # `up -d --wait`, which passed, and the first request then 500'd. The
-    # readiness endpoint runs `SELECT 1`, and either it answers 503 or the query
+    # connection, so it reads healthy against a database that is down, gone or
+    # refusing its credentials, and the `up -d --wait` that `upgrade.sh` runs
+    # would pass ahead of a first request that fails. The readiness endpoint runs `SELECT 1`, and either it answers 503 or the query
     # does not come back and this probe's own 5s timeout ends it. Both read as
     # unhealthy, which is what --wait needs. Its own OpenAPI description names
     # Docker Compose healthchecks as the intended caller.
@@ -220,9 +216,8 @@ services:
     # running out this probe's timeout. `/health` on this port reports only that
     # the process is up and draining or not.
     #
-    # The same permission flags as the API's probe, for the reason given there,
-    # and this is the service the SIEM file-sink recipe names, so this is the
-    # one that broke.
+    # The same permission flags as the API's probe, for the reason given there.
+    # This is the service the SIEM file-sink recipe names.
     healthcheck:
       test: ['CMD', '/nodejs/bin/node', '--permission', '--allow-fs-read=*', '-e', "fetch('http://localhost:3001/health/ready').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
       interval: 15s
@@ -233,7 +228,7 @@ services:
   # --- Monitoring (optional, enable with --profile monitoring) ---
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.163.2
+    image: otel/opentelemetry-collector-contrib:0.165.0
     profiles: [monitoring]
     # Same restart policy the app services carry in docker-compose.prod.yml. The
     # app is configured to export at this collector permanently, so a collector
@@ -265,24 +260,22 @@ services:
     # --wait` treats a container with no healthcheck as ready the moment it is
     # running, which a crash-looping container is between restarts, so the
     # installer asks the container states directly afterwards and reports any
-    # service that is restarting, exited or unhealthy. That sample alone let a
-    # loop through whenever it landed on the moments the container was up, so
-    # the installer also reads the restart counter against a baseline it takes
+    # service that is restarting, exited or unhealthy. One sample can land while
+    # the container is up between restarts, so the installer also reads the restart counter against a baseline it takes
     # before the `up`: a service that reads running with restarts behind it is
     # a loop, not a start. A collector that is running and silently dropping
     # every batch is not covered by anything: it exports no telemetry about
     # itself that this stack scrapes.
 
   jaeger:
-    image: jaegertracing/jaeger:2.22.0
+    image: jaegertracing/jaeger:2.23.0
     profiles: [monitoring]
     restart: unless-stopped
     ports:
       - '127.0.0.1:${JAEGER_UI_HOST_PORT:-16686}:16686'  # Jaeger UI
-    # The collector reaches these over the compose network, so they belong in
-    # `expose`. Listed under `ports` they were single-value entries, which
-    # publishes each on a random host port on every interface: the opposite of
-    # what the comment claimed.
+    # The collector reaches these over the compose network, so they are
+    # `expose` only. A single-value entry under `ports` would publish each on a
+    # random host port on every interface.
     expose:
       - '4317'         # OTLP gRPC (internal, OTel collector to Jaeger)
       - '4318'         # OTLP HTTP (internal)
@@ -298,7 +291,7 @@ services:
       retries: 3
 
   prometheus:
-    image: prom/prometheus:v3.15.1
+    image: prom/prometheus:v3.16.0
     profiles: [monitoring]
     restart: unless-stopped
     command:
@@ -344,7 +337,7 @@ services:
       - '127.0.0.1:${PROMETHEUS_HOST_PORT:-9090}:9090'
     # A typo in prometheus.yml (the file monitoring/README.md invites operators
     # to edit) makes this container exit at config load and restart forever,
-    # and without a healthcheck the installer reported the whole stack up. wget
+    # and without a healthcheck the installer would report the stack up. wget
     # is on PATH in this busybox-based image; /-/healthy answers 200 as soon as
     # the process has loaded its configuration.
     healthcheck:
@@ -355,7 +348,7 @@ services:
       retries: 3
 
   grafana:
-    image: grafana/grafana:13.2.4
+    image: grafana/grafana:13.3.1
     profiles: [monitoring]
     restart: unless-stopped
     environment:

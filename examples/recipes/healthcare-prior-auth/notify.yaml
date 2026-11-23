@@ -1,9 +1,9 @@
-# Healthcare prior-authorization recipe — Notify (webhook) subscriptions.
+# Healthcare prior-authorization recipe: Notify (webhook) subscriptions.
 # A declarative list of the webhook subscriptions this recipe expects. Create each
 # one against your Server with POST /v1/webhooks (see the Webhooks guide), sending
 # each entry's fields as the body; the comment above each entry is its label for you,
 # not a field (the route refuses unknown fields). The
-# signing secret is returned ONCE at create time — capture it then; it is null on
+# signing secret is returned ONCE at create time: capture it then; it is null on
 # every subsequent read.
 #
 # SSRF: private / link-local / metadata IPs are blocked at connect regardless of
@@ -15,7 +15,7 @@
 # split so the utilization-management queue and the provider/member notice pipeline
 # can subscribe independently.
 subscriptions:
-  # Determination channel — every contested-decision moment (the channel that matters).
+  # Determination channel: every contested-decision moment (the channel that matters).
   # pa-determinations
   - url: https://pa-events.example.com/agledger
     signingAlg: hmac          # or ed25519 for vault-signed, offline-verifiable deliveries
@@ -25,7 +25,7 @@ subscriptions:
       - record.gate_complete         # the medical-director verdict rendered
       - record.fulfilled             # determination/appeal settled
       - signal.emitted               # terminal Settlement Signal (SETTLE on accept / HOLD on reject)
-  # Disposition channel — the payer-system auto-adjudication feed (notarize-only).
+  # Disposition channel: the payer-system auto-adjudication feed (notarize-only).
   # Filter receiver-side on type == halcyon-pa-disposition-v1; route A2/A4 to the
   # utilization-management review queue, A1/A3 to the provider notice pipeline
   # (CMS-0057-F decision-notice obligation).

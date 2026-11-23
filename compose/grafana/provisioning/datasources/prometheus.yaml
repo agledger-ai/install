@@ -1,11 +1,11 @@
 apiVersion: 1
 
-# Removed by name before the datasource below is provisioned, and the pair is
-# load-bearing on an UPGRADE. An install made before the `uid` was pinned
-# created this datasource with Grafana's generated uid (PBFA97CFB590B2093),
-# and that row lives in the grafana-data volume, which survives the upgrade.
-# Grafana's provisioner resolves the declared datasource by uid, does not find
-# the row under the new one, and fails the whole `provisioning` module with
+# Removed by name before the datasource below is provisioned. A grafana-data
+# volume can already hold this datasource under a uid Grafana generated (it
+# does so for a datasource declared without one), and the volume survives an
+# upgrade. Grafana's provisioner resolves the declared datasource by uid, does
+# not find the row under the declared one, and fails the whole `provisioning`
+# module with
 # "Datasource provisioning error: data source not found". The module is fatal,
 # so the container crash-loops and the upgrade fails on Grafana alone with the
 # engine already upgraded correctly.
@@ -22,9 +22,9 @@ apiVersion: 1
 # container reports healthy. `editable: false` does not protect those; it only
 # refuses edits to this datasource's own connection settings. The bundled
 # stack does not intend that workflow (the shipped alert rules are evaluated
-# by Prometheus, and `monitoring/README.md` says so), and the
-# alternative is the crash-loop above, which costs the whole monitoring stack
-# instead of a link an operator can repoint.
+# by Prometheus, and `monitoring/README.md` says so). Without the delete, the
+# crash-loop above costs the whole monitoring stack instead of a link an
+# operator can repoint.
 deleteDatasources:
   - name: Prometheus
     orgId: 1
@@ -33,7 +33,7 @@ datasources:
   - name: Prometheus
     type: prometheus
     # Pinned, not left to Grafana. Without a uid here Grafana generates one
-    # (PBFA97CFB590B2093 on 13.2.1) and the dashboards' `${datasource}`
+    # and the dashboards' `${datasource}`
     # variable has nothing stable to default to. The same literal is what the
     # Kubernetes sidecar path and a manual import resolve against.
     uid: prometheus

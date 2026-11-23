@@ -101,6 +101,7 @@ spec:
                   mountPath: /etc/agledger/post-restore
                   readOnly: true
                 {{- include "agledger.licenseVolumeMount" . | nindent 16 }}
+                {{- include "agledger.fipsVolumeMount" . | nindent 16 }}
                 {{- include "agledger.provisioningVolumeMounts" . | nindent 16 }}
                 {{- with .Values.extraVolumeMounts }}
                 {{- toYaml . | nindent 16 }}
@@ -115,6 +116,7 @@ spec:
                 optional: true
                 defaultMode: 292  # 0444
             {{- include "agledger.licenseVolume" . | nindent 12 }}
+            {{- include "agledger.fipsVolume" . | nindent 12 }}
             {{- include "agledger.provisioningVolumes" . | nindent 12 }}
             {{- with .Values.extraVolumes }}
             {{- toYaml . | nindent 12 }}

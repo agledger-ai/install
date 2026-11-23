@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AGLedger Helm Quick-Start — generates secrets and installs in one command.
+# AGLedger Helm Quick-Start: generates secrets and installs in one command.
 #
 # Re-running it against a release that already exists reconciles that release in
 # place (`helm upgrade --install`) rather than refusing the name, so fixing a
@@ -150,6 +150,8 @@ usage() {
     AGLEDGER_REQUIRE_VERIFY=true    refuse to install when signatures cannot
                                     be checked. Set this in production and CI.
     AGLEDGER_SIGNING_ALGORITHM      ed25519 (default) or es256 for FIPS hosts.
+    AGLEDGER_FIPS=true              run every pod under the image's FIPS
+                                    provider (fips.enabled). Implies es256.
     AGLEDGER_HELM_CHART             same as --chart.
     AGLEDGER_HELM_IMAGE             same as --image.
 
@@ -246,19 +248,19 @@ done
 AGLEDGER_SIGNER_IDENTITY_REGEXP='^https://github\.com/agledger-ai/agledger-api/\.github/workflows/.+@refs/tags/v.+$'
 AGLEDGER_SIGNER_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 
-# verify_ref <oci-ref> <human-label> — fail-closed when cosign is present and
+# verify_ref <oci-ref> <human-label>: fail-closed when cosign is present and
 # verification fails; warn + proceed when cosign is absent (OOTB-first), unless
 # AGLEDGER_REQUIRE_VERIFY=true.
 verify_ref() {
   local ref="$1" label="$2"
   if [[ "${AGLEDGER_SKIP_VERIFY:-false}" == "true" ]]; then
-    info "AGLEDGER_SKIP_VERIFY=true — skipping ${label} verification (dev/local ONLY)."
+    info "AGLEDGER_SKIP_VERIFY=true, skipping ${label} verification (dev/local ONLY)."
     return 0
   fi
   if ! command -v cosign >/dev/null 2>&1; then
     [[ "${AGLEDGER_REQUIRE_VERIFY:-false}" == "true" ]] \
       && fatal "cosign not installed and AGLEDGER_REQUIRE_VERIFY=true. Install cosign 3.x: https://docs.sigstore.dev/system_config/installation/"
-    info "cosign not installed — cannot verify ${label}. Install cosign 3.x for supply-chain verification. Proceeding UNVERIFIED."
+    info "cosign not installed, cannot verify ${label}. Install cosign 3.x for supply-chain verification. Proceeding UNVERIFIED."
     return 0
   fi
   if cosign verify \
@@ -584,12 +586,12 @@ elif [[ -z "$VERSION" ]] && [[ "${AGLEDGER_SKIP_VERIFY:-false}" != "true" ]]; th
       | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 || true)
     [[ -n "$VERSION" ]] && info "Resolved latest chart version: $VERSION"
   fi
-  [[ -z "$VERSION" ]] && info "Could not resolve a concrete version to verify — pass --version X.Y.Z to enable verification."
+  [[ -z "$VERSION" ]] && info "Could not resolve a concrete version to verify. Pass --version X.Y.Z to enable verification."
 fi
 
 # Verify the chart and the image before installing / running them.
 # Resolve the image to a digest and verify THAT (not the mutable tag), so the
-# keygen pod below runs exactly the bytes we verified — no verify-then-repoint gap.
+# keygen pod below runs exactly the bytes we verified, with no verify-then-repoint gap.
 IMG_REF="${IMAGE_REPO}${VERSION:+:$VERSION}"
 
 # A release signature is an OCI referrer on Docker Hub. `helm pull` writes a
@@ -679,7 +681,7 @@ else
   esac
 fi
 
-# values_files_declare <matcher-fn> — true when any values file the operator
+# values_files_declare <matcher-fn>: true when any values file the operator
 # handed us satisfies the matcher, which is called with one filename. A function
 # rather than a regexp because the two callers need different precision: one is
 # looking for a top-level key, the other has to tell `config.externalUrl` from
@@ -998,7 +1000,18 @@ fi
 # FIPS-mode clusters, whose providers cannot compute Ed25519; it also sets the
 # AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG acknowledgment via extraEnv (chain
 # consumers need @agledger/verify >= 2.0.0, as on any 2.x install).
-SIGNING_ALGORITHM="${AGLEDGER_SIGNING_ALGORITHM:-ed25519}"
+FIPS="${AGLEDGER_FIPS:-false}"
+case "$FIPS" in
+  true|false) ;;
+  *) fatal "AGLEDGER_FIPS must be true or false, got: ${FIPS}" ;;
+esac
+if [[ "$FIPS" == true ]]; then
+  [[ "${AGLEDGER_SIGNING_ALGORITHM:-es256}" == es256 ]] \
+    || fatal "AGLEDGER_FIPS=true needs an ES256 vault key: the FIPS provider cannot compute Ed25519. Unset AGLEDGER_SIGNING_ALGORITHM or set it to es256."
+  SIGNING_ALGORITHM=es256
+else
+  SIGNING_ALGORITHM="${AGLEDGER_SIGNING_ALGORITHM:-ed25519}"
+fi
 case "$SIGNING_ALGORITHM" in
   ed25519|es256) ;;
   *) fatal "AGLEDGER_SIGNING_ALGORITHM must be ed25519 or es256, got: ${SIGNING_ALGORITHM}" ;;
@@ -1086,6 +1099,16 @@ elif release_holds_vault_key; then
     REUSED_VAULT_KEY="$(kubectl get secret "$VAULT_KEY_SECRET" --namespace "$NAMESPACE" \
       -o jsonpath='{.data.VAULT_SIGNING_KEY}' 2>/dev/null | base64 --decode 2>/dev/null || true)"
     [[ -n "$REUSED_VAULT_KEY" ]] && VAULT_KEY_PIN="$(vault_key_pin_of "$REUSED_VAULT_KEY")"
+  fi
+  # 06 03 2b 65 70 is the DER-encoded Ed25519 OID (1.3.101.112) every
+  # Ed25519 PKCS#8 key carries. The FIPS provider cannot parse such a key, so
+  # the pods would come up unable to sign.
+  if [[ "$FIPS" == true && -n "${REUSED_VAULT_KEY:-}" ]] \
+     && printf '%s' "$REUSED_VAULT_KEY" | base64 --decode 2>/dev/null | od -An -tx1 | tr -d ' \n' | grep -q '06032b6570'; then
+    error "AGLEDGER_FIPS=true was requested, but the release's vault signing key is Ed25519,"
+    error "which the FIPS provider cannot use. Rotate to an ES256 key first, as README.md"
+    error "\"Switching an install that already has a chain\" describes, then re-run."
+    fatal "Refusing to activate FIPS against a key the provider cannot use."
   fi
 else
   info "Generating ${SIGNING_ALGORITHM} vault signing key..."
@@ -1288,6 +1311,9 @@ if [[ "$SIGNING_ALGORITHM" == "es256" ]]; then
   # Dedicated chart value; never claim an extraEnv index an operator's own
   # values file or --set could collide with.
   HELM_CMD+=(--set config.allowNonDefaultSigningAlg=true)
+fi
+if [[ "$FIPS" == true ]]; then
+  HELM_CMD+=(--set fips.enabled=true)
 fi
 if [[ "$IS_OPENSHIFT" == true ]]; then
   if operator_set_openshift; then

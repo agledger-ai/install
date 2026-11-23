@@ -7,11 +7,11 @@
 #   AGLEDGER_API_URL   e.g. https://agledger.internal.example
 #   AGLEDGER_API_KEY   an admin key with schemas:write
 #
-# Registration is versioned: re-running with a changed file against an org that
-# already has the type lands a new version, and re-running with the file unchanged
-# answers 200 with the current version and registers nothing. This type declares
-# compatibilityMode "none", so version evolution is not gated by the registry's
-# backward check.
+# work-context-v1 is one of the example types the Server seeds into each new
+# Org, with the same schema as types/. This script registers it only for an Org
+# that does not have it (created by a release that did not seed it, on an
+# install with AGLEDGER_SEED_EXAMPLE_SCHEMAS=false, or deleted since) and leaves
+# an existing one untouched.
 #
 # Schema writes are rate-limited to 10/minute per key. A 429 is retried
 # automatically after the server-stated wait, up to 5 attempts.
@@ -52,17 +52,37 @@ if [[ "$role" != "admin" ]]; then
   exit 1
 fi
 
+# `local` is the label a registration without one takes. The reset and the
+# read-back name it: a bare type name is refused with a 422 once the Org holds
+# the type under a second publisher. The skip probe stays bare, so a type the
+# Org already holds under one other publisher is skipped rather than
+# registered a second time under this one.
+PUBLISHER="${RECIPE_PUBLISHER:-local}"
 fail=0
 for f in "$HERE"/types/*.json; do
   type=$(jq -r .type "$f")
+  existing=$(curl -s -w $'\n%{http_code}' "$API/v1/schemas/$type" -H "Authorization: Bearer $AK")
+  if [[ "${existing##*$'\n'}" == "200" && "$FORCE" != "1" ]]; then
+    status=$(echo "${existing%$'\n'*}" | jq -r '.status // "unknown"' 2>/dev/null)
+    if [[ "$status" == "DISABLED" ]]; then
+      echo "SKIP 200  $type  (registered in this Org but DISABLED: re-enable it with PATCH $API/v1/schemas/$type/enable)"
+    else
+      echo "SKIP 200  $type  (already registered in this Org)"
+    fi
+    continue
+  fi
   if [[ "$FORCE" == "1" ]]; then
-    curl -s -X PATCH  "$API/v1/schemas/$type/disable" -H "Authorization: Bearer $AK" >/dev/null 2>&1
-    curl -s -X DELETE "$API/v1/schemas/$type"         -H "Authorization: Bearer $AK" >/dev/null 2>&1
+    curl -s -X PATCH  "$API/v1/schemas/$type/disable?publisher=$PUBLISHER" -H "Authorization: Bearer $AK" >/dev/null 2>&1
+    curl -s -X DELETE "$API/v1/schemas/$type?publisher=$PUBLISHER"         -H "Authorization: Bearer $AK" >/dev/null 2>&1
   fi
   attempt=0
   while :; do
+    # RECIPE_PUBLISHER registers each type under that publisher label rather
+    # than `local`, which is what to set when the same types also arrive by
+    # manifest import under a named publisher.
+    body=$(jq -c --arg p "${RECIPE_PUBLISHER:-}" 'if $p == "" then . else . + {publisher: $p} end' "$f")
     resp=$(curl -s -w $'\n%{http_code}' -X POST "$API/v1/schemas" \
-        -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' --data-binary "@$f")
+        -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' --data-binary "$body")
     code="${resp##*$'\n'}"; json="${resp%$'\n'*}"
     [[ "$code" != "429" ]] && break
     attempt=$((attempt + 1))
@@ -82,10 +102,10 @@ for f in "$HERE"/types/*.json; do
   fi
 done
 
-echo "----- recipe types now visible -----"
+echo "----- recipe types now visible under publisher $PUBLISHER -----"
 for f in "$HERE"/types/*.json; do
   t=$(jq -r .type "$f")
-  r=$(curl -s -w $'\n%{http_code}' "$API/v1/schemas/$t" -H "Authorization: Bearer $AK")
+  r=$(curl -s -w $'\n%{http_code}' "$API/v1/schemas/$t?publisher=$PUBLISHER" -H "Authorization: Bearer $AK")
   c="${r##*$'\n'}"; j="${r%$'\n'*}"
   if [[ "$c" == "200" ]]; then
     echo "$j" | jq -r '"\(.type)\tv\(.version)\t\(.status)\t\(if (.completionSchema.properties|length)>0 then (.defaultGateMode//"auto") else "notarize-only" end)"'

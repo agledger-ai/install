@@ -1,0 +1,17 @@
+{{- if (.Values.fips).enabled }}
+{{- /* A hook at the main ConfigMap's weight, for the same reason: the migrate
+       and preflight hook Jobs mount it, and they run before any non-hook
+       resource exists. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-openssl-fips" (include "agledger.fullname" .) }}
+  labels:
+    {{- include "agledger.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+data:
+  openssl-fips.cnf: |
+    {{- .Files.Get "files/openssl-fips.cnf" | nindent 4 }}
+{{- end }}

@@ -3,7 +3,7 @@
   "category": "appeal",
   "defaultGateMode": "principal",
   "displayName": "PA Appeal / Peer-to-Peer Re-determination",
-  "description": "An appeal of an upheld determination — peer-to-peer, internal appeal, or external independent review (IRO). Records a fresh human re-determination that supersedes the appealed determination via appealOfRef; the original chain stays intact, since the appeal appends rather than rewrites history. The principal here is the re-determining authority — a different medical director for an internal appeal, or an external IRO reviewer for independent review, attributed through the verdict. This covers the appeals and peer-to-peer arc of the PA lifecycle. AGLedger notarizes the re-determination verdict; it does not render it.",
+  "description": "An appeal of an upheld determination: peer-to-peer, internal appeal, or external independent review (IRO). Records a fresh human re-determination that supersedes the appealed determination via appealOfRef; the original chain stays intact, since the appeal appends rather than rewrites history. The principal here is the re-determining authority: a different medical director for an internal appeal, or an external IRO reviewer for independent review, attributed through the verdict. This covers the appeals and peer-to-peer arc of the PA lifecycle. AGLedger notarizes the re-determination verdict; it does not render it.",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,

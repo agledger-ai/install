@@ -37,7 +37,6 @@ AGLedger is self-hosted. All application data (records, receipts, audit logs, AP
 Outbound network access is required only for:
 
 - Pulling Docker images during install and upgrade
-- Sending a support bundle, and only on a deployment where you have set `AGLEDGER_SUPPORT_BUNDLE_URL` to an upload target of your own and then upload one via `POST /v1/admin/support-bundle/upload`. That variable has no default, so with it unset nothing is ever uploaded. The documented path is `./scripts/support-bundle.sh`, which makes no network call: it writes a local tarball you review and send to support@agledger.ai
 - Destinations you configure yourself, each off until you set it: webhook receivers, federation peers, your IdP's discovery and JWKS endpoints, the S3 bucket external anchors are written to, the SIEM collector, and an OTLP collector for telemetry export
 - Checking your marketplace entitlement, on a marketplace install only. Setting `AWS_MARKETPLACE_PRODUCT_ID` turns on an AWS License Manager `CheckoutLicense` call every 15 minutes. Startup and `POST /v1/admin/license/reload` reach that same call only when you have configured no license key of your own, because a key you hold is read first and settles the tier locally with no network at all. The call goes to AWS, not to AGLedger, and carries no record, agent, or usage data: the request names the product, a key fingerprint, and a count of one. It fails open, so an unreachable entitlement service never blocks or degrades anything. Leave the variable unset and no such call is ever made
 
@@ -142,8 +141,8 @@ flagged image never reaches the registry:
 - **Boot gate**, on both arches: the image runs migrations against a real PostgreSQL
   and must serve `/health`, `/llms.txt` and `/v1/verification-keys`.
 - **FIPS boot gate**, on amd64: the same image boots with the base image's FIPS
-  provider active and must serve on the ES256 signing path, refuse federation keys,
-  and refuse to boot with `AGLEDGER_FIPS=true` and no active provider. This gate
+  provider active and must serve on the ES256 signing path, start the worker, write a
+  record and verify that record's chain, refuse federation keys, and refuse to boot with `AGLEDGER_FIPS=true` and no active provider. This gate
   tests provider behaviour rather than arch parity, which the boot gate above
   already covers on both arches.
 
@@ -265,7 +264,7 @@ image into ECR, and fails when they differ.
 Two custody options, chosen per install:
 
 - **Key material in the process environment** (`VAULT_SIGNING_KEY`, or a file through
-  `VAULT_SIGNING_KEY_FILE`, or SSM through `SECRETS_PROVIDER=aws-ssm`). The default. The private key
+  `VAULT_SIGNING_KEY_FILE`). The default. The private key
   is in the container's environment and in whatever Secret or file supplied it, and anyone who can
   read either can sign as this Server.
 - **AWS KMS** (`VAULT_SIGNING_KEY_KMS_ARN`; on Helm, `signing.kmsKeyArn`). The private half is a

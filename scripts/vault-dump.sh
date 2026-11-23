@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# AGLedger — Vault Dump
+# AGLedger: Vault Dump
 # =============================================================================
 # Produces the NDJSON vault dump that the offline cryptographic verifier
 # consumes: one file per audit table (audit_vault, vault_checkpoints,
@@ -18,14 +18,14 @@ set -euo pipefail
 # the running Server uses.
 #
 # Requires the AGLedger stack (or at least its database) to be reachable on the
-# compose network — run this against a live install.
+# compose network. Run this against a live install.
 #
 # Usage:
 #   ./scripts/vault-dump.sh                       # dump all orgs to ./vault-dump-<ts>
 #   ./scripts/vault-dump.sh ./my-dump             # dump all orgs to ./my-dump
 #   ./scripts/vault-dump.sh ./my-dump --org <id>  # scope to one org
 #
-# Verify the resulting dump offline — see the "Offline cryptographic
+# Verify the resulting dump offline; see the "Offline cryptographic
 # verification" section of GET /llms-full.txt for the supported paths.
 # =============================================================================
 
@@ -75,7 +75,7 @@ DUMP_ARGS=(dist/scripts/dump-vault.js /dump)
 [[ -n "$ORG_ID" ]] && DUMP_ARGS+=(--org "$ORG_ID")
 
 # One-off container reusing the agledger-api service definition:
-#   --no-deps     don't (re)start postgres/migrate — run against the live stack
+#   --no-deps     don't (re)start postgres/migrate, run against the live stack
 #   --user        write output as the invoking host user, not container nonroot,
 #                 so the customer owns the dump files
 #   -v            bind-mount the host output dir to /dump

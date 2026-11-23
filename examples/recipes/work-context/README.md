@@ -162,19 +162,17 @@ the writer signed, so it does not depend on whose clock won.
 
 ## Registration
 
-Two paths; pick ONE per org:
+`work-context-v1` is one of the example types the Server seeds into each new
+Org, so on most installs there is nothing to register: `GET /v1/schemas/work-context-v1`
+answers 200. Every Server that seeds it holds the same bytes, so peers match it
+by `manifestDigest` without an import.
 
-- `./register.sh` registers `types/01-work-context.json` via
-  `POST /v1/schemas` (an admin key with `schemas:write`; the default
-  `admin-standard` profile carries it). Lands under the `local` publisher.
-- `manifests/01-work-context.json` is the importable body for
-  `POST /v1/schemas/import` (publisher `agledger-recipes`). Use it when you
-  want the type distributed across servers with a matching `manifestDigest`,
-  so peers can confirm schema equality by digest instead of by name.
-
-Do not do both on one org: two publishers offering `work-context-v1` makes a
-bare `type` ambiguous (422 on every record create until callers pin
-`publisher`).
+`./register.sh` covers an Org that does not have it (created by a release that
+did not seed it, an install with `AGLEDGER_SEED_EXAMPLE_SCHEMAS=false`, or one
+that deleted it). It registers `types/01-work-context.json` via
+`POST /v1/schemas` under the `local` publisher, with an admin key that carries
+`schemas:write` (the default `admin-standard` profile does), and skips a type
+the Org already has.
 
 ## Checkpoint size: the working rule
 

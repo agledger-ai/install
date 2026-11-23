@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "AGLedger silent-data-loss surveillance. Every panel here surfaces a failure mode that would otherwise be invisible in logs alone \u2014 non-zero rate is signal, investigate.",
+  "description": "AGLedger silent-data-loss surveillance. Every panel here surfaces a failure mode that would otherwise be invisible in logs alone: non-zero rate is signal, investigate.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -15,7 +15,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Bus events fired without a BUS_TO_PERSISTED mapping \u2014 they did NOT land in the events table. SIEM/webhook/federation consumers silently miss them. Non-zero = code path added without updating the map.",
+      "description": "Bus events fired without a BUS_TO_PERSISTED mapping; they did NOT land in the events table. SIEM/webhook/federation consumers silently miss them. Non-zero = code path added without updating the map.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -70,7 +70,7 @@
           "refId": "A"
         }
       ],
-      "title": "Unmapped bus events (1h) \u2014 agledger_persist_event_unmapped_total",
+      "title": "Unmapped bus events (1h): agledger_persist_event_unmapped_total",
       "type": "stat"
     },
     {
@@ -142,7 +142,7 @@
           "refId": "B"
         }
       ],
-      "title": "AUTO_ROLLUP swept vs rolled up (1h) \u2014 agledger_auto_rollup_{stuck,repaired}_parents_total",
+      "title": "AUTO_ROLLUP swept vs rolled up (1h): agledger_auto_rollup_{stuck,repaired}_parents_total",
       "type": "stat"
     },
     {
@@ -205,7 +205,7 @@
           "refId": "A"
         }
       ],
-      "title": "Vault checkpoint skipped (broken chain, 1h) \u2014 agledger_vault_checkpoint_skipped_broken_total",
+      "title": "Vault checkpoint skipped (broken chain, 1h): agledger_vault_checkpoint_skipped_broken_total",
       "type": "stat"
     },
     {
@@ -213,7 +213,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "SIEM emission drops. HTTP: buffer overflow or post-close writes. File: stream errors or post-close writes. Customer's external SIEM has visibility gaps.",
+      "description": "Skipped: a row that would not serialize, which the poller counts and moves its cursor past, so the customer's external SIEM never receives it. Refused: a batch a sink did not take. The cursor is held and the same rows are read again on the next cycle, so nothing is lost, but the feed is behind for as long as this is non-zero.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -290,8 +290,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_siem_http_batches_dropped_total{job=~\"$job\"}[5m]))",
-          "legendFormat": "siem_http",
+          "expr": "sum(rate(agledger_siem_mapper_failures_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "skipped",
           "refId": "A"
         },
         {
@@ -299,12 +299,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(agledger_siem_file_lines_dropped_total{job=~\"$job\"}[5m]))",
-          "legendFormat": "siem_file",
+          "expr": "sum by (sink) (rate(agledger_siem_poll_delivery_retries_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "refused: {{sink}}",
           "refId": "B"
         }
       ],
-      "title": "SIEM event drops (rate) \u2014 http + file",
+      "title": "SIEM export: rows skipped and batches refused (rate)",
       "type": "timeseries"
     },
     {
@@ -312,7 +312,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Does what leaves this Server arrive, and is anything permanently lost? `dead-lettered` is the one that matters: those jobs exhausted the pg-boss retry budget, so the peer will never receive that projection without an operator redrive from GET /federation/v1/admin/dlq. `post failed` is per-attempt and self-heals through retries, so a rising line there with a flat dead-lettered line is a slow peer, not data loss. `inbound conflict` counts peer projections that collided with a record already here (stale = ours won and theirs was discarded). Replaces a panel that queried agledger_federation_sequence_gaps_total and agledger_federation_sequence_reconciled_total, which no process has ever registered.",
+      "description": "Does what leaves this Server arrive, and is anything permanently lost? `dead-lettered` is the one that matters: those jobs exhausted the pg-boss retry budget, so the peer will never receive that projection without an operator redrive from GET /federation/v1/admin/dlq. `post failed` is per-attempt and self-heals through retries, so a rising line there with a flat dead-lettered line is a slow peer, not data loss. `inbound conflict` counts peer projections that collided with a record already here (stale = ours won and theirs was discarded).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -421,7 +421,7 @@
           "refId": "D"
         }
       ],
-      "title": "Federation delivery divergence (1h) \u2014 health check",
+      "title": "Federation delivery divergence (1h): health check",
       "type": "timeseries"
     },
     {
@@ -584,7 +584,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "AGLedger \u2014 Data Integrity Surveillance",
+  "title": "AGLedger: Data Integrity Surveillance",
   "uid": "agledger-data-integrity",
   "version": 1,
   "weekStart": ""

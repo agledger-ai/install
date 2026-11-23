@@ -14,13 +14,16 @@ speaks to: both bound who may reach the pod or the host, and the proxy is alread
 - `METRICS_AUTH_TOKEN` is the scrape credential: a bearer token, no API key, checked on both
   processes. `install.sh` generates one into `compose/.env`; the chart mints one into the release
   Secret. `/health` and `/health/ready` on the worker's health port stay open for the probes.
-- With no token set, the API's `/metrics` answers the ordinary API-key chain instead
-  (`METRICS_AUTH_REQUIRED`, which defaults true under production). Set it to `false` to serve
-  `/metrics` openly and restrict it at the network layer.
-- The worker has no API-key chain of its own, so the token is the only gate it honours. Both
-  packaged installs mint one, which is what gates both processes; on an install that sets neither,
-  the worker's health port serves `/metrics` open. It is bound to loopback under Compose and
-  cluster-internal under the chart, but it is not gated by `METRICS_AUTH_REQUIRED` alone.
+- With no token set, `/metrics` on both processes answers the API-key chain instead
+  (`METRICS_AUTH_REQUIRED`, which defaults true under production), and takes a platform-role key
+  holding `admin:system`: the metrics are Server-wide, so an org-admin or agent key gets 403
+  `PLATFORM_REQUIRED`. The worker checks the key the way the API does and answers the same 401
+  and 403 bodies, but a key it refuses leaves no `auth.failed` row in `system_audit_log`; the
+  API's refusals do. The worker's port also bounds what an unknown key costs it: after 10 refused
+  keys from one address within 60 seconds it answers that address 429 with `Retry-After` until the
+  window ends, a key it refused is refused again from memory for 30 seconds, and it runs one
+  lookup of an uncached key at a time, answering a second 429 to retry in a second. Set `METRICS_AUTH_REQUIRED=false` to serve `/metrics` openly on both and
+  restrict it at the network layer.
 
 ### Where each series comes from
 
@@ -92,7 +95,7 @@ management, and the rest). All three live on the worker's `/metrics`, not the AP
   recorded whether the sweep succeeded or threw. The `task` label is the sweep name, so a p95 per
   task separates one slow sweep from a dozen fast ones.
 - `agledger_maintenance_sweep_behind_total{task="..."}` counts the cycles that stopped with work
-  left. Only a sweep that bounds its own work by a clock can answer that, and today three do.
+  left. Only a sweep that bounds its own work reports it.
   `oidc-jti-cleanup` drains the consumed-jti register in batches for up to 30 seconds a cycle,
   every 5 minutes, against one row per admin or platform bearer accepted on a trusted issuer with
   `jtiSingleUse` set; the rows are tokens that can no longer be presented, so falling behind costs
@@ -103,7 +106,14 @@ management, and the rest). All three live on the worker's `/metrics`, not the AP
   `AGLedgerMaintenanceSweepFallingBehind` fires on half an hour of cycles ending short. Nothing is
   lost when it does. `vault-checkpoints` is the third, and the exception: a chain a run did not reach
   has entries with no checkpoint or anchor yet. Each run goes on from where the last one stopped, and `AGLedgerVaultCheckpointsFallingBehind` fires when every run for thirteen hours
-  has stopped short.
+  has stopped short. `record-expiry` is the fourth: it takes a fixed batch of overdue records per cycle, oldest
+  deadline first, and reports behind when more were waiting. No alert reads its series, since it
+  runs far more often than the cleanups and leaves live records rather than dead rows; the reading
+  for it is `agledger_records_overdue{status}` on the API's `/metrics`, the records past their effective deadline that the
+  sweep has not timed out yet, with `agledger_records_overdue_oldest_age_seconds` for how long the
+  oldest has waited. A count that stays up across cycles is the sweep falling behind, or a record it
+  fails on every cycle, which `agledger_expiry_record_failures_total{stage="expire"}` and the worker's
+  ERROR line naming the record tell apart.
 - `agledger_maintenance_unknown_task_total{task="..."}` counts ticks this worker refused because it
   carries no handler for the task. The schedules live in the database, so a job minted by a newer
   release's schedule reaches an older worker during a rollout and for as long as a rollback lasts;
@@ -132,7 +142,7 @@ count.
 **Event-handler silent drops** carries one panel per fire-and-forget path that swallows its error,
 grouped by what is lost: a queued job (including one that ran and gave up after every retry), an
 audit-trail entry, a federated projection, a SIEM record, or a config reload. Its top stat sums
-every counter on the dashboard, which is now every drop-class counter the engine registers apart
+every counter on the dashboard, which is every drop-class counter the engine registers apart
 from the ones that fail loudly somewhere else (the webhook and federation DLQs, pool and rate-limit
 degradation).
 
@@ -177,7 +187,7 @@ terminates TLS for the API.
 
 ## Alerting rules
 
-`monitoring/alerts/agledger.rules.yml` ships 57 rules in seven groups: silent drops, chain integrity,
+`monitoring/alerts/agledger.rules.yml` ships 58 rules in seven groups: silent drops, chain integrity,
 partition maintenance, federation delivery, stuck work, availability/saturation, and target
 liveness.
 

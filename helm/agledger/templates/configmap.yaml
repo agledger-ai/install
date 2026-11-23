@@ -49,6 +49,13 @@ data:
   {{- if .Values.config.allowNonDefaultSigningAlg }}
   AGLEDGER_ALLOW_NON_DEFAULT_SIGNING_ALG: "true"
   {{- end }}
+  {{- /* Both or neither: OPENSSL_CONF activates the provider, and AGLEDGER_FIPS
+         makes the Server refuse to boot if it is not active, so a pod whose
+         provider failed to load cannot run while claiming FIPS. */}}
+  {{- if (.Values.fips).enabled }}
+  AGLEDGER_FIPS: "true"
+  OPENSSL_CONF: /etc/agledger/openssl-fips/openssl-fips.cnf
+  {{- end }}
   DATABASE_POOL_MAX: {{ include "agledger.positiveWholeNumber" (dict "value" .Values.database.poolMax "name" "database.poolMax" "max" 262143) | quote }}
   DATABASE_IDLE_IN_TX_TIMEOUT_MS: {{ include "agledger.idleInTxTimeoutMs" . | quote }}
   DATABASE_STATEMENT_TIMEOUT_MS: {{ include "agledger.statementTimeoutMs" . | quote }}

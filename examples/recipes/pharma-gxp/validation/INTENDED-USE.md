@@ -23,7 +23,7 @@ published keys.
 ## Systems in scope
 
 - The AGLedger Server (published image `agledger/agledger`; this recipe was built and run
-  against 2.2.0).
+  against 3.0.0).
 - The system of record the reference automations drive: Odoo 18.0 Community with the OCA
   quality modules, standing in for the MES, LIMS and ERP of a manufacturing site. The
   checker, the readers and the writer in `sor/` are reference implementations against it; a

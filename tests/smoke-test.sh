@@ -2,12 +2,12 @@
 set -euo pipefail
 
 # =============================================================================
-# AGLedger — Smoke Test
+# AGLedger: Smoke Test
 # =============================================================================
 # Verifies that AGLedger is running and responding correctly.
 #
 # Phase 1 (unauthenticated): Health, readiness, conformance, schema seeding
-# Phase 2 (authenticated):   Record lifecycle — resolve org, create record,
+# Phase 2 (authenticated):   Record lifecycle: resolve org, create record,
 #                             completion, verify events. Requires platform API key.
 # Verify mode:               Read-only checks against previously created data.
 #                             Used after upgrade/restore to confirm data survived.
@@ -59,13 +59,13 @@ fi
 check() {
     local name="$1" url="$2" expected_field="$3" expected_value="$4"
     local response
-    response=$(curl -sf "$url" 2>/dev/null) || { echo "FAIL: $name — connection refused"; FAILURES=$((FAILURES+1)); return; }
+    response=$(curl -sf "$url" 2>/dev/null) || { echo "FAIL: $name: connection refused"; FAILURES=$((FAILURES+1)); return; }
     local actual
-    actual=$(echo "$response" | jq -r ".$expected_field" 2>/dev/null) || { echo "FAIL: $name — invalid JSON"; FAILURES=$((FAILURES+1)); return; }
+    actual=$(echo "$response" | jq -r ".$expected_field" 2>/dev/null) || { echo "FAIL: $name: invalid JSON"; FAILURES=$((FAILURES+1)); return; }
     if [ "$actual" = "$expected_value" ]; then
         echo "PASS: $name"
     else
-        echo "FAIL: $name — expected $expected_field=$expected_value, got $actual"
+        echo "FAIL: $name: expected $expected_field=$expected_value, got $actual"
         FAILURES=$((FAILURES+1))
     fi
 }
@@ -132,7 +132,7 @@ echo "Version: $VERSION"
 
 echo ""
 if [[ -z "$API_KEY" ]]; then
-    echo "-- Phase 2: Record Lifecycle (SKIPPED — no API key) --"
+    echo "-- Phase 2: Record Lifecycle (SKIPPED, no API key) --"
     echo ""
     echo "  Provide a platform API key to run lifecycle checks:"
     echo "    --api-key KEY, AGLEDGER_API_KEY env var, or PLATFORM_API_KEY in .env"
@@ -158,13 +158,13 @@ elif [[ -n "$VERIFY_STATE" ]]; then
                 V_ENT=$(echo "$API_BODY" | jq -r '.orgId // empty' 2>/dev/null || true)
                 V_SUBS=$(echo "$API_BODY" | jq -r '.submissionCount // 0' 2>/dev/null || true)
                 if [[ "$V_ENT" == "$V_ORG_ID" ]]; then
-                    echo "PASS: Record $V_RECORD_ID exists — status: $V_STATUS, submissions: $V_SUBS"
+                    echo "PASS: Record $V_RECORD_ID exists, status: $V_STATUS, submissions: $V_SUBS"
                 else
-                    echo "FAIL: Record org mismatch — expected $V_ORG_ID, got $V_ENT"
+                    echo "FAIL: Record org mismatch: expected $V_ORG_ID, got $V_ENT"
                     FAILURES=$((FAILURES+1))
                 fi
             else
-                echo "FAIL: Get record $V_RECORD_ID — HTTP $HTTP_CODE"
+                echo "FAIL: Get record $V_RECORD_ID: HTTP $HTTP_CODE"
                 FAILURES=$((FAILURES+1))
             fi
         else
@@ -180,11 +180,11 @@ elif [[ -n "$VERIFY_STATE" ]]; then
                 if [[ "$CURRENT_EVENTS" -ge "$V_EVENT_COUNT" ]]; then
                     echo "PASS: $CURRENT_EVENTS audit events (was $V_EVENT_COUNT before)"
                 else
-                    echo "FAIL: Event count dropped — was $V_EVENT_COUNT, now $CURRENT_EVENTS"
+                    echo "FAIL: Event count dropped: was $V_EVENT_COUNT, now $CURRENT_EVENTS"
                     FAILURES=$((FAILURES+1))
                 fi
             else
-                echo "FAIL: Get events — HTTP $HTTP_CODE"
+                echo "FAIL: Get events: HTTP $HTTP_CODE"
                 FAILURES=$((FAILURES+1))
             fi
         fi
@@ -197,7 +197,7 @@ elif [[ -n "$VERIFY_STATE" ]]; then
             V_SCHEMAS=$(echo "$API_BODY" | jq '.data | length' 2>/dev/null || echo "0")
             echo "PASS: schemas endpoint responding ($V_SCHEMAS active)"
         else
-            echo "FAIL: Get schemas — HTTP $HTTP_CODE"
+            echo "FAIL: Get schemas: HTTP $HTTP_CODE"
             FAILURES=$((FAILURES+1))
         fi
     fi
@@ -216,12 +216,12 @@ else
         if [[ -n "$ORG_ID" ]]; then
             echo "PASS: Resolved org ($ORG_ID)"
         else
-            echo "FAIL: List orgs — no org on this install"
+            echo "FAIL: List orgs: no org on this install"
             echo "      Response: $(echo "$API_BODY" | head -c 200)"
             FAILURES=$((FAILURES+1))
         fi
     else
-        echo "FAIL: List orgs — HTTP $HTTP_CODE"
+        echo "FAIL: List orgs: HTTP $HTTP_CODE"
         echo "      Response: $(echo "$API_BODY" | head -c 200)"
         FAILURES=$((FAILURES+1))
         ORG_ID=""
@@ -237,11 +237,11 @@ else
             if [[ -n "$AGENT_ID" ]]; then
                 echo "PASS: Created agent ($AGENT_ID)"
             else
-                echo "FAIL: Create agent — no ID in response"
+                echo "FAIL: Create agent: no ID in response"
                 FAILURES=$((FAILURES+1))
             fi
         else
-            echo "FAIL: Create agent — HTTP $HTTP_CODE"
+            echo "FAIL: Create agent: HTTP $HTTP_CODE"
             echo "      Response: $(echo "$API_BODY" | head -c 200)"
             FAILURES=$((FAILURES+1))
             AGENT_ID=""
@@ -278,7 +278,7 @@ else
         if [[ "$HTTP_CODE" =~ ^(200|201)$ ]]; then
             echo "PASS: Registered smoke-test contract (${SMOKE_TYPE})"
         else
-            echo "FAIL: Register smoke-test contract — HTTP $HTTP_CODE"
+            echo "FAIL: Register smoke-test contract: HTTP $HTTP_CODE"
             echo "      Response: $(echo "$API_BODY" | head -c 200)"
             FAILURES=$((FAILURES+1))
         fi
@@ -298,16 +298,16 @@ else
             RECORD_ID=$(echo "$API_BODY" | jq -r '.id // empty' 2>/dev/null || true)
             RECORD_STATUS=$(echo "$API_BODY" | jq -r '.status // empty' 2>/dev/null || true)
             if [[ -n "$RECORD_ID" && "$RECORD_STATUS" == "ACTIVE" ]]; then
-                echo "PASS: Created record ($RECORD_ID) — status: ACTIVE"
+                echo "PASS: Created record ($RECORD_ID), status: ACTIVE"
             elif [[ -n "$RECORD_ID" ]]; then
-                echo "PASS: Created record ($RECORD_ID) — status: ${RECORD_STATUS} (expected ACTIVE)"
+                echo "PASS: Created record ($RECORD_ID), status: ${RECORD_STATUS} (expected ACTIVE)"
             else
-                echo "FAIL: Create record — no ID in response"
+                echo "FAIL: Create record: no ID in response"
                 echo "      Response: $(echo "$API_BODY" | head -c 200)"
                 FAILURES=$((FAILURES+1))
             fi
         else
-            echo "FAIL: Create record — HTTP $HTTP_CODE"
+            echo "FAIL: Create record: HTTP $HTTP_CODE"
             echo "      Response: $(echo "$API_BODY" | head -c 200)"
             FAILURES=$((FAILURES+1))
             RECORD_ID=""
@@ -325,14 +325,14 @@ else
                 COMPLETION_ID=$(echo "$API_BODY" | jq -r '.id // empty' 2>/dev/null || true)
                 STRUCTURAL=$(echo "$API_BODY" | jq -r '.structuralValidation // empty' 2>/dev/null || true)
                 if [[ -n "$COMPLETION_ID" ]]; then
-                    echo "PASS: Submitted completion ($COMPLETION_ID) — validation: ${STRUCTURAL:-unknown}"
+                    echo "PASS: Submitted completion ($COMPLETION_ID), validation: ${STRUCTURAL:-unknown}"
                 else
-                    echo "FAIL: Submit completion — no ID in response"
+                    echo "FAIL: Submit completion: no ID in response"
                     echo "      Response: $(echo "$API_BODY" | head -c 200)"
                     FAILURES=$((FAILURES+1))
                 fi
             else
-                echo "FAIL: Submit completion — HTTP $HTTP_CODE"
+                echo "FAIL: Submit completion: HTTP $HTTP_CODE"
                 echo "      Response: $(echo "$API_BODY" | head -c 200)"
                 FAILURES=$((FAILURES+1))
                 COMPLETION_ID=""
@@ -347,7 +347,7 @@ else
                 SUBMISSION_COUNT=$(echo "$API_BODY" | jq -r '.submissionCount // 0' 2>/dev/null || true)
                 echo "PASS: Record status: ${FINAL_STATUS}, submissions: ${SUBMISSION_COUNT}"
             else
-                echo "FAIL: Get record — HTTP $HTTP_CODE"
+                echo "FAIL: Get record: HTTP $HTTP_CODE"
                 FAILURES=$((FAILURES+1))
             fi
         fi
@@ -369,7 +369,7 @@ else
                     FAILURES=$((FAILURES+1))
                 fi
             else
-                echo "FAIL: Get events — HTTP $HTTP_CODE"
+                echo "FAIL: Get events: HTTP $HTTP_CODE"
                 FAILURES=$((FAILURES+1))
             fi
         fi

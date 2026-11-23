@@ -54,9 +54,9 @@ Build the full image reference from values.
 
 If `image.digest` is set, it is concatenated as `repository@sha256:...` and the
 tag is omitted from the rendered reference (kubelet resolves by content hash,
-ignoring any tag drift). The mutable-tag `IfNotPresent` cache trap — where a
+ignoring any tag drift). The mutable-tag `IfNotPresent` cache trap (where a
 node keeps an older image because something is already tagged with the same
-name — is bypassed entirely. For production, prefer pinning by digest.
+name) is bypassed entirely. For production, prefer pinning by digest.
 
 Otherwise the reference is `repository:tag` (tag defaults to Chart.AppVersion).
 */}}
@@ -103,7 +103,7 @@ serviceAccount.name is covered too.
 {{- end }}
 
 {{/*
-Secret name — either the user-supplied existing secret or the chart-generated one.
+Secret name: either the user-supplied existing secret or the chart-generated one.
 */}}
 {{- define "agledger.secretName" -}}
 {{- if .Values.secrets.existingSecret }}
@@ -143,6 +143,29 @@ keys in a shared Secret do not land in the directory.
     items:
       - key: {{ ((.Values.license).keyFile).secretKey | quote }}
         path: {{ ((.Values.license).keyFile).secretKey | quote }}
+{{- end }}
+{{- end }}
+
+{{/*
+FIPS: the OpenSSL config that activates the image's FIPS provider, mounted on
+every pod that runs the image, because the ConfigMap's OPENSSL_CONF reaches
+each of them through envFrom and a process whose OPENSSL_CONF names a missing
+file exits before it starts. The Compose install loads the same file.
+*/}}
+{{- define "agledger.fipsVolumeMount" -}}
+{{- if (.Values.fips).enabled }}
+- name: openssl-fips
+  mountPath: /etc/agledger/openssl-fips
+  readOnly: true
+{{- end }}
+{{- end }}
+
+{{- define "agledger.fipsVolume" -}}
+{{- if (.Values.fips).enabled }}
+- name: openssl-fips
+  configMap:
+    name: {{ printf "%s-openssl-fips" (include "agledger.fullname" .) }}
+    defaultMode: 292  # 0444
 {{- end }}
 {{- end }}
 
@@ -214,7 +237,7 @@ above, and for the same reason: 0 is falsy in Go templates and is also a
 meaningful value here.
 
 0 does NOT mean "no cap". It means the API sends no `SET statement_timeout`, so
-every pooled session inherits the SERVER's setting — and the bundled Postgres
+every pooled session inherits the SERVER's setting, and the bundled Postgres
 below sets one. Pin a value here to be independent of the server.
 */}}
 {{- define "agledger.statementTimeoutMs" -}}
@@ -272,6 +295,16 @@ nil-pointer deref from whichever template Helm happened to render first.
 {{- fail "extraEnv sets AGLEDGER_INSTANCE_ID, which the chart already supplies through its ConfigMap from the instanceId value. Kubernetes keeps both, an explicit env entry wins over envFrom, and the pods would anchor under a prefix the ConfigMap does not name. Move the value to instanceId and drop the extraEnv entry." -}}
 {{- end -}}
 {{- end -}}
+{{- if and ($.Values.fips).enabled (not $.Values.config.allowNonDefaultSigningAlg) -}}
+{{- fail "fips.enabled is set but config.allowNonDefaultSigningAlg is not. The FIPS provider cannot compute Ed25519, so a FIPS Server signs with an ES256 vault key, and the Server boots on a non-default algorithm only with that acknowledgment. Set config.allowNonDefaultSigningAlg=true and an ES256 secrets.vaultSigningKey (generate-signing-key.js --algorithm es256; helm-install.sh does both when AGLEDGER_FIPS=true)." -}}
+{{- end -}}
+{{- if ($.Values.fips).enabled -}}
+{{- range ($.Values.extraEnv | default list) -}}
+{{- if eq (.name | default "") "AGLEDGER_FEDERATION_SIGNING_KEY" -}}
+{{- fail "fips.enabled is set and extraEnv sets AGLEDGER_FEDERATION_SIGNING_KEY. Federation signs with Ed25519, which the FIPS provider cannot compute, and a FIPS Server refuses to boot with a federation signing key set. Drop the extraEnv entry to run single-Server FIPS, or unset fips.enabled to federate." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if (include "agledger.bundledPostgres" $) -}}
 {{- $running := lookup "apps/v1" "Deployment" $.Release.Namespace (printf "%s-api" (include "agledger.fullname" $)) | default dict -}}
 {{- $pgdata := lookup "v1" "PersistentVolumeClaim" $.Release.Namespace (printf "%s-pgdata" (include "agledger.fullname" $)) | default dict -}}
@@ -306,7 +339,7 @@ which 2.x migrates.
 {{- end -}}
 
 {{/*
-The Server's published identity — AGLEDGER_EXTERNAL_URL.
+The Server's published identity: AGLEDGER_EXTERNAL_URL.
 
 This is the `iss` signed into every record, receipt and certificate. Rows
 already written carry it forever: changing it later does not rewrite them, it
@@ -326,8 +359,8 @@ keeps the fallback so `helm install` on a dev cluster still boots.
 
 The refusal is worded twice, because an install and an upgrade need opposite
 advice. On an install the operator is choosing an issuer, and the public
-URL is the right answer. On an upgrade they already HAVE one, very likely the
-old `https://localhost` fallback, and the public URL is the one value that
+URL is the right answer. On an upgrade they already HAVE one, often
+`https://localhost`, and the public URL is the one value that
 splits the chain. The upgrade branch names where to read the current issuer
 instead of offering a new one.
 
@@ -416,7 +449,7 @@ specified". EnvVar carries exactly name/value/valueFrom, so this covers the type
 {{- end }}
 {{- end }}
 
-{{/* The api/worker list. `migrate.extraEnv` renders through the same helper —
+{{/* The api/worker list. `migrate.extraEnv` renders through the same helper:
 the migration pod's env is a separate list (its knobs are migrate-only) but it
 must not be a separate implementation of the quoting rule above.
 
@@ -577,13 +610,13 @@ Two modes per subdirectory:
   {{- else }}
   {{- /*
     Nothing to project into this subdirectory. It still has to EXIST, because
-    the loader is pointed at the parent and a missing parent is a boot error —
+    the loader is pointed at the parent and a missing parent is a boot error;
     but it must be empty. Mounting the chart ConfigMap here without an `items`
     filter projects EVERY key into it: `kubelet` treats an empty items list the
-    same as an absent one, so a chart with orgs and nothing else wrote
+    same as an absent one, so a chart with orgs and nothing else would put
     orgs--my-corp.yaml into agents/, webhooks/ and schemas/ as well, and the
-    Server booted "completed with errors" reporting three missing-array
-    failures against files the operator never wrote.
+    Server would report missing-array failures against files the operator
+    never wrote.
   */}}
   emptyDir: {}
   {{- end }}
@@ -602,7 +635,7 @@ Two modes per subdirectory:
 {{- end }}
 
 {{/*
-Backup pod template — shared by the CronJob and the pre-upgrade hook Job.
+Backup pod template: shared by the CronJob and the pre-upgrade hook Job.
 
 Produces the SAME archive shape scripts/restore.sh reads:
 `backup-<UTC timestamp>.tar.gz` holding `<timestamp>/db.dump` (pg_dump custom
@@ -611,7 +644,7 @@ format), `<timestamp>/vault-public-keys.csv` and `<timestamp>/backup-metadata`
 cannot hand to the documented restore path is not a backup.
 
 It also runs the same PGDMP header check the script does, for the same reason:
-both ways this file has been silently unreadable (bytes ahead of the archive,
+both ways this file can be silently unreadable (bytes ahead of the archive,
 or no archive at all) are invisible at write time and are discovered at restore
 time, which is after the database has been dropped.
 
@@ -641,46 +674,22 @@ spec:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   {{- end }}
-  {{- if $root.Values.config.nodeExtraCaCerts }}
   initContainers:
-    {{- /* The Server's image is where config.nodeExtraCaCerts resolves: the
-           AWS RDS / Aurora bundle it carries at /etc/ssl/certs, or a CA the
-           operator mounts there through extraVolumes, which are rendered on
-           this container for that reason. Copied into an emptyDir the dump
-           container reads as PGSSLROOTCERT, so the backup verifies the
-           database with exactly the file the Server does and the install
-           docs' CA setting covers it with nothing more to set. Node rather
-           than a shell: the copy is the one thing it does, and the runtime
-           image's node needs no permission flags for it. */}}
+    {{- /* The URL the Server connects with is written for its Node driver,
+           and libpq, which psql and pg_dump use, reads it differently: an
+           sslrootcert path names a file in the Server's image that this
+           PostgreSQL client image does not carry, and uselibpqcompat is a
+           parameter libpq refuses. This step runs in the Server's image,
+           where those paths resolve (the AWS RDS / Aurora bundle at
+           /etc/ssl/certs, or a CA the operator mounts through extraVolumes,
+           which are rendered on this container for that reason). It copies the
+           CA the URL's sslrootcert names, or else config.nodeExtraCaCerts, into
+           an in-memory emptyDir the dump reads as PGSSLROOTCERT, and writes the
+           URL there without the two parameters, so the backup connects as the
+           Server does with nothing more to set. Node rather than a shell: the
+           runtime image's node needs no permission flags for it. */}}
     - name: database-ca
       image: {{ include "agledger.image" $root }}
-      imagePullPolicy: {{ $root.Values.image.pullPolicy }}
-      securityContext:
-        readOnlyRootFilesystem: true
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop: [ALL]
-      command: ["/nodejs/bin/node", "-e", "require('node:fs').copyFileSync(process.argv[1], '/database-ca/root.pem')", {{ $root.Values.config.nodeExtraCaCerts | quote }}]
-      volumeMounts:
-        - name: database-ca
-          mountPath: /database-ca
-        {{- with $root.Values.extraVolumeMounts }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
-      resources:
-        requests:
-          cpu: 10m
-          memory: 32Mi
-        limits:
-          memory: 64Mi
-  {{- end }}
-  containers:
-    - name: dump
-      {{- /* A PostgreSQL client image, not the AGLedger image: the runtime base
-             carries no pg_dump. pg_dump refuses a server NEWER than itself, so
-             this tracks the bundled version and an external Postgres 18 needs
-             an 18 client here. */}}
-      image: {{ $backup.image | default ((($root.Values).postgres).bundled).image | default "postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5" }}
       imagePullPolicy: {{ $root.Values.image.pullPolicy }}
       securityContext:
         readOnlyRootFilesystem: true
@@ -704,20 +713,69 @@ spec:
               name: {{ include "agledger.secretName" $root }}
               key: DATABASE_URL_MIGRATE
               optional: true
+      command:
+        - /nodejs/bin/node
+        - -e
+        - |
+          const fs = require('node:fs');
+          const source = process.env.DATABASE_URL_MIGRATE || process.env.DATABASE_URL || '';
+          let url = source;
+          let ca = process.argv[1] || '';
+          // Only the two parameters come out, by string surgery on the query:
+          // re-serialising it would rewrite the encoding of every other
+          // parameter (a %20 becomes a +, which libpq reads as a plus).
+          const q = source.indexOf('?');
+          if (q >= 0) {
+            const hash = source.indexOf('#', q);
+            const query = source.slice(q + 1, hash < 0 ? undefined : hash);
+            const name = (part) => { try { return decodeURIComponent(part.split('=')[0]); } catch { return part; } };
+            const value = (part) => { try { return decodeURIComponent(part.slice(part.indexOf('=') + 1)); } catch { return ''; } };
+            const kept = query.split('&').filter((part) => {
+              if (name(part) === 'uselibpqcompat') return false;
+              if (name(part) === 'sslrootcert' && value(part) !== 'system') { ca = value(part); return false; }
+              return true;
+            });
+            url = source.slice(0, q) + (kept.length > 0 ? '?' + kept.join('&') : '') + (hash < 0 ? '' : source.slice(hash));
+          }
+          if (ca) {
+            try {
+              fs.copyFileSync(ca, '/database-ca/root.pem');
+            } catch (err) {
+              console.error('ERROR: the CA ' + ca + ' (sslrootcert in DATABASE_URL, or config.nodeExtraCaCerts) could not be read in the Server image: ' + err.message + '. No backup was taken.');
+              console.error('       Name a CA the Server image carries (the AWS RDS / Aurora bundle is /etc/ssl/certs/rds-global-bundle.pem), or mount one there through extraVolumes.');
+              process.exit(1);
+            }
+          }
+          fs.writeFileSync('/database-ca/url', url, { mode: 0o600 });
+        - {{ $root.Values.config.nodeExtraCaCerts | default "" | quote }}
+      volumeMounts:
+        - name: database-ca
+          mountPath: /database-ca
+        {{- with $root.Values.extraVolumeMounts }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
+  containers:
+    - name: dump
+      {{- /* A PostgreSQL client image, not the AGLedger image: the runtime base
+             carries no pg_dump. pg_dump refuses a server NEWER than itself, so
+             this tracks the bundled version and an external Postgres 18 needs
+             an 18 client here. */}}
+      image: {{ $backup.image | default ((($root.Values).postgres).bundled).image | default "postgres:18-alpine@sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015" }}
+      imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      env:
         - name: KEEP
           value: {{ $keep | quote }}
-        {{- if $root.Values.config.nodeExtraCaCerts }}
-        {{- /* The CA bundle the Server verifies the database against, under
-               libpq's name for it. An external database on sslmode=verify-ca
-               or verify-full refuses psql and pg_dump without it, since this
-               is a PostgreSQL client image and NODE_EXTRA_CA_CERTS reaches
-               only the Node processes. The database-ca init container below
-               copies it out of the Server's image, where the path resolves
-               (the bundled RDS CA, or one extraVolumes mount there). An
-               sslrootcert inside the URL itself wins over this. */}}
-        - name: PGSSLROOTCERT
-          value: /database-ca/root.pem
-        {{- end }}
       command: ["/bin/sh", "-eu", "-c"]
       args:
         - |
@@ -730,7 +788,14 @@ spec:
           # errors on the rest, which fails the Job rather than keeping a
           # partial archive, but the right answer is to connect as the role
           # that can read all of it.
-          DB="${DATABASE_URL_MIGRATE:-$DATABASE_URL}"
+          #
+          # The database-ca init container wrote that URL as libpq reads it,
+          # and the CA the Server verifies the database with beside it: an
+          # external database on sslmode=verify-ca or verify-full refuses psql
+          # and pg_dump without it, and NODE_EXTRA_CA_CERTS reaches only the
+          # Node processes.
+          DB=$(cat /database-ca/url)
+          if [ -f /database-ca/root.pem ]; then export PGSSLROOTCERT=/database-ca/root.pem; fi
 
           # -d with the URI, rather than PG* variables parsed out of it in
           # shell. The credential is in this container's argv only, in its own
@@ -744,7 +809,7 @@ spec:
           case "$CREATED_AT" in
             [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
             *) echo "ERROR: psql could not connect to the database, or it did not answer the clock query; its message is above. No backup was kept."
-               echo "       On an external database with sslmode=verify-ca or verify-full, set config.nodeExtraCaCerts to the CA the Server verifies it with; this Job reads the same file."
+               echo "       On an external database with sslmode=verify-ca or verify-full, name the CA the Server verifies it with: sslrootcert in DATABASE_URL, or config.nodeExtraCaCerts. This Job reads the same file out of the Server's image."
                rm -rf "$WORK"
                exit 1 ;;
           esac
@@ -855,11 +920,9 @@ spec:
         - name: backups
           mountPath: /backups
         {{- end }}
-        {{- if $root.Values.config.nodeExtraCaCerts }}
         - name: database-ca
           mountPath: /database-ca
           readOnly: true
-        {{- end }}
       resources:
         {{- toYaml ($backup.resources | default (dict "requests" (dict "memory" "128Mi" "cpu" "100m") "limits" (dict "memory" "512Mi"))) | nindent 8 }}
   volumes:
@@ -871,13 +934,12 @@ spec:
       persistentVolumeClaim:
         claimName: {{ $persist.existingClaim | default (printf "%s-backups" (include "agledger.fullname" $root)) }}
     {{- end }}
-    {{- if $root.Values.config.nodeExtraCaCerts }}
     - name: database-ca
       emptyDir:
+        medium: Memory
         sizeLimit: 1Mi
     {{- with $root.Values.extraVolumes }}
     {{- toYaml . | nindent 4 }}
-    {{- end }}
     {{- end }}
   {{- with $backup.nodeSelector }}
   nodeSelector:
@@ -896,8 +958,8 @@ Refuse an API grace period the app's own drain budget does not fit inside.
 starts the clock, runs the preStop hook, and only then sends SIGTERM), so the
 process actually gets `grace - preStop` seconds. On SIGTERM the API meters its
 own shutdown against a 25s drain budget and force-exits at it, so anything under
-that means the kubelet SIGKILLs mid-drain: in-flight requests severed, the final
-SIEM export batch dropped, the database pool never released. Trim the grace
+that means the kubelet SIGKILLs mid-drain: in-flight requests severed, the
+database pool never released. Trim the grace
 period far enough and the preStop sleep swallows it whole, the process never
 receives SIGTERM at all, and every rolling update becomes a hard cut.
 
@@ -938,7 +1000,7 @@ Usage: {{- include "agledger.assertApiGracePeriodFitsDrain" . }}
 {{- end -}}
 {{- $effective := sub $grace $preStop -}}
 {{- if lt $effective (add $drain $headroom) -}}
-{{- fail (printf "%s leaves the API process only %ds after SIGTERM (preStop sleep of %ds burns inside the grace period), but it drains for up to %ds and needs %ds of headroom. The kubelet would SIGKILL mid-drain: in-flight requests severed, the last SIEM export batch dropped, the database pool never released. Set api.terminationGracePeriodSeconds to at least %d, or lower api.preStopSleepSeconds." $source $effective $preStop $drain $headroom (add (add $drain $headroom) $preStop)) -}}
+{{- fail (printf "%s leaves the API process only %ds after SIGTERM (preStop sleep of %ds burns inside the grace period), but it drains for up to %ds and needs %ds of headroom. The kubelet would SIGKILL mid-drain: in-flight requests severed, the database pool never released. Set api.terminationGracePeriodSeconds to at least %d, or lower api.preStopSleepSeconds." $source $effective $preStop $drain $headroom (add (add $drain $headroom) $preStop)) -}}
 {{- end -}}
 {{- end }}
 

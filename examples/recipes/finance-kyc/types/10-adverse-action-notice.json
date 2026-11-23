@@ -10,7 +10,7 @@
     "properties": {
       "applicationId": {"type": "string"},
       "verdictRef": {"type": "string", "description": "recordId of the keystone-underwriting-verdict-v1 (or auto keystone-credit-decision-v1) the notice reports.", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
-      "creditorName": {"type": "string", "minLength": 2, "description": "Name (and address, in deployment) of the creditor — ECOA §1002.9(a)(2)."},
+      "creditorName": {"type": "string", "minLength": 2, "description": "Name (and address, in deployment) of the creditor: ECOA §1002.9(a)(2)."},
       "principalReasons": {
         "type": "array",
         "items": {"type": "string", "minLength": 3},
@@ -18,15 +18,15 @@
         "description": "Specific principal reasons for the decline (ECOA §1002.9(b)(2)); 1-4, specific not boilerplate."
       },
       "ecoaStatement": {"type": "boolean", "const": true, "description": "Affirms the ECOA anti-discrimination statement and federal-agency disclosure are included (§1002.9(a)(2)). const:true: an issued adverse-action notice that records the ECOA statement was not included is not a valid notice, and the schema refuses it (the federalAgency disclosure it affirms is then required, below)."},
-      "federalAgency": {"type": "string", "minLength": 2, "description": "The federal agency that administers ECOA compliance for this creditor (§1002.9(b)(1)). Required — ecoaStatement affirms this disclosure is present."},
-      "scoreUsed": {"type": "boolean", "description": "true if a credit score was used — triggers the FCRA §615 score-disclosure block."},
+      "federalAgency": {"type": "string", "minLength": 2, "description": "The federal agency that administers ECOA compliance for this creditor (§1002.9(b)(1)). Required: ecoaStatement affirms this disclosure is present."},
+      "scoreUsed": {"type": "boolean", "description": "true if a credit score was used. Triggers the FCRA §615 score-disclosure block."},
       "creditScore": {"type": "integer", "description": "FCRA: the numerical score used (required when scoreUsed)."},
       "scoreRange": {
         "type": "object", "additionalProperties": false, "required": ["min", "max"],
         "properties": {"min": {"type": "integer"}, "max": {"type": "integer"}}
       },
       "keyFactors": {"type": "array", "items": {"type": "string"}, "maxItems": 5, "description": "FCRA: up to 4 key factors (+1 for inquiries) that adversely affected the score, in order of effect."},
-      "craName": {"type": "string", "description": "FCRA §615(a): CRA name (and that it did not make the decision; consumer's free-report + dispute rights — affirmed in deployment)."},
+      "craName": {"type": "string", "description": "FCRA §615(a): CRA name (and that it did not make the decision; consumer's free-report + dispute rights, affirmed in deployment)."},
       "craContact": {"type": "string", "description": "FCRA: CRA address/phone for the consumer to obtain the free report / dispute."},
       "scoreDate": {"type": "string", "format": "date", "description": "FCRA: the date the score was created."}
     },

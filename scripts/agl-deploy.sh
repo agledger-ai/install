@@ -2,17 +2,17 @@
 set -euo pipefail
 
 # =============================================================================
-# AGLedger — Remote Deploy Orchestrator (agl-deploy.sh)
+# AGLedger: Remote Deploy Orchestrator (agl-deploy.sh)
 # =============================================================================
 # A thin, client-side SSH wrapper that deploys and operates an AGLedger Server
 # on a remote host. It opens one SSH connection per operation and drives the
 # pinned, signed installer (github.com/agledger-ai/install) and its on-target
-# scripts (install.sh / upgrade.sh / uninstall.sh / lib-compose.sh) — it does
+# scripts (install.sh / upgrade.sh / uninstall.sh / lib-compose.sh); it does
 # NOT reimplement cosign verification, key minting, secret generation,
 # migrations, or health gating. The Server's own scripts remain the source of
 # truth; this just carries them over SSH.
 #
-# POSITIONING: deploys and operates a single-node AGLedger — the Developer
+# POSITIONING: deploys and operates a single-node AGLedger: the Developer
 # Edition (Docker Compose on Docker CE, bundled PostgreSQL): free and
 # production-ready. The Compose stack binds the API to 127.0.0.1:3001 (loopback
 # only), so you reach it over an SSH tunnel (`tunnel`), optionally through a
@@ -53,7 +53,7 @@ fatal() { error "$*"; exit 1; }
 b64() { printf '%s' "${1-}" | base64 | tr -d '\n'; }
 
 # The decoder prepended to every remote script (quoted heredocs can't expand a
-# local function, so it ships as text). The $1 is literal-on-purpose — it's the
+# local function, so it ships as text). The $1 is literal-on-purpose; it's the
 # remote shell's positional, expanded there, not here.
 # shellcheck disable=SC2016
 REMOTE_PREAMBLE='set -euo pipefail; d64() { printf "%s" "$1" | base64 -d; }'
@@ -78,7 +78,7 @@ REMOTE_PORT=3001
 
 usage() {
   cat <<'EOF'
-AGLedger — Remote Deploy Orchestrator
+AGLedger: Remote Deploy Orchestrator
 
 Usage:
   ./agl-deploy.sh [options] <command> [command-args]
@@ -204,7 +204,7 @@ remote_run() {
   local -a args=()
   local a
   for a in "$@"; do args+=("$(b64 "$a")"); done
-  # SC2087 off by design: ${REMOTE_PREAMBLE}/${script} MUST expand client-side —
+  # SC2087 off by design: ${REMOTE_PREAMBLE}/${script} MUST expand client-side:
   # that's how the script body is injected. Their values aren't rescanned, and
   # all data flows in as base64 positional args, so nothing else interpolates.
   # shellcheck disable=SC2087
@@ -227,7 +227,7 @@ confirm() {
 # official convenience script, apt packages, cosign from a pinned GitHub
 # release whose SHA-256 is checked before the binary is installed).
 # Escalates with sudo only when there's actually something to install, and
-# fails loudly with the gap list if root is needed but unavailable — it never
+# fails loudly with the gap list if root is needed but unavailable; it never
 # hangs on a hidden password prompt.
 bootstrap_script() {
   cat <<'AGLR'
@@ -245,7 +245,7 @@ if [ "$NEED_DOCKER" = 0 ] && [ "$(id -u)" -ne 0 ] && ! id -nG | tr ' ' '\n' | gr
 fi
 
 if [ -z "$MISSING_PKGS" ] && [ "$NEED_DOCKER" = 0 ] && [ "$NEED_COSIGN" = 0 ] && [ "$NEED_GROUP" = 0 ]; then
-  echo "bootstrap: all prerequisites already present — nothing to do"
+  echo "bootstrap: all prerequisites already present, nothing to do"
   exit 0
 fi
 
@@ -272,7 +272,7 @@ if [ "$NEED_DOCKER" = 1 ]; then
   # support the release yet, fail loudly pointing at the CE install rather than
   # pulling in a different (distro-packaged) Docker.
   curl -fsSL https://get.docker.com | $SUDO sh || true
-  have docker || { echo "ERROR: could not install Docker CE. Install Docker Engine (CE) — https://docs.docker.com/engine/install/ — and re-run." >&2; exit 1; }
+  have docker || { echo "ERROR: could not install Docker CE. Install Docker Engine (CE) from https://docs.docker.com/engine/install/ and re-run." >&2; exit 1; }
   $SUDO systemctl enable --now docker >/dev/null 2>&1 || true
   NEED_GROUP=1
 fi
@@ -477,7 +477,7 @@ AGLR
   # -t so Ctrl-C reaches the remote `logs -f`.
   build_ssh_opts
   local -a args=("$(b64 "$AGL_REMOTE_DIR")" "$(b64 "$service")")
-  # shellcheck disable=SC2087  # client-side body injection — see remote_run
+  # shellcheck disable=SC2087  # client-side body injection; see remote_run
   ssh -t "${SSH_OPTS[@]}" "$AGL_SSH_TARGET" bash -s -- "${args[@]}" <<AGLR
 ${REMOTE_PREAMBLE}
 ${script}

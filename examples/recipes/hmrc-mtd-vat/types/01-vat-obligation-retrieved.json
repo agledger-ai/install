@@ -2,7 +2,7 @@
   "type": "vat-obligation-retrieved-v1",
   "category": "vat-filing",
   "displayName": "VAT Obligation Retrieved (SoR's word on the open period)",
-  "description": "Notarize-only record of an open VAT obligation exactly as HMRC states it (GET /organisations/vat/{vrn}/obligations). This is the SoR's word on WHAT is due and by WHEN — it establishes the periodKey the return will be filed against and the dueDate that makes timeliness a signed fact (the later vat-penalty-observation binds HMRC's late-submission verdict against this dueDate). AGLedger does not compute obligations; it notarizes what HMRC returned. periodKey is HMRC's 4-char period identifier (may contain '#'); it is echoed into the validation gate and the filing receipt so the whole chain is provably about ONE obligation period.",
+  "description": "Notarize-only record of an open VAT obligation exactly as HMRC states it (GET /organisations/vat/{vrn}/obligations). This is the SoR's word on WHAT is due and by WHEN; it establishes the periodKey the return will be filed against and the dueDate that makes timeliness a signed fact (the later vat-penalty-observation binds HMRC's late-submission verdict against this dueDate). AGLedger does not compute obligations; it notarizes what HMRC returned. periodKey is HMRC's 4-char period identifier (may contain '#'); it is echoed into the validation gate and the filing receipt so the whole chain is provably about ONE obligation period.",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,

@@ -43,7 +43,7 @@
       "reason": {
         "type": "string",
         "const": "fraudulent",
-        "description": "CE3.0 applies only to Visa fraud reason 10.4 — Stripe reports this as reason=fraudulent. Pinned: a non-fraud dispute is not CE3.0-eligible."
+        "description": "CE3.0 applies only to Visa fraud reason 10.4; Stripe reports this as reason=fraudulent. Pinned: a non-fraud dispute is not CE3.0-eligible."
       },
       "network": {
         "type": "string",
@@ -62,7 +62,7 @@
           "not_qualified",
           "requires_action"
         ],
-        "description": "The SoR-rendered CE3.0 qualification for the EXACT staged payload, read from Stripe's evidence_details.enhanced_eligibility.visa_compelling_evidence_3.status after staging (submit=false). This is the NETWORK's structural verdict on the package, INDEPENDENT of the eventual won/lost outcome — AGLedger holds it, does not compute it. Recipe convention: only propose/authorize when == qualified."
+        "description": "The SoR-rendered CE3.0 qualification for the EXACT staged payload, read from Stripe's evidence_details.enhanced_eligibility.visa_compelling_evidence_3.status after staging (submit=false). This is the NETWORK's structural verdict on the package, INDEPENDENT of the eventual won/lost outcome; AGLedger holds it, does not compute it. Recipe convention: only propose/authorize when == qualified."
       },
       "evidencePackageHash": {
         "type": "string",
@@ -88,12 +88,12 @@
           "not_qualified",
           "requires_action"
         ],
-        "description": "Must equal the record's criteria.ce3EligibilityStatus — the SoR qualification the principal is authorizing."
+        "description": "Must equal the record's criteria.ce3EligibilityStatus: the SoR qualification the principal is authorizing."
       },
       "evidencePackageHash": {
         "type": "string",
         "pattern": "^sha256:[0-9a-f]{64}$",
-        "description": "Must equal the record's criteria.evidencePackageHash — sha256 of the exact visa_compelling_evidence_3 object submitted to Stripe."
+        "description": "Must equal the record's criteria.evidencePackageHash: sha256 of the exact visa_compelling_evidence_3 object submitted to Stripe."
       },
       "disputedTransaction": {
         "type": "object",
@@ -138,7 +138,7 @@
       "priorUndisputedTransactions": {
         "type": "array",
         "minItems": 2,
-        "description": "Stripe evidence.enhanced_evidence.visa_compelling_evidence_3.prior_undisputed_transactions — >=2 prior undisputed charges whose signals match the disputed transaction. Each must carry a charge id + product_description.",
+        "description": "Stripe evidence.enhanced_evidence.visa_compelling_evidence_3.prior_undisputed_transactions: >=2 prior undisputed charges whose signals match the disputed transaction. Each must carry a charge id + product_description.",
         "items": {
           "type": "object",
           "additionalProperties": false,
@@ -157,7 +157,7 @@
       },
       "uncategorizedText": {
         "type": "string",
-        "description": "Stripe evidence.uncategorized_text — optional free narrative submitted alongside. In test mode the strings winning_evidence / losing_evidence force the outcome."
+        "description": "Stripe evidence.uncategorized_text: optional free narrative submitted alongside. In test mode the strings winning_evidence / losing_evidence force the outcome."
       }
     }
   }

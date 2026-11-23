@@ -68,7 +68,7 @@
       "executedBy": {
         "type": "string",
         "minLength": 1,
-        "description": "GitHub login this record relays as the executor: merged_by for merges. For deploys, GitHub records the approver (the decision) and the deployment creator (the execution) separately; choose which you relay and be consistent \u2014 the walkthrough relays the approver, since the decision is what this chain audits."
+        "description": "GitHub login this record relays as the executor: merged_by for merges. For deploys, GitHub records the approver (the decision) and the deployment creator (the execution) separately; choose which you relay and be consistent; the walkthrough relays the approver, since the decision is what this chain audits."
       },
       "executedAt": {
         "type": "string",

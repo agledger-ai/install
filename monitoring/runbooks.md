@@ -141,42 +141,41 @@ database incident you have already fixed.
 
 ## AGLedgerSiemExportDegraded
 
-The SIEM feed is lossy. Four counters feed this and three of them mean rows that will not arrive.
+The SIEM feed is lossy or stalled. Of the counters that feed this, the mapper one means rows that
+will not arrive.
 
 Check which one moved:
 
 ```promql
 increase(agledger_siem_mapper_failures_total[1h])
-increase(agledger_siem_http_batches_dropped_total[1h])
-increase(agledger_siem_file_lines_dropped_total[1h])
 increase(agledger_siem_poll_failures_total[1h])
 ```
 
 `agledger_siem_poll_failures_total` is the one that is not loss: the cycle threw before the cursor
-moved, so the next cycle re-reads the same rows. The other three are. A mapper failure means the row
-would not serialize, so the poller counts it, skips it and advances the cursor past it; nothing
-re-reads it. Dropped HTTP batches and dropped file lines are the buffered bus path losing what it
-held. A sink that refuses a polled batch is a fourth thing and is deliberately not in this rule: the
+moved, so the next cycle re-reads the same rows. A mapper failure is loss: the row would not
+serialize, so the poller counts it, skips it and advances the cursor past it; nothing re-reads it.
+A sink that refuses a polled batch is a third thing and is deliberately not in this rule: the
 cursor is held, the rows are re-read next cycle, and it surfaces as
 `agledger_siem_poll_delivery_retries_total` and eventually `AGLedgerSiemPollerFallingBehind`, or, if
 the collector refused the request rather than failing to take it,
 `AGLedgerSiemCollectorRejecting`.
 
-Do: for HTTP drops, check the collector at `SIEM_HTTP_URL` and the credential in
-`SIEM_HTTP_AUTH_HEADER`. For file drops, check that `SIEM_FILE_PATH` is writable and its filesystem
-is not full. For mapper failures, the worker's log names the event type that would not serialize:
-the worker is the process that drains the push sinks. What the bus path
-dropped is still in `events` and `system_audit_log`, so a pull-mode collector can re-read it from
-`GET /v1/siem/stream`, which pages the same rows.
+Do: for mapper failures, the worker's log names the event type that would not serialize: the worker
+is the process that drains the push sinks. The skipped row is still in `events` or
+`system_audit_log`. Where the push sinks run `SIEM_FORMAT=ocsf`, a pull-mode collector can read it
+from `GET /v1/siem/stream?format=raw`, which pages the same rows without the OCSF mapping; under
+`SIEM_FORMAT=raw` the row fails there the same way. For poll failures, the worker's log says why
+under `SIEM poll error` or `SIEM poller: visibility watermark query returned no row`.
 
-Silence: not while any of the three loss counters is moving. A firing driven by
+Silence: not while the mapper counter is moving. A firing driven by
 `agledger_siem_poll_failures_total` alone, during a database incident you have already fixed, can
 wait a few hours.
 
 ## AGLedgerSiemCollectorRejecting
 
-The SIEM HTTP collector is answering on the request's own terms rather than failing to take it. It
-will not clear by waiting.
+The SIEM HTTP collector, or something in front of it, is answering on the request's own terms rather
+than failing to take it: a rejection, or a redirect the Server does not follow. It will not clear by
+waiting.
 
 Nothing is lost. The cursor does not advance past a refused batch, the rows stay in `events` and
 `system_audit_log`, and delivery resumes from the same position once the configuration is fixed.
@@ -186,13 +185,14 @@ The Server logs the collector's own reply at ERROR, once per state change rather
 attempt. That line is the fastest answer:
 
 ```bash
-docker compose logs agledger-worker | grep "SIEM collector rejected"
+docker compose logs agledger-worker | grep -E "SIEM collector rejected|answered with a redirect"
 ```
 
 By status:
 
 | Status | Usual cause |
 |---|---|
+| 301, 302, 307, 308 and any other 3xx | `SIEM_HTTP_URL` names an address that redirects, such as a load balancer moving `http://` to `https://` or a proxy sending the request to its login page. The Server follows no redirect. The log line carries the target as `redirectedTo`: set `SIEM_HTTP_URL` to the address that answers 2xx. |
 | 400 | The body shape. Splunk's `/services/collector/event` answers `{"text":"No data","code":5}` to bare NDJSON: set `SIEM_HTTP_MODE=hec`, or point `SIEM_HTTP_URL` at `/services/collector/raw?sourcetype=_json` instead. |
 | 401, 403 | The credential in `SIEM_HTTP_AUTH_HEADER`, or an HEC token that is disabled or not allowed on the index in `SIEM_HTTP_HEC_INDEX`. |
 | 404 | `SIEM_HTTP_URL`. Under `SIEM_HTTP_MODE=hec` the Server appends `/services/collector/event` only when the URL names no collector path. |
@@ -243,6 +243,38 @@ query or a forgotten `psql BEGIN`. End it, or wait: export resumes on its own. P
 which is what `agledger_siem_poll_ahead_rows_total` counts.
 
 Silence: for the length of a scheduled backup window. Not otherwise.
+
+## AGLedgerSiemFileSinkSplit
+
+More than one worker process is draining SIEM push export, and the one named in the alert writes a
+file sink. The workers share one position, so each takes the batches the other did not and writes
+them to its own `SIEM_FILE_PATH`. Each file holds a slice of the feed.
+
+Nothing is lost from the Server. The rows are in `events` and `system_audit_log`, and
+`GET /v1/siem/stream` serves all of them. What is incomplete is whatever tails one file.
+
+The worker logs a WARN naming the file, and repeats it while the split lasts:
+
+```bash
+docker compose logs agledger-worker | grep "is draining SIEM push export alongside"
+```
+
+Do one of:
+
+- Run one worker replica (`docker compose up --scale agledger-worker=1`, or `worker.replicaCount: 1`
+  in the Helm values).
+- Switch to the HTTP sink (`SIEM_FILE_ENABLED=false`, `SIEM_HTTP_ENABLED=true`, `SIEM_HTTP_URL`).
+  Every replica posts to the one collector, which receives the whole feed.
+
+To recover what a file missed, read the range again from the pull endpoint with `since` set to
+when the second replica started. Every row carries its id (`id` under `SIEM_FORMAT=raw`,
+`metadata.uid` in OCSF), which is what a collector deduplicates the repeats on.
+
+A rolling restart does not fire this: a second drainer counts only once the same one has been seen
+twice at least 10 minutes apart. Replicas that append to a single file on a shared volume hold the
+whole feed between them, and the alert can be silenced for them.
+
+Silence: only for the shared-volume case.
 
 ## AGLedgerSiemPollerStatsBlanked
 
@@ -464,8 +496,9 @@ Do: for provisioning failures, that endpoint reports the parse or apply error ag
 `PROVISIONING_CONFIG_PATH`; fix the YAML and re-run
 `POST /v1/admin/provisioning/reload`. For `llms.txt` customization failures, check the file named by
 `AGLEDGER_LLMS_TXT_OVERRIDE_PATH` (or the prepend and append paths) is readable and under the 128 KB
-cap, then `POST /v1/admin/discovery/reload`. For schema warm-cache failures,
-`POST /v1/admin/schemas/cache/flush` re-warms. Cache-invalidation drops are invalidations that
+cap, then `POST /v1/admin/discovery/reload`. Schema warm-cache failures heal on their own: a
+failed startup load retries until the database answers, and a per-type miss reads through to
+the database. Cache-invalidation drops are invalidations that
 arrived and could not be applied (a local handler threw, a NOTIFY could not be sent, a payload
 did not parse or named a type this release does not know); a LISTEN connection that is down
 receives nothing and is `AGLedgerCacheInvalidationListenerDown` instead. An exemption rebuild
@@ -1061,11 +1094,11 @@ curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/federation/v1/a
 curl -sS -H "Authorization: Bearer $AGLEDGER_KEY" "$AGLEDGER_URL/federation/v1/admin/peers"
 ```
 
-Each listed job carries `peerHubId`, `kind` and `firstFailedAt`. A day of failure is almost always
+Each listed job carries `peerHubId`, `kind`, `firstFailedAt`, and the leg's `attempts` and `lastError`. A day of failure is almost always
 the peer's configuration rather than an outage: a rotated signing key, a moved endpoint, a revoked
 peering.
 
-Do: fix the peer, then redrive. Preview first with `dryRun`, which reports what would move:
+Do: fix the peer, then redrive. Preview first with `dryRun`, which moves nothing and counts the eligible legs in `inspected`:
 
 ```bash
 curl -sS -X POST -H "Authorization: Bearer $AGLEDGER_KEY" -H 'Content-Type: application/json' \
@@ -1474,6 +1507,14 @@ Do: what the failure costs depends on the task, and the name says which.
 
 - `record-expiry`, `evidence-window-expiry`, `dispute-stale-recovery`: records sit past their
   deadline in a non-terminal state. Nothing is lost, and the next successful cycle catches up.
+  A failed `record-expiry` cycle is one the sweep could not run at all (its candidate query, or its
+  transaction, failed), or one in which every record it took failed to expire, which is one cause
+  and not many records: an unacknowledged chain rewind refuses every append the same way. One record
+  that cannot be expired among others that can does not fail the cycle: it is rolled back alone, logged at ERROR with its `recordId`, counted on
+  `agledger_expiry_record_failures_total{stage="expire"}`, and the rest of the batch commits. That
+  record is retried every cycle and does not catch up on its own; the ERROR line names it and
+  `agledger_records_overdue` keeps counting it. A parent rollup that throws after an expiry
+  committed is counted under `stage="rollup"`, and the expiry stands.
 - `idempotency-cleanup`, `rate-limit-cleanup`, `oidc-jti-cleanup`,
   `webhook-secret-grace-cleanup`: a table grows without bound. Check its row count before deciding
   how long you can leave it.
@@ -1573,7 +1614,7 @@ index. This is a capacity reading, not an error.
 Which sweep, and how much it is getting through:
 
 ```promql
-sum by (task) (increase(agledger_maintenance_sweep_behind_total[1h]))
+sum by (task) (increase(agledger_maintenance_sweep_behind_total{task!~"vault-checkpoints|record-expiry"}[1h]))
 sum by (task) (increase(agledger_maintenance_sweep_rows_total[1h]))
 histogram_quantile(0.95, sum by (task, le) (rate(agledger_maintenance_sweep_duration_seconds_bucket[1h])))
 ```
@@ -1817,9 +1858,10 @@ kubectl port-forward -n <ns> "$(kubectl get deploy -n <ns> -l app.kubernetes.io/
 curl -sS http://localhost:3001/health/ready
 ```
 
-Do: the worker refuses to serve `/metrics` with a 503 when `METRICS_AUTH_REQUIRED` is on and no
-`METRICS_AUTH_TOKEN` is set, which looks exactly like this alert while the process is perfectly
-healthy. Check that first. Otherwise read the worker log: it exits 1 on a boot failure rather than
+Do: with `METRICS_AUTH_REQUIRED` on and no `METRICS_AUTH_TOKEN` set, the worker's `/metrics` takes a
+platform-role API key holding `admin:system`, and a scrape config that presents none gets a 401,
+which looks exactly like this alert while the process is perfectly healthy. Check that first.
+Otherwise read the worker log: it exits 1 on a boot failure rather than
 staying up, so the last lines say why. Queue depth confirms the impact:
 
 ```promql
@@ -1840,9 +1882,10 @@ Check Prometheus' `/targets` page for the error string, then reproduce it:
 curl -sS -i -H "Authorization: Bearer $METRICS_AUTH_TOKEN" http://<target>/metrics | head -20
 ```
 
-Do: a 401 means the scrape token does not match the process. A 503 from the worker means
-`METRICS_AUTH_REQUIRED` is on with no token configured, which is a deliberate refusal rather than a
-fault. A scrape that trips `sample_limit` is reported as a failed scrape with the target still
+Do: a 401 means the scrape token does not match the process, or, on a process with no token
+configured and `METRICS_AUTH_REQUIRED` on, that the scrape presents no API key the chain accepts.
+A 403 there names the key's role or missing scope: the scrape needs a platform-role key holding
+`admin:system`. A scrape that trips `sample_limit` is reported as a failed scrape with the target still
 present and no HTTP error at all, so check that limit against the payload size if the endpoint looks
 healthy by hand.
 

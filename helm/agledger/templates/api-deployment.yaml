@@ -107,9 +107,15 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
+          # Startup waits on the liveness endpoint, which answers once the
+          # process is up and listening. /health/ready answers 503 by design
+          # while the signing key cannot be used (retired, unanchored,
+          # unregistered, signer unreachable), a state a restart does not fix;
+          # probing it here would have the kubelet kill a running pod whose
+          # /health names that hold. Readiness keeps /health/ready.
           startupProbe:
             httpGet:
-              path: /health/ready
+              path: /health
               port: http
             periodSeconds: 10
             failureThreshold: 30
@@ -132,6 +138,7 @@ spec:
             - name: tmp
               mountPath: /tmp
             {{- include "agledger.licenseVolumeMount" . | nindent 12 }}
+            {{- include "agledger.fipsVolumeMount" . | nindent 12 }}
             {{- include "agledger.provisioningVolumeMounts" . | nindent 12 }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
@@ -141,6 +148,7 @@ spec:
           emptyDir:
             sizeLimit: 64Mi
         {{- include "agledger.licenseVolume" . | nindent 8 }}
+        {{- include "agledger.fipsVolume" . | nindent 8 }}
         {{- include "agledger.provisioningVolumes" . | nindent 8 }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

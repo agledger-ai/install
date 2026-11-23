@@ -2,7 +2,7 @@
   "type": "ironvale-pre-adverse-notice-v1",
   "category": "employment",
   "displayName": "Pre-Adverse Action Notice (FCRA 604(b)(3), to the candidate)",
-  "description": "The FCRA 604(b)(3) pre-adverse action notice: BEFORE taking adverse action based in whole or part on a consumer report, the employer must give the candidate (a) a copy of the actual consumer report and (b) the CFPB 'A Summary of Your Rights Under the FCRA', then WAIT so the candidate can dispute errors before the decision is final. This record NOTARIZES that notice and STARTS THE CLOCK: its signed timestamp is T0, the anchor the final adverse action's interval is measured from (the Tyus v. USPS interval \u2014 a 3-day window was held actionable, 14 days 'ample'). reportCopyProvided and summaryOfRightsProvided are const:true \u2014 a 'pre-adverse notice' that did not include the report copy or the summary of rights is not a valid 604(b)(3) notice and the schema refuses it. committedWaitDays is the window the employer commits to here; the final adverse action must not be taken before it elapses. | The wait period is NOT a statutory number (604(b)(3) says only 'before'); it is operator policy informed by FTC/court guidance (~5 business days is a common floor). committedWaitDays is therefore an OPERATOR-CONFIGURED policy value, never represented as an FCRA statutory requirement. | Notarize-only; the recipe's Notify subscription for this type delivers to the CANDIDATE channel (the notice is REQUIRED to the subject \u2014 the mirror of the finance/KYC no-tip-off inversion).",
+  "description": "The FCRA 604(b)(3) pre-adverse action notice: BEFORE taking adverse action based in whole or part on a consumer report, the employer must give the candidate (a) a copy of the actual consumer report and (b) the CFPB 'A Summary of Your Rights Under the FCRA', then WAIT so the candidate can dispute errors before the decision is final. This record NOTARIZES that notice and STARTS THE CLOCK: its signed timestamp is T0, the anchor the final adverse action's interval is measured from (the Tyus v. USPS interval; a 3-day window was held actionable, 14 days 'ample'). reportCopyProvided and summaryOfRightsProvided are const:true; a 'pre-adverse notice' that did not include the report copy or the summary of rights is not a valid 604(b)(3) notice and the schema refuses it. committedWaitDays is the window the employer commits to here; the final adverse action must not be taken before it elapses. | The wait period is NOT a statutory number (604(b)(3) says only 'before'); it is operator policy informed by FTC/court guidance (~5 business days is a common floor). committedWaitDays is therefore an OPERATOR-CONFIGURED policy value, never represented as an FCRA statutory requirement. | Notarize-only; the recipe's Notify subscription for this type delivers to the CANDIDATE channel (the notice is REQUIRED to the subject; the mirror of the finance/KYC no-tip-off inversion).",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -27,12 +27,12 @@
       "reportCopyProvided": {
         "type": "boolean",
         "const": true,
-        "description": "const:true \u2014 the candidate was given a copy of the actual consumer report (FCRA 604(b)(3)(A))."
+        "description": "const:true; the candidate was given a copy of the actual consumer report (FCRA 604(b)(3)(A))."
       },
       "summaryOfRightsProvided": {
         "type": "boolean",
         "const": true,
-        "description": "const:true \u2014 the candidate was given the CFPB 'A Summary of Your Rights Under the FCRA' (FCRA 604(b)(3)(B))."
+        "description": "const:true; the candidate was given the CFPB 'A Summary of Your Rights Under the FCRA' (FCRA 604(b)(3)(B))."
       },
       "committedWaitDays": {
         "type": "integer",

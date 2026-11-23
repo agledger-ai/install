@@ -14,10 +14,9 @@
 # decisions, and shipping an opinion about who gets paged would be wrong. The
 # `severity` labels below are the only hook the rules assume.
 #
-# Every `expr` here is checked against the live metric registry by
-# a coverage test in the API build. An alert on a metric nobody
-# emits never fires, which is indistinguishable from a healthy system and is
-# strictly worse than a blank panel.
+# Every `expr` names a metric the engine registers. An alert on a metric
+# nobody emits never fires, which is indistinguishable from a healthy system
+# and is strictly worse than a blank panel.
 
 groups:
   # ---------------------------------------------------------------------------
@@ -90,10 +89,9 @@ groups:
 
       - alert: AGLedgerGateJobRetriesExhausted
         # The other end of the same story as AGLedgerWorkEnqueueDropped: the job
-        # was queued, ran, and still never finished. Federation has carried this
-        # alert since April (AGLedgerFederationDeadLettered); the gate worker's
-        # two exhaustion counters had no rule, so the same failure inside the
-        # engine's own queue was the quiet one.
+        # was queued, ran, and still never finished. AGLedgerFederationDeadLettered
+        # covers the same failure on the federation queue; this rule covers the
+        # gate worker's two exhaustion counters.
         expr: |
           (sum(increase(agledger_cascade_rollup_retry_exhausted_total[1h])) or vector(0))
           + (sum(increase(agledger_gate_dlq_advisory_pass_lost_total[1h])) or vector(0)) > 0
@@ -119,21 +117,19 @@ groups:
         # The compliance feed. A customer discovers this at audit time.
         expr: |
           (sum(increase(agledger_siem_mapper_failures_total[1h])) or vector(0))
-          + (sum(increase(agledger_siem_http_batches_dropped_total[1h])) or vector(0))
-          + (sum(increase(agledger_siem_file_lines_dropped_total[1h])) or vector(0))
           + (sum(increase(agledger_siem_poll_failures_total[1h])) or vector(0)) > 0
         for: 5m
         labels:
           severity: warning
         annotations:
           runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgersiemexportdegraded"
-          summary: "SIEM export is dropping records"
+          summary: "SIEM export is skipping rows or stalled"
           description: >-
-            The SIEM feed is lossy. Three of the four terms are permanent loss: a mapper
-            failure skips the row and advances the cursor past it, and dropped bus-event
-            batches and file lines are gone. agledger_siem_poll_failures_total is the
-            exception, retrying from an unadvanced cursor. A sink that merely refused a
-            polled batch is not in this rule at all.
+            The SIEM feed is lossy or stalled. A mapper failure is permanent loss: the
+            row would not serialize, so the poller skips it and advances the cursor past
+            it. agledger_siem_poll_failures_total is not loss, the cycle retries from an
+            unadvanced cursor, but export is stalled while it climbs. A sink that merely
+            refused a polled batch is not in this rule at all.
 
       - alert: AGLedgerSiemCollectorRejecting
         # The other half of "the SIEM stopped receiving", and the half the lag
@@ -142,8 +138,10 @@ groups:
         # from agledger_siem_poll_delivery_retries_total, and only one of them
         # recovers without somebody changing a setting.
         #
-        # Every status behind this counter is the collector answering on the
-        # request's own terms: a body shape it will not take (400 from Splunk's
+        # Every status behind this counter is an answer on the request's own
+        # terms: a redirect, which the Server does not follow (any 3xx, from a
+        # load balancer or proxy in front of the collector), a body shape the
+        # collector will not take (400 from Splunk's
         # /services/collector/event on an NDJSON body, which is SIEM_HTTP_MODE
         # left at ndjson against an HEC endpoint), a credential it will not
         # accept (401, 403), a path that is not there (404), a body it considers
@@ -174,7 +172,8 @@ groups:
             collector's reply, logged at ERROR once per state change. 400 on a Splunk HEC
             endpoint means SIEM_HTTP_MODE is still ndjson; 401 and 403 mean the token in
             SIEM_HTTP_AUTH_HEADER; 404 means SIEM_HTTP_URL; 413 means the collector's own body
-            limit against SIEM_BATCH_SIZE and SIEM_MAX_EVENT_BYTES.
+            limit against SIEM_BATCH_SIZE and SIEM_MAX_EVENT_BYTES. A 3xx means SIEM_HTTP_URL names
+            an address that redirects, which the Server does not follow.
 
       - alert: AGLedgerSiemPollerFallingBehind
         # Age of the oldest events or system_audit_log row the poller's cursor
@@ -281,7 +280,7 @@ groups:
         # Below pg_read_all_stats, Postgres blanks other roles' xact_start. A
         # poller that paged anyway would degrade the watermark to now() for that
         # writer and skip its in-flight rows permanently, BEHIND the advanced
-        # cursor where measureBacklogSeconds cannot see them: the lag gauge would
+        # cursor where the poller's backlog measurement cannot see them: the lag gauge would
         # read 0 through the whole loss and AGLedgerSiemPollerFallingBehind would
         # never fire. It halts instead, so this fires on the halt rather than on
         # a skip that leaves no trace. The halted cycle still holds the cursor
@@ -300,6 +299,31 @@ groups:
             role holds a write transaction on the same database. It halted rather than
             page over rows it cannot prove are visible. Grant the poller's role
             pg_read_all_stats, or point DATABASE_URL at a role that already has it.
+
+      - alert: AGLedgerSiemFileSinkSplit
+        # A file sink is the complete feed only while one worker drains it. Two
+        # workers share one position, each writes the batches it took to its
+        # own SIEM_FILE_PATH, and neither file is the audit trail. Nothing is
+        # lost from the Server, and the pull channel serves every row, but a
+        # collector tailing one file is missing rows with no gap to see.
+        #
+        # The counter moves only on a process that writes a file and has met
+        # the same other drainer twice at least 10 minutes apart, so a
+        # rolling restart, where the old worker and the new one overlap for the
+        # length of a shutdown, does not move it.
+        expr: sum by (instance) (increase(agledger_siem_file_sink_peer_advances_total[30m])) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgersiemfilesinksplit"
+          summary: "SIEM file sink holds a slice of the feed"
+          description: >-
+            More than one worker is draining SIEM push export, and {{ $labels.instance }}
+            writes a file sink, so its SIEM_FILE_PATH holds only the batches that process
+            took. Run one worker replica, or switch to the HTTP sink, which receives every
+            batch from every replica. Rows are not lost from the Server: GET /v1/siem/stream
+            serves the whole feed.
 
       - alert: AGLedgerSiemStreamHalted
         # The pull channel's equivalent of AGLedgerSiemPollerStatsBlanked, and
@@ -595,10 +619,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          # The selector is `result="broken"`, not `result!="pass"`. The check
-          # emits exactly two values, `clean` and `broken`, so excluding a third
-          # that nothing emits excluded nothing: this fired CRITICAL on every
-          # healthy scan.
+          # The selector is `result="broken"`. The check emits exactly two
+          # values, `clean` and `broken`.
           runbook_url: "https://github.com/AGLedger-ai/install/blob/main/monitoring/runbooks.md#agledgervaultintegritycheckfailed"
           summary: "Vault integrity check reported a broken chain"
           description: >-
@@ -1089,7 +1111,7 @@ groups:
         # sweep once its window closes. window_overdue is one that sweep has
         # not reached past its grace; no_window_close is one with no close
         # instant, which it never will. The dispute-stale-recovery sweep logs
-        # both and nothing else reported them. Disputes waiting on the
+        # both, and this rule is their metric. Disputes waiting on the
         # principal (PENDING_RESOLUTION) are agledger_disputes_open, which has
         # no rule: no elapsed time is a fault there. Every API replica reads
         # the same table, so `max` is the install.
@@ -1154,14 +1176,11 @@ groups:
         # and would make a threshold that means "this process is blocked" into
         # a number that grows with the replica count.
         #
-        # "Every process" includes the worker, and only because the worker
-        # publishes these three gauges itself. They are set inside the Fastify
-        # metrics plugin, which the worker never runs, so its series came from
-        # the import alone: unlabelled gauges materialize at 0 at registration
-        # and the worker's /metrics served that 0 forever. The worker's pool is
-        # the one the maintenance sweeps, the gate worker and the delivery
-        # workers contend for, so the per-series reading was true of the API
-        # replicas and silent on the likeliest saturation of the two.
+        # "Every process" includes the worker, which publishes these three
+        # gauges itself because the metrics plugin that sets them on the API
+        # does not run there. The worker's pool is the one the maintenance
+        # sweeps, the gate worker and the delivery workers contend for, so it
+        # is the likelier of the two to saturate.
         expr: agledger_db_pool_waiting_connections > 0
         for: 5m
         labels:
@@ -1174,10 +1193,9 @@ groups:
             undersized pool or a query holding a client across an await.
 
       - alert: AGLedgerDbConnectionsDropping
-        # Backends dying under checked-out clients. Each one now rejects the
+        # Backends dying under checked-out clients. Each one rejects the
         # in-flight query and evicts the client rather than killing the process,
-        # so this counter is the only thing that reports it; before the client
-        # error listener existed the signal was a container restart.
+        # so this counter is the only thing that reports it.
         #
         # A failover is a burst that stops, and the `for:` hold rides over it.
         # What this catches is the state that does not stop: a flapping network
@@ -1341,7 +1359,11 @@ groups:
         #
         # vault-checkpoints is excluded: a chain it did not reach has entries
         # with no checkpoint, not dead rows, so it has its own rule below.
-        expr: sum by (task) (increase(agledger_maintenance_sweep_behind_total{task!="vault-checkpoints"}[1h])) >= 6
+        # record-expiry is excluded too: it runs every minute, so six cycles is
+        # a tenth of its hour rather than half, and what it leaves behind is
+        # live records past their deadline, not dead rows. agledger_records_overdue
+        # is its reading.
+        expr: sum by (task) (increase(agledger_maintenance_sweep_behind_total{task!~"vault-checkpoints|record-expiry"}[1h])) >= 6
         for: 0m
         labels:
           severity: warning

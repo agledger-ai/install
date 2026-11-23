@@ -1,9 +1,9 @@
-# Payments-disputes vertical recipe — Notify (webhook) subscriptions.
+# Payments-disputes vertical recipe: Notify (webhook) subscriptions.
 # A declarative list of the webhook subscriptions this recipe expects. Create each
 # one against your Server with POST /v1/webhooks (see the Webhooks guide), sending
 # each entry's fields as the body; the comment above each entry is its label for you,
 # not a field (the route refuses unknown fields). The
-# signing secret is returned ONCE at create time — capture it then; it is null on
+# signing secret is returned ONCE at create time: capture it then; it is null on
 # every subsequent read.
 #
 # SSRF: private / link-local / metadata IPs are blocked at connect regardless of
@@ -11,7 +11,7 @@
 # endpoint you control (or HTTP only on an LB-terminated-TLS install with
 # SSRF_ALLOW_PLAIN_HTTP set). Replace the example.com URLs with your own.
 subscriptions:
-  # The dispute operations channel — every business-meaningful moment in the
+  # The dispute operations channel: every business-meaningful moment in the
   # chargeback lifecycle, from filing through the authorized terminal action.
   # disputes-ops
   - url: https://dispute-events.example.com/agledger
@@ -23,7 +23,7 @@ subscriptions:
       - record.fulfilled             # contest-with-evidence or concede authorized
       - record.failed                # an incomplete package or rejected decision
       - signal.emitted               # terminal disposition signal fired
-  # Fraud / high-value channel — route the consequential decisions to the queue a
+  # Fraud / high-value channel: route the consequential decisions to the queue a
   # human lead works. Filter receiver-side on type and amount: send fraudulent or
   # high-value disputes (evidence-submission-decision-v1, ce3-evidence-submission-decision-v1)
   # to the principal who must authorize before the one-shot Stripe call fires.

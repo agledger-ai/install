@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# AGLedger — First-Run Installer
+# AGLedger: First-Run Installer
 # =============================================================================
 # Usage:
 #   ./scripts/install.sh
@@ -146,7 +146,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --external-db        Skip bundled PostgreSQL (DATABASE_URL must be set in .env)"
       echo "  --fips               Run containers with the OpenSSL FIPS provider active."
       echo "                       Implies ES256 signing: the provider cannot compute Ed25519."
-      echo "  --skip-verify        Skip image signature verification (dev/local ONLY — never production)"
+      echo "  --skip-verify        Skip image signature verification (dev/local ONLY, never production)"
       echo "  -h, --help           Show this help message"
       echo ""
       echo "Environment:"
@@ -252,7 +252,7 @@ case "$OS_NAME" in
     fi
     ARCH=$(uname -m)
     if [[ "$ARCH" == "arm64" ]]; then
-      warn "Apple Silicon detected — Docker runs amd64 images under Rosetta. Performance may vary."
+      warn "Apple Silicon detected. Docker runs amd64 images under Rosetta. Performance may vary."
     fi
     ;;
   *)
@@ -337,6 +337,15 @@ if [[ "$CPU_CORES" -lt 2 ]]; then
 fi
 info "CPU cores: ${CPU_CORES}"
 
+# --- External database URL ---
+# --external-db runs no database of its own, so it needs DATABASE_URL, and the
+# answer is known before anything is written: asked further down, a first run
+# would generate the secrets and the signing key into a fresh .env and then stop.
+if [[ "${EXTERNAL_DB_FLAG}" == "true" ]] \
+  && [[ -z "${DATABASE_URL:-$(get_env_value DATABASE_URL "${COMPOSE_DIR}/.env" 2>/dev/null || true)}" ]]; then
+  fatal "--external-db needs DATABASE_URL, and neither the environment nor ${COMPOSE_DIR}/.env sets it. Nothing was written. Export it or put it in that file, then re-run. To run the bundled PostgreSQL instead, re-run without --external-db."
+fi
+
 # --- Host Ports ---
 # Resolved and checked before anything is pulled or written, because a
 # collision surfaces from the Docker daemon as a bare "Bind for 127.0.0.1:5432
@@ -387,6 +396,9 @@ CONFLICTING_PORTS=()
 # Same set as CONFLICTING_PORTS, space-delimited with sentinel spaces, so
 # membership is a glob test. Not an associative array: macOS ships bash 3.2.
 CONFLICTING_PORTS_LIST=" "
+# The ports this install's own running stack holds, in the same sentinel form,
+# so the summary does not call them available.
+HELD_BY_THIS_STACK=" "
 # Newline-separated "port<TAB>VARNAME" seen so far. Deliberately NOT an
 # associative array: macOS ships bash 3.2, which has none, and `declare -A`
 # there is a syntax error that aborts the whole installer. This file is
@@ -413,13 +425,16 @@ for spec in "${PORTS_TO_PUBLISH[@]}"; do
   SEEN_PORTS="${SEEN_PORTS}${port}	${port_var}
 "
 
-  if host_port_in_use "$port" && ! host_port_held_by_this_project "$port"; then
+  if ! host_port_in_use "$port"; then
+    info "Port ${port} (${label}): free"
+  elif host_port_held_by_this_project "$port"; then
+    info "Port ${port} (${label}): held by this install's own stack"
+    HELD_BY_THIS_STACK="${HELD_BY_THIS_STACK}${port} "
+  else
     warn "Port ${port} (${label}): in use"
     PORT_CONFLICTS+=("${port_var}=${port} (${label})")
     CONFLICTING_PORTS+=("$port")
     CONFLICTING_PORTS_LIST="${CONFLICTING_PORTS_LIST}${port} "
-  else
-    info "Port ${port} (${label}): free"
   fi
 done
 
@@ -459,7 +474,11 @@ if [[ ${#PORT_CONFLICTS[@]} -gt 0 ]]; then
   fatal "Refusing to start a stack that cannot bind its ports."
 fi
 
-info "Host ports available: API ${API_HOST_PORT}$([[ "$PUBLISHES_BUNDLED_PG" == "true" ]] && echo ", PostgreSQL ${PG_HOST_PORT}")"
+# "free", or held by this install's own running stack.
+port_state() {
+  if [[ "$HELD_BY_THIS_STACK" == *" $1 "* ]]; then echo "held by this install's own stack"; else echo free; fi
+}
+info "Host ports: API ${API_HOST_PORT} ($(port_state "$API_HOST_PORT"))$([[ "$PUBLISHES_BUNDLED_PG" == "true" ]] && echo ", PostgreSQL ${PG_HOST_PORT} ($(port_state "$PG_HOST_PORT"))")"
 
 # The registry has to be resolved before version resolution runs, not after:
 # resolve_latest_version (lib-compose.sh) and the private-registry guard in the
@@ -672,10 +691,10 @@ case $VERIFY_STATUS in
         # `docker image inspect` resolves in front of them.
         fatal "Could not pull ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}, and nothing on this run verified the copy already in this host's image store. See the guidance above."
       fi
-      fatal "Could not pull ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION} — see the authentication guidance above. Nothing was verified, because the image never arrived."
+      fatal "Could not pull ${AGLEDGER_IMAGE}:${AGLEDGER_VERSION}. See the authentication guidance above. Nothing was verified, because the image never arrived."
     fi
     ;;
-  *) fatal "Image signature verification failed — aborting before running an unverified image." ;;
+  *) fatal "Image signature verification failed, aborting before running an unverified image." ;;
 esac
 AGLEDGER_IMAGE_PIN=""
 if [[ -n "${RESOLVED_DIGEST:-}" ]]; then
@@ -1091,7 +1110,7 @@ if [[ "$HAS_SIGNING_KEY" != true ]]; then
   info "Generating VAULT_SIGNING_KEY (${SIGNING_ALGORITHM})..."
   # Run the digest-pinned ref (falls back to tag only when no digest resolved).
   # These are the bytes that mint the install's root signing key, so whether
-  # they were verified is the whole question — and on a cosign-less host, or a
+  # they were verified is the whole question, and on a cosign-less host, or a
   # custom image that serves no release signature, they were not. The step that
   # reports the pin says which it was; this line must not claim more than that
   # one does.
@@ -1195,7 +1214,7 @@ fi
 
 # --- Idempotent Environment Reconciliation ---
 # Runs on BOTH fresh and existing .env, so a re-run brings COMPOSE_FILE and the
-# version-tracking keys up to date on an existing install. Never auto-flips security-sensitive values — only adds missing keys and
+# version-tracking keys up to date on an existing install. Never auto-flips security-sensitive values; it only adds missing keys and
 # updates version-tracking keys.
 #
 # RECONCILE_CHANGES is declared with the secret backfills above, which append to
@@ -1370,7 +1389,7 @@ fi
 # Persist the registry alongside the pin. The pin is a digest ref and cannot
 # stand in for it: upgrade.sh sources this file, and with no AGLEDGER_IMAGE in
 # it falls back to `agledger/agledger`, so a private-registry install skipped
-# the registry login on upgrade and pulled the next version from Docker Hub —
+# the registry login on upgrade and pulled the next version from Docker Hub,
 # failing outright where Docker Hub is unreachable, and where the same tags
 # exist on both, quietly moving the install off the registry the operator
 # chose.
@@ -1388,14 +1407,14 @@ esac
 
 # Pin the running stack to the digest that was pulled.
 # compose images resolve `${AGLEDGER_IMAGE_PIN:-agledger/agledger:${AGLEDGER_VERSION}}`,
-# so this makes every container run the exact bytes that arrived — not a
+# so this makes every container run the exact bytes that arrived, not a
 # floating tag that could be repointed afterwards.
 #
 # Pinning is right on every run. Calling the pin verified is only right on the
 # run that verified it, so the line says which one this was: on a host without
 # cosign the same install prints "Proceeding UNVERIFIED" a few steps earlier,
-# and a reader skimming for the word — or a CI log scraper looking for evidence
-# of supply-chain verification — must not find it here.
+# and a reader skimming for the word, or a CI log scraper looking for evidence
+# of supply-chain verification, must not find it here.
 EXISTING_PIN=$(grep -E '^AGLEDGER_IMAGE_PIN=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]' || true)
 if [[ -n "${AGLEDGER_IMAGE_PIN:-}" ]] && [[ "$EXISTING_PIN" != "$AGLEDGER_IMAGE_PIN" ]]; then
   upsert_env_var AGLEDGER_IMAGE_PIN "${AGLEDGER_IMAGE_PIN}" "$ENV_FILE"
@@ -1513,7 +1532,7 @@ fi
 
 if [[ "${USES_BUNDLED_PG}" == "false" ]]; then
   if [[ -z "${DATABASE_URL:-}" ]]; then
-    fatal "External database mode requires DATABASE_URL in .env (or use --version without --external-db for bundled postgres)"
+    fatal "--external-db needs DATABASE_URL: export it or put it in ${ENV_FILE}, then re-run. To run the bundled PostgreSQL instead, re-run without --external-db."
   fi
   info "External database detected: skipping bundled PostgreSQL"
   info "DATABASE_URL points to: $(echo "${DATABASE_URL}" | sed -E 's|://[^@]*@|://***@|')"
@@ -2363,7 +2382,7 @@ elif [[ "${PREFLIGHT_FAILED:-false}" == true ]]; then
   echo -e "${RED}=============================================================================${NC}"
 else
   echo -e "${GREEN}=============================================================================${NC}"
-  echo -e "${GREEN}  AGLedger — Installation Complete${NC}"
+  echo -e "${GREEN}  AGLedger: Installation Complete${NC}"
   echo -e "${GREEN}=============================================================================${NC}"
 fi
 echo ""
@@ -2392,7 +2411,7 @@ if [[ -n "${PLATFORM_KEY:-}" && "$REUSED_PLATFORM_KEY" == true ]]; then
   # this terminal's scrollback; the operator is told where it lives instead.
   echo -e "  ${BOLD}Platform API Key:${NC} kept from the first install, in PLATFORM_API_KEY in ${ENV_FILE}"
 elif [[ -n "${PLATFORM_KEY:-}" ]]; then
-  echo -e "  ${BOLD}${RED}Platform API Key (SAVE THIS — shown only once):${NC}"
+  echo -e "  ${BOLD}${RED}Platform API Key (SAVE THIS, shown only once):${NC}"
   echo ""
   echo -e "    ${YELLOW}${PLATFORM_KEY}${NC}"
   echo ""
@@ -2412,6 +2431,23 @@ else
   echo -e "    It prints the key once. Copy it into PLATFORM_API_KEY in ${ENV_FILE}."
   echo -e "    The [WARN] block earlier in this run carries the init output that explains why."
 fi
+
+# The pin is what an offline verifier is handed (`@agledger/verify --trust-anchor`),
+# and the audit export's verificationGuide sends the reader back to this output
+# for it, so it sits in the box rather than only mid-log. A re-run that kept the
+# key has no pin from this run; the command derives it from the key in .env.
+echo ""
+if [[ -n "${VAULT_SIGNING_KEY_PIN:-}" ]]; then
+  echo -e "  ${BOLD}Vault signing key pin${NC} (not secret; give it to anyone who verifies this install offline):"
+  echo -e "    ${VAULT_SIGNING_KEY_PIN}"
+elif [[ -n "$(get_env_value VAULT_SIGNING_KEY_KMS_ARN "$ENV_FILE")" ]]; then
+  echo -e "  ${BOLD}Vault signing key pin:${NC} cd ${COMPOSE_DIR} && docker compose exec -e NODE_OPTIONS= agledger-api \\"
+  echo -e "    /nodejs/bin/node dist/scripts/signing-key-digest.js --kms-arn $(get_env_value VAULT_SIGNING_KEY_KMS_ARN "$ENV_FILE")"
+else
+  echo -e "  ${BOLD}Vault signing key pin:${NC} cd ${COMPOSE_DIR} && docker compose exec -e NODE_OPTIONS= agledger-api \\"
+  echo -e "    /nodejs/bin/node dist/scripts/signing-key-digest.js"
+fi
+echo -e "    Verify an export offline: npx @agledger/verify@2 <export>.json --trust-anchor <pin>"
 
 if [[ "$WITH_MONITORING" == true ]]; then
   echo ""
@@ -2491,7 +2527,7 @@ if [[ "$ISSUER_IS_LOCALHOST" == true ]]; then
   echo ""
   echo -e "  ${YELLOW}${BOLD}⚠ Signed issuer is a localhost default${NC}"
   echo -e "    AGLEDGER_EXTERNAL_URL=${CONFIGURED_ISSUER} is the iss signed into every record,"
-  echo -e "    receipt, and cert — and it cannot be changed for records already written."
+  echo -e "    receipt, and cert, and it cannot be changed for records already written."
   echo -e "    Fine for evaluation. Before notarizing records you intend to keep, set"
   echo -e "    AGLEDGER_EXTERNAL_URL to your real https:// domain in ${ENV_FILE} and restart."
 fi

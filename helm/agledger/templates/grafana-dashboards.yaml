@@ -1,8 +1,6 @@
 {{- include "agledger.validateValues" . -}}
 {{- if ((.Values.monitoring).grafanaDashboards).enabled }}
-{{- /* The same three dashboards the Compose stack provisions:
-       templates/../files/dashboards is a symlink to the compose Grafana
-       provisioning directory, so a panel added there ships on Kubernetes too.
+{{- /* The same three dashboards the Compose stack provisions.
        One ConfigMap per dashboard, because the sidecar reads a whole ConfigMap
        as one dashboard's worth of files and a 60 KB JSON leaves little room
        under the 1 MB object cap. */}}
@@ -14,9 +12,9 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   {{- /* Truncate the release half, never $name: `trunc 63` over the whole
-         string cuts the tail, and the tail is the only part that differs. A
-         release name past ~37 characters gave all three dashboards the same
-         ConfigMap name, and two of the three silently vanished. */}}
+         string cuts the tail, and the tail is the only part that differs, so a
+         long release name would give all three dashboards one ConfigMap name
+         and two of them would silently not exist. */}}
   name: {{ printf "%s-dash-%s" (include "agledger.fullname" $root | trunc (sub 57 (len $name) | int) | trimSuffix "-") $name | trunc 63 }}
   labels:
     {{- include "agledger.labels" $root | nindent 4 }}

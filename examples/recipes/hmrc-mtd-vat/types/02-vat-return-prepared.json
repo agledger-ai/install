@@ -2,7 +2,7 @@
   "type": "vat-return-prepared-v1",
   "category": "vat-filing",
   "displayName": "VAT Return Prepared (the agent's computed 9-box figures)",
-  "description": "Notarize-only record of a prepared VAT return: the nine HMRC boxes as computed from the accounting ledger, before any human declaration or filing. Field names mirror the HMRC submit body verbatim (vatDueSales..totalAcquisitionsExVAT) so the on-chain figures ARE the numbers that will be filed. sourceLedgerHash binds the figures to the exact accounting extract they were derived from (the MTD 'digital journey' link) — it is self-attested (AGLedger notarizes the claim, it does not recompute the tax or check the figures against reality). This is the performer/agent's work product; a distinct officer declares it true-and-complete in vat-return-declaration-v1 before it is irreversibly filed.",
+  "description": "Notarize-only record of a prepared VAT return: the nine HMRC boxes as computed from the accounting ledger, before any human declaration or filing. Field names mirror the HMRC submit body verbatim (vatDueSales..totalAcquisitionsExVAT) so the on-chain figures ARE the numbers that will be filed. sourceLedgerHash binds the figures to the exact accounting extract they were derived from (the MTD 'digital journey' link); it is self-attested (AGLedger notarizes the claim, it does not recompute the tax or check the figures against reality). This is the performer/agent's work product; a distinct officer declares it true-and-complete in vat-return-declaration-v1 before it is irreversibly filed.",
   "recordSchema": {
     "type": "object",
     "additionalProperties": false,

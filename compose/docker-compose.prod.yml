@@ -1,5 +1,5 @@
 # =============================================================================
-# AGLedger — Production Docker Compose Overlay
+# AGLedger: Production Docker Compose Overlay
 # =============================================================================
 # Usage (bundled PG):
 #   docker compose -f docker-compose.yml -f docker-compose.postgres.yml -f docker-compose.prod.yml up -d --wait

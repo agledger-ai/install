@@ -2,20 +2,20 @@
 set -euo pipefail
 
 # =============================================================================
-# AGLedger — Generate Federation Keys
+# AGLedger: Generate Federation Keys
 # =============================================================================
 # Generates the one keypair a Server needs to federate with peers and prints it
 # in .env-ready form:
 #
-#   AGLEDGER_FEDERATION_SIGNING_KEY=<base64>      Ed25519 — signs outbound federation messages
+#   AGLEDGER_FEDERATION_SIGNING_KEY=<base64>      Ed25519, signs outbound federation messages
 #
-# The public half + fingerprint are printed as comments — hand the public half
+# The public half + fingerprint are printed as comments. Hand the public half
 # to peer operators out of band; they paste yours as `signingPublicKey`
 # on their POST /federation/v1/peer handshake. There is no hub or gateway.
 #
 # Runs the generator inside the AGLedger image (--stdout mode), so no source
 # checkout, Node.js, or pnpm is required on the host, and nothing is written to
-# disk. The private key goes to stdout (a warning goes to stderr) — capture it
+# disk. The private key goes to stdout (a warning goes to stderr), so capture it
 # straight into a secret store or your .env:
 #
 #   ./scripts/generate-federation-keys.sh >> compose/.env
