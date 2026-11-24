@@ -4,19 +4,6 @@ This changelog tracks changes to the AGLedger installer (this repository) and, f
 
 Releases here are tagged to match the AGLedger server version they ship against.
 
-## 2026-11-05: repository history rewritten
-
-The commit history of this repository was rewritten on 2026-11-05 to remove internal references from old commit messages. No file changed: every release tag points at the same tree it did before, under a new commit id. The release assets and their signatures are unchanged.
-
-A clone made before that date stops on its next `git pull` ("divergent branches"), and `git fetch --tags` refuses to move the existing release tags. Re-sync it once, from the install directory:
-
-```bash
-git fetch --force --tags origin
-git reset --hard origin/main
-```
-
-`compose/.env` and `backup/` are untracked, so the reset leaves them in place. A checkout pinned to a release tag (`git checkout v2.2.0`) needs only the first line, then the same `git checkout`.
-
 ## v3.0.0 - 2026-11-23
 
 Scripts, Compose files, and Helm chart synced to AGLedger server v3.0.0.

@@ -1,7 +1,7 @@
 name: Lint & workflow security
 
 # install carries privileged shell that runs on customer machines (curl|sh
-# installer, backup/restore/vault scripts) — lint it, and statically analyze
+# installer, backup/restore/vault scripts); lint it, and statically analyze
 # our workflows with zizmor. Findings surface in the Security tab as SARIF.
 on:
   push:
